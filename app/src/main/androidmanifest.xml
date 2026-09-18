@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 一键扫描:读取扣费短信(仅本机分析,不上传任何内容) -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- 每日简报通知(Android 13+ 需运行时授权)与开机后恢复闹钟 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 桌面天气(可选):仅用于下载所在城市天气,不上传任何数据;关闭后完全不联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <application
+        android:label="生活管家"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LifeButler">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".data.NotifListenerService"
+            android:exported="true"
+            android:label="生活管家 · 扣费通知读取"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <receiver
+            android:name=".data.ReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <!-- 打开档案库里已保存的本机文件(仅把 App 私有目录里的文件以只读方式临时授权给查看器) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+    <!-- 需检测的常见订阅类应用(用于「一键扫描」的已安装应用检查,避免申请全量应用权限) -->
+    <queries>
+        <package android:name="com.eg.android.AlipayGphone" />
+        <package android:name="com.tencent.mm" />
+        <package android:name="com.qiyi.video" />
+        <package android:name="com.tencent.qqlive" />
+        <package android:name="com.netease.cloudmusic" />
+        <package android:name="com.gotokeep.keep" />
+        <package android:name="com.jingdong.app.mall" />
+        <package android:name="com.sankuai.meituan" />
+        <package android:name="tv.danmaku.bili" />
+        <package android:name="com.youku.phone" />
+        <package android:name="com.tencent.qqmusic" />
+        <package android:name="com.taobao.taobao" />
+        <package android:name="com.unionpay" />
+    </queries>
+
+</manifest>

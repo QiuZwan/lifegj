@@ -1,0 +1,44 @@
+# ── 构建产物 ──
+build/
+app/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# ── Gradle ──
+.gradle/
+.gradleq/
+.gradlehome/
+gradle-app.setting
+.gradletasknamecache
+
+# ── Kotlin ──
+.kotlin/
+
+# ── IDE ──
+.idea/
+*.iml
+captures/
+.cxx/
+
+# ── 本机配置（含 SDK 路径）──
+local.properties
+
+# ── 签名密钥：绝对不要入库！──
+keystore.properties
+keystore/
+*.jks
+*.keystore
+
+# ── 日志 ──
+*.log
+build*.log
+emulator.log
+
+# ── 代理/工作状态 ──
+.workbuddy/
+
+# ── 系统 ──
+.DS_Store
+Thumbs.db

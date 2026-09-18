@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「守 · 穹顶」:一道圆拱罩住一个圆点,寓意被守护的生活;无文字 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="1.12"
+        android:scaleY="1.12"
+        android:pivotX="54"
+        android:pivotY="54">
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#F6F5F0"
+            android:strokeWidth="9"
+            android:strokeLineCap="round"
+            android:pathData="M32 62 A22 22 0 0 1 76 62" />
+        <path
+            android:fillColor="#F6F5F0"
+            android:pathData="M54 74 m -5.5 0 a5.5 5.5 0 1 1 11 0 a5.5 5.5 0 1 1 -11 0" />
+    </group>
+</vector>
