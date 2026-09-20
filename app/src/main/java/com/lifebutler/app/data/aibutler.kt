@@ -13,14 +13,153 @@ import java.time.LocalDate
 /* ───────────────────── AI 管家配置 ───────────────────── */
 
 /** 一个可一键填好的接口预设(都走 OpenAI 兼容的 /chat/completions) */
-data class AiPreset(val label: String, val base: String, val model: String)
+data class AiPreset(
+    val label: String,
+    val base: String,
+    val model: String,
+    /** 「永久免费」/「送额度」/「按量付费」,界面上做角标用 */
+    val tag: String,
+    /** 一句话说明:额度、特点、注意事项 */
+    val note: String,
+    /** 申请 Key 的地址,界面上「去拿 Key」直接打开 */
+    val applyUrl: String,
+)
 
+/**
+ * 内置预设:覆盖国内外的知名服务,分成「有免费额度」和「按量付费」两组。
+ *
+ * 说明:
+ * - 免费额度与模型名都会变,以各家控制台为准;填错了在「模型名」那一栏自己改一下即可。
+ * - 这些平台都要**你自己注册拿 Key**;本应用不代申请、不代付、不内置任何共享 Key。
+ * - 火山方舟需要先在控制台**开通对应模型**,否则有 Key 也调不通。
+ */
 val AI_PRESETS: List<AiPreset> = listOf(
-    AiPreset("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
-    AiPreset("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
-    AiPreset("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
-    AiPreset("月之暗面", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
-    AiPreset("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+
+    /* ── 有免费额度(按省心程度排) ── */
+
+    AiPreset(
+        label = "智谱 GLM · Flash",
+        base = "https://open.bigmodel.cn/api/paas/v4",
+        model = "glm-4-flash",
+        tag = "永久免费",
+        note = "永久免费、中文最稳,长期常驻选它。注册还送 2000 万 token",
+        applyUrl = "https://open.bigmodel.cn",
+    ),
+    AiPreset(
+        label = "硅基流动 · Qwen2.5-7B",
+        base = "https://api.siliconflow.cn/v1",
+        model = "Qwen/Qwen2.5-7B-Instruct",
+        tag = "永久免费",
+        note = "9B 以下模型永久免费,国内延迟低。注册送 2000 万 token",
+        applyUrl = "https://cloud.siliconflow.cn",
+    ),
+    AiPreset(
+        label = "腾讯混元 · Lite",
+        base = "https://api.hunyuan.cloud.tencent.com/v1",
+        model = "hunyuan-lite",
+        tag = "永久免费",
+        note = "永久免费,并发不高但个人用足够",
+        applyUrl = "https://console.cloud.tencent.com/hunyuan",
+    ),
+    AiPreset(
+        label = "讯飞星火 · Lite",
+        base = "https://spark-api-open.xf-yun.com/v1",
+        model = "lite",
+        tag = "永久免费",
+        note = "永久免费且不限 token,只是 QPS 偏低",
+        applyUrl = "https://console.xfyun.cn",
+    ),
+    AiPreset(
+        label = "百度千帆 · ERNIE Speed",
+        base = "https://qianfan.baidubce.com/v2",
+        model = "ernie-speed-128k",
+        tag = "永久免费",
+        note = "永久免费,中文知识问答不错;需先实名认证才能领",
+        applyUrl = "https://console.bce.baidu.com/qianfan",
+    ),
+    AiPreset(
+        label = "火山方舟 · 豆包",
+        base = "https://ark.cn-beijing.volces.com/api/v3",
+        model = "doubao-seed-1-6-flash-250715",
+        tag = "送额度",
+        note = "每天 200 万 token 自动刷新,单日额度最大。要先在控制台开通这个模型",
+        applyUrl = "https://console.volcengine.com/ark",
+    ),
+    AiPreset(
+        label = "阿里云百炼 · 通义",
+        base = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model = "qwen-plus",
+        tag = "送额度",
+        note = "新用户送 7000 万 token(90 天),模型最全,适合横向比效果",
+        applyUrl = "https://bailian.console.aliyun.com",
+    ),
+    AiPreset(
+        label = "月之暗面 · Kimi",
+        base = "https://api.moonshot.cn/v1",
+        model = "moonshot-v1-8k",
+        tag = "送额度",
+        note = "新用户送 15 元代金券,长文本阅读强",
+        applyUrl = "https://platform.moonshot.cn",
+    ),
+    AiPreset(
+        label = "Groq",
+        base = "https://api.groq.com/openai/v1",
+        model = "llama-3.3-70b-versatile",
+        tag = "免费额度",
+        note = "免费额度大、速度极快。国内直连不稳,可能要挂代理",
+        applyUrl = "https://console.groq.com",
+    ),
+    AiPreset(
+        label = "Cerebras",
+        base = "https://api.cerebras.ai/v1",
+        model = "llama-3.3-70b",
+        tag = "免费额度",
+        note = "每天约 100 万 token,速度极快。国内直连不稳",
+        applyUrl = "https://cloud.cerebras.ai",
+    ),
+    AiPreset(
+        label = "Google Gemini",
+        base = "https://generativelanguage.googleapis.com/v1beta/openai/",
+        model = "gemini-2.5-flash",
+        tag = "免费额度",
+        note = "免费层每天重置,上下文超长。国内直连不稳",
+        applyUrl = "https://aistudio.google.com",
+    ),
+    AiPreset(
+        label = "OpenRouter",
+        base = "https://openrouter.ai/api/v1",
+        model = "meta-llama/llama-3.3-70b-instruct:free",
+        tag = "免费额度",
+        note = "一个 Key 打通几十家。认准模型名以 :free 结尾的才是免费",
+        applyUrl = "https://openrouter.ai",
+    ),
+    AiPreset(
+        label = "Mistral",
+        base = "https://api.mistral.ai/v1",
+        model = "mistral-small-latest",
+        tag = "免费额度",
+        note = "欧洲服务,免费实验层,需手机号验证",
+        applyUrl = "https://console.mistral.ai",
+    ),
+
+    /* ── 按量付费(更稳更强) ── */
+
+    AiPreset(
+        label = "DeepSeek",
+        base = "https://api.deepseek.com/v1",
+        model = "deepseek-chat",
+        tag = "按量付费",
+        note = "便宜且强,性价比最高。新用户也送一小笔额度",
+        applyUrl = "https://platform.deepseek.com",
+    ),
+    AiPreset(
+        label = "OpenAI",
+        base = "https://api.openai.com/v1",
+        model = "gpt-4o-mini",
+        tag = "按量付费",
+        note = "最通用,但贵、且国内需代理",
+        applyUrl = "https://platform.openai.com",
+    ),
 )
 
 /**

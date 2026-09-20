@@ -1051,7 +1051,7 @@ private fun AlbumViewerDialog(photo: ButlerPhoto, onDelete: () -> Unit, onDismis
 /* ── 07 我的(统计来自真实数据) ── */
 
 @Composable
-fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: () -> Unit) {
+fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: () -> Unit, onOpenMemo: () -> Unit) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     var showRename by remember { mutableStateOf(false) }
@@ -1260,6 +1260,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
             Column {
                 val rows = listOf(
                     Triple(LbIcons.bell, "提醒与免打扰", "每日简报 · 扣费/到期提醒"),
+                    Triple(LbIcons.notebook, "备忘录", if (store.memos.isEmpty()) "随手记 · 可设提醒" else "${store.memos.size} 条 · 可提醒"),
                     Triple(LbIcons.users, "家庭守护设置", "连接到「家庭」页"),
                     Triple(LbIcons.moon, "深色模式", if (store.darkMode.value) "已开启" else "已关闭"),
                     Triple(LbIcons.cloud, "桌面天气", if (weatherOn) "已开启" else "未开启（不联网）"),
@@ -1285,6 +1286,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                             .clickable {
                                 when (r.second) {
                                     "提醒与免打扰" -> showReminder = true
+                                    "备忘录" -> onOpenMemo()
                                     "家庭守护设置" -> onOpenFamily()
                                     "深色模式" -> {
                                         store.setDarkMode(!store.darkMode.value)
@@ -1374,7 +1376,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.0.0",
+            "生活管家 · v2.1.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
@@ -1405,7 +1407,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         val totalRecords = store.tasks.size + store.subs.size + store.obligations.size +
             store.members.size + store.keyDates.size + store.archive.size +
             store.chat.size + store.expenses.size + store.charges.size + store.archiveFileCount() +
-            store.album.size
+            store.album.size + store.memos.size
         LbConfirmDialog(
             title = "数据与隐私",
             text = "所有数据只存在这台手机上，卸载即清除。\n\n只有两处会联网，且都由你自己决定：\n① 桌面天气（可随时关闭）；\n② AI 智能管家——你填了接口和 Key 才会启用，启用后你说的话以及一份本机数据摘要会发给你指定的那个模型服务，用来回答问题和执行记录。没填就完全离线。\n\n当前共 $totalRecords 条记录，其中家庭相册 ${store.album.size} 张、已归档文件 ${store.archiveFileCount()} 份。",
@@ -1432,7 +1434,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
     if (showClear) {
         LbConfirmDialog(
             title = "清空全部数据？",
-            text = "将删除全部记录（待办 / 订阅 / 对话 / 家人 / 相册 / 日期），从零开始；此操作不可恢复。",
+            text = "将删除全部记录（待办 / 订阅 / 对话 / 家人 / 相册 / 日期 / 备忘），从零开始；已设的备忘提醒也会一并取消。此操作不可恢复。",
             confirmText = "清空",
             onDismiss = { showClear = false },
             onConfirm = {
@@ -1689,6 +1691,7 @@ private fun AiManagerDialog(
     var testOk by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     val hadConfig = initialBase.isNotBlank() || initialKey.isNotBlank() || initialModel.isNotBlank()
 
     Dialog(onDismissRequest = onDismiss) {
@@ -1696,42 +1699,31 @@ private fun AiManagerDialog(
             Column(
                 Modifier
                     .padding(20.dp)
-                    .heightIn(max = 540.dp)
+                    .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
                 Text("AI 智能管家", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    "填一个 OpenAI 兼容的接口，对话页就能听懂整句话。Key 只写在你这台手机上，不进备份文本，也不会发给这个地址以外的任何服务。",
+                    "填一个 OpenAI 兼容的接口，对话页就能听懂整句话——说「加个订阅：网易云 15 块，每月 5 号」，它会真的写进守护清单。\n\n" +
+                        "下面内置了十几家，点一下自动填好地址和模型名。但 Key 得你自己去那家注册领一个（本应用不代申请、不内置共享 Key），" +
+                        "点右边的「去拿 Key」会打开它的申请页。Key 只写在你这台手机上，不进备份文本。",
                     fontSize = 11.5.sp,
                     color = LbInk3,
                     lineHeight = 17.sp,
                     modifier = Modifier.padding(top = 6.dp),
                 )
 
-                Text("常用服务（点一下自动填好）", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 12.dp))
-                AI_PRESETS.forEach { p ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(LbBg)
-                            .clickable {
-                                base = p.base
-                                model = p.model
-                                testResult = null
-                            }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(p.label, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = LbInk, modifier = Modifier.weight(1f))
-                        Text(p.model, fontSize = 10.5.sp, color = LbInk3)
-                    }
-                }
+                AiField("接口地址", base, "如 https://open.bigmodel.cn/api/paas/v4") { base = it; testResult = null }
+                AiField("API Key", key, "去下面挑那家注册，把 Key 粘进来") { key = it; testResult = null }
+                AiField("模型名", model, "如 glm-4-flash") { model = it; testResult = null }
 
-                AiField("接口地址", base, "如 https://api.deepseek.com/v1") { base = it; testResult = null }
-                AiField("API Key", key, "sk-…（只存在本机）") { key = it; testResult = null }
-                AiField("模型名", model, "如 deepseek-chat") { model = it; testResult = null }
+                val picked = AI_PRESETS.firstOrNull { it.base == base && it.model == model }
+                Text(
+                    if (picked != null) "当前选的是：${picked.label}" else "当前选的是：自定义（上面三项你自己填的）",
+                    fontSize = 11.sp,
+                    color = if (picked != null) LbAccent else LbInk3,
+                    modifier = Modifier.padding(top = 9.dp),
+                )
 
                 testResult?.let {
                     Text(
@@ -1739,14 +1731,14 @@ private fun AiManagerDialog(
                         fontSize = 11.5.sp,
                         color = if (testOk) LbAccent else LbRust,
                         lineHeight = 16.sp,
-                        modifier = Modifier.padding(top = 9.dp),
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
 
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .padding(top = 12.dp)
+                        .padding(top = 10.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .background(LbSurface2)
                         .clickable(enabled = !testing) {
@@ -1769,6 +1761,43 @@ private fun AiManagerDialog(
                         color = LbInk2,
                     )
                 }
+
+                AiPresetSection(
+                    title = "免费用 · 有免费额度（建议先从这里挑）",
+                    list = AI_PRESETS.filter { it.tag != "按量付费" },
+                    base = base,
+                    model = model,
+                    onPick = { p ->
+                        // 换了一家服务商,旧 Key 一定不通用,清掉免得你以为还在用
+                        if (p.base != base) key = ""
+                        base = p.base
+                        model = p.model
+                        testResult = null
+                    },
+                    onApply = { p -> openUrl(ctx, p.applyUrl) },
+                )
+
+                AiPresetSection(
+                    title = "要花钱 · 更稳更强",
+                    list = AI_PRESETS.filter { it.tag == "按量付费" },
+                    base = base,
+                    model = model,
+                    onPick = { p ->
+                        if (p.base != base) key = ""
+                        base = p.base
+                        model = p.model
+                        testResult = null
+                    },
+                    onApply = { p -> openUrl(ctx, p.applyUrl) },
+                )
+
+                Text(
+                    "免费额度、模型名都会变，以各家控制台为准。填了报错的话，在「模型名」那一栏改成控制台里写的名字就行。",
+                    fontSize = 10.5.sp,
+                    color = LbInk3,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
 
                 Row(
                     Modifier
@@ -1804,6 +1833,105 @@ private fun AiManagerDialog(
                                 .padding(8.dp),
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/** 打开一个网址(申请 Key 用);没有浏览器就如实提示,不静默失败 */
+private fun openUrl(ctx: android.content.Context, url: String) {
+    try {
+        ctx.startActivity(
+            Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    } catch (e: Exception) {
+        Toast.makeText(ctx, "没有能打开网页的应用", Toast.LENGTH_SHORT).show()
+    }
+}
+
+@Composable
+private fun AiPresetSection(
+    title: String,
+    list: List<com.lifebutler.app.data.AiPreset>,
+    base: String,
+    model: String,
+    onPick: (com.lifebutler.app.data.AiPreset) -> Unit,
+    onApply: (com.lifebutler.app.data.AiPreset) -> Unit,
+) {
+    Text(title, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk2, modifier = Modifier.padding(top = 16.dp))
+    list.forEach { p ->
+        val active = p.base == base && p.model == model
+        Surface(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 7.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = if (active) LbAccentSoft else LbBg,
+            border = androidx.compose.foundation.BorderStroke(1.dp, if (active) LbAccent else LbLine),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable { onPick(p) },
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            p.label,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = LbInk,
+                            maxLines = 1,
+                        )
+                        val tagBg = when (p.tag) {
+                            "永久免费" -> LbAccentSoft
+                            "按量付费" -> LbSurface2
+                            else -> LbAmberSoft
+                        }
+                        val tagFg = when (p.tag) {
+                            "永久免费" -> LbAccent
+                            "按量付费" -> LbInk3
+                            else -> LbAmber
+                        }
+                        Box(
+                            Modifier
+                                .padding(start = 6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(tagBg)
+                                .padding(horizontal = 6.dp, vertical = 1.5.dp),
+                        ) {
+                            Text(p.tag, fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = tagFg)
+                        }
+                    }
+                    Text(
+                        p.model,
+                        fontSize = 10.5.sp,
+                        color = LbInk3,
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                    Text(
+                        p.note,
+                        fontSize = 10.5.sp,
+                        color = LbInk3,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                }
+                Box(
+                    Modifier
+                        .padding(start = 8.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(LbSurface2)
+                        .clickable { onApply(p) }
+                        .padding(horizontal = 9.dp, vertical = 7.dp),
+                ) {
+                    Text("去拿 Key", fontSize = 10.5.sp, fontWeight = FontWeight.Medium, color = LbInk2)
                 }
             }
         }

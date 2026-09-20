@@ -18,6 +18,8 @@ object ReminderScheduler {
 
     fun ensureScheduled(context: Context) {
         try {
+            // 备忘提醒与「每日简报」互相独立:关掉简报不影响你自己设的备忘提醒
+            MemoReminders.rescheduleAll(context)
             val store = ButlerStore.get(context)
             if (!store.reminderEnabled.value) {
                 cancel(context)
@@ -74,6 +76,7 @@ class ReminderReceiver : BroadcastReceiver() {
 
 object Notifier {
     private const val CHANNEL_ID = "lifebutler_daily"
+    private const val MEMO_CHANNEL_ID = "lifebutler_memo"
 
     private fun channel(context: Context): NotificationManager {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -134,6 +137,42 @@ object Notifier {
         post(context, "测试提醒 · 一切正常", "看到这条说明提醒通道正常工作；以后每天会按设定时间发简报。", "我的")
     }
 
+    private fun memoChannel(context: Context): NotificationManager {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(MEMO_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(MEMO_CHANNEL_ID, "备忘提醒", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "备忘录里你自己设定的提醒时间"
+                },
+            )
+        }
+        return nm
+    }
+
+    /** 备忘提醒:到点发一条;点击直达「备忘录」页。同一备忘固定通知 id,重复响不会堆一堆 */
+    fun postMemoReminder(context: Context, id: String, title: String, content: String) {
+        try {
+            val nm = memoChannel(context)
+            val body = content.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(90).orEmpty()
+            val text = body.ifBlank { "你设的提醒时间到了。" }
+            val pi = PendingIntent.getActivity(
+                context, 0,
+                Intent(context, MainActivity::class.java).putExtra("open_tab", "memo"),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val n = Notification.Builder(context, MEMO_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_check)
+                .setContentTitle(title.ifBlank { "备忘提醒" })
+                .setContentText(text)
+                .setStyle(Notification.BigTextStyle().bigText(text))
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(2000 + (id.hashCode() and 0xFFFF), n)
+        } catch (e: Exception) {
+        }
+    }
+
     private fun post(context: Context, title: String, text: String, tab: String) {
         val nm = channel(context)
         val pi = PendingIntent.getActivity(
@@ -150,5 +189,75 @@ object Notifier {
             .setAutoCancel(true)
             .build()
         nm.notify(1001, n)
+    }
+}
+
+/**
+ * 单条备忘的提醒:每条备忘各自一个闹钟(requestCode 由 id 派生),
+ * 到点由 [MemoReceiver] 发通知;改期即覆盖同一个闹钟,删除/清除提醒即取消。
+ * 只排「将来」的时间——过去的提醒不会重排,所以重启后不会补响一堆旧提醒。
+ */
+object MemoReminders {
+    const val ACTION = "com.lifebutler.app.MEMO_REMINDER"
+    const val EXTRA_ID = "memo_id"
+    const val EXTRA_TITLE = "memo_title"
+
+    private fun reqCode(id: String): Int = id.hashCode() and 0x7fffffff
+    fun schedule(context: Context, id: String, title: String, at: Long) {
+        if (id.isEmpty() || at <= System.currentTimeMillis()) return
+        try {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending(context, id, title))
+        } catch (e: Exception) {
+        }
+    }
+
+    fun cancel(context: Context, id: String) {
+        if (id.isEmpty()) return
+        try {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.cancel(pending(context, id, ""))
+        } catch (e: Exception) {
+        }
+    }
+
+    /** 重新排定全部未到点的备忘提醒(开机 / 启动 / 恢复备份后调用) */
+    fun rescheduleAll(context: Context) {
+        try {
+            val store = ButlerStore.get(context)
+            val now = System.currentTimeMillis()
+            store.memos.forEach { m ->
+                if (m.remindAt > now) schedule(context, m.id, m.title, m.remindAt)
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun pending(context: Context, id: String, title: String): PendingIntent {
+        val i = Intent(context, MemoReceiver::class.java)
+            .setAction(ACTION)
+            .putExtra(EXTRA_ID, id)
+            .putExtra(EXTRA_TITLE, title)
+        return PendingIntent.getBroadcast(
+            context, reqCode(id), i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+}
+
+class MemoReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != MemoReminders.ACTION) return
+        val id = intent.getStringExtra(MemoReminders.EXTRA_ID) ?: return
+        try {
+            val store = ButlerStore.get(context)
+            val m = store.memos.firstOrNull { it.id == id }
+            // 备忘已删除、或提醒已被取消 → 不打扰
+            if (m == null) return
+            if (m.remindAt <= 0L) return
+            val fallbackTitle = intent.getStringExtra(MemoReminders.EXTRA_TITLE).orEmpty()
+            Notifier.postMemoReminder(context, m.id, m.title.ifBlank { fallbackTitle }, m.content)
+        } catch (e: Exception) {
+        }
     }
 }

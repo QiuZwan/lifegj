@@ -42,6 +42,25 @@ data class ButlerCharge(val id: String, val subName: String, val amount: Double,
 data class ButlerClosedSub(val id: String, val name: String, val amount: Double, val closedAt: Long)
 
 /**
+ * 一条备忘:标题 + 正文 + 分类 + 可选提醒时间。
+ * createdAt / updatedAt 为写入时的本机时间戳;remindAt 为 0 表示不提醒。
+ * remindAt 到了就交给系统通知响一次,过去的提醒不会重排、不会重复打扰。
+ */
+data class ButlerMemo(
+    val id: String,
+    val title: String,
+    val content: String,
+    val category: String,
+    val pinned: Boolean,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val remindAt: Long,
+)
+
+/** 备忘录排序键:最近更新 / 创建时间 / 提醒时间(三者都保持「置顶在前」) */
+enum class MemoSort { Updated, Created, Remind }
+
+/**
  * 本机数据仓库:全部用户数据保存在本机 SharedPreferences(JSON),
  * 不联网、不上传;所有页面读写同一份数据,改动即时持久化。
  *
@@ -76,6 +95,10 @@ class ButlerStore private constructor(context: Context) {
     val expenses: SnapshotStateList<ButlerExpense> = mutableStateListOf()
     val charges: SnapshotStateList<ButlerCharge> = mutableStateListOf()
     val closedHistory: SnapshotStateList<ButlerClosedSub> = mutableStateListOf()
+    val memos: SnapshotStateList<ButlerMemo> = mutableStateListOf()
+
+    /** 备忘分类:在「未分类」之外可由用户自增自删 */
+    val memoCategories: MutableState<List<String>> = mutableStateOf(DEFAULT_MEMO_CATEGORIES)
 
     init {
         load()
@@ -506,6 +529,117 @@ class ButlerStore private constructor(context: Context) {
         chat.add(ButlerChat(id(), fromUser, text, photoPath)); save()
     }
 
+    /* ── 备忘录(新建 / 编辑 / 删除 / 分类 / 搜索 / 排序 / 提醒) ── */
+
+    /** 新增一条备忘;标题与正文全空则不落库。返回真正写进去的那条(便于界面继续操作) */
+    fun addMemo(title: String, content: String, category: String, remindAt: Long): ButlerMemo? {
+        val t = title.trim()
+        val c = content.trim()
+        if (t.isEmpty() && c.isEmpty()) return null
+        val now = System.currentTimeMillis()
+        val m = ButlerMemo(
+            id = id(),
+            title = t.ifEmpty { "无标题" },
+            content = c,
+            category = category.trim().ifEmpty { MEMO_UNCATEGORIZED },
+            pinned = false,
+            createdAt = now,
+            updatedAt = now,
+            remindAt = remindAt,
+        )
+        memos.add(0, m)
+        save()
+        syncMemoReminder(m)
+        return m
+    }
+
+    /** 编辑:更新时间戳;提醒时间改动会同步重排本机闹钟 */
+    fun updateMemo(id: String, title: String, content: String, category: String, remindAt: Long) {
+        val i = memos.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val t = title.trim()
+        val c = content.trim()
+        if (t.isEmpty() && c.isEmpty()) return
+        val updated = memos[i].copy(
+            title = t.ifEmpty { "无标题" },
+            content = c,
+            category = category.trim().ifEmpty { memos[i].category.ifEmpty { MEMO_UNCATEGORIZED } },
+            remindAt = remindAt,
+            updatedAt = System.currentTimeMillis(),
+        )
+        memos[i] = updated
+        save()
+        syncMemoReminder(updated)
+    }
+
+    /** 置顶 / 取消置顶 */
+    fun toggleMemoPin(id: String) {
+        val i = memos.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            memos[i] = memos[i].copy(pinned = !memos[i].pinned)
+            save()
+        }
+    }
+
+    fun removeMemo(id: String) {
+        if (memos.none { it.id == id }) return
+        memos.removeAll { it.id == id }
+        save()
+        MemoReminders.cancel(appCtx, id)
+    }
+
+    /** 关键词搜索:标题与正文均匹配,忽略大小写;空关键词返回全部 */
+    fun searchMemos(keyword: String): List<ButlerMemo> {
+        val k = keyword.trim()
+        if (k.isEmpty()) return memos.toList()
+        return memos.filter { it.title.contains(k, true) || it.content.contains(k, true) }
+    }
+
+    /** 排序:置顶恒在前;其余按所选时间键。按提醒时间时,未设提醒的排在最后 */
+    fun sortedMemos(list: List<ButlerMemo>, order: MemoSort): List<ButlerMemo> = when (order) {
+        MemoSort.Updated -> list.sortedWith(
+            compareByDescending<ButlerMemo> { it.pinned }.thenByDescending { it.updatedAt },
+        )
+        MemoSort.Created -> list.sortedWith(
+            compareByDescending<ButlerMemo> { it.pinned }.thenByDescending { it.createdAt },
+        )
+        MemoSort.Remind -> list.sortedWith(
+            compareByDescending<ButlerMemo> { it.pinned }
+                .thenBy { if (it.remindAt <= 0L) Long.MAX_VALUE else it.remindAt },
+        )
+    }
+
+    fun memoCountOf(category: String): Int = memos.count { it.category == category }
+
+    /** 新增分类:重名(忽略大小写)或空名不生效 */
+    fun addMemoCategory(name: String): Boolean {
+        val n = name.trim()
+        if (n.isEmpty() || memoCategories.value.any { it.equals(n, true) }) return false
+        memoCategories.value = memoCategories.value + n
+        save()
+        return true
+    }
+
+    /** 删除分类:其下的备忘改挂「未分类」,不会连带删除任何内容 */
+    fun removeMemoCategory(name: String) {
+        if (name == MEMO_UNCATEGORIZED) return
+        if (!memoCategories.value.contains(name)) return
+        memoCategories.value = memoCategories.value.filter { it != name }
+        for (i in memos.indices) {
+            if (memos[i].category == name) memos[i] = memos[i].copy(category = MEMO_UNCATEGORIZED)
+        }
+        save()
+    }
+
+    /** 把「已到点」的备忘提醒说明白:设了未来提醒才排闹钟,否则确保取消 */
+    private fun syncMemoReminder(m: ButlerMemo) {
+        if (m.remindAt > System.currentTimeMillis()) {
+            MemoReminders.schedule(appCtx, m.id, m.title, m.remindAt)
+        } else {
+            MemoReminders.cancel(appCtx, m.id)
+        }
+    }
+
     /* ── 记账 ── */
 
     fun addExpense(amount: Double, category: String, note: String) {
@@ -707,7 +841,7 @@ class ButlerStore private constructor(context: Context) {
     fun hasAnyRecord(): Boolean = tasks.isNotEmpty() || subs.isNotEmpty() || obligations.isNotEmpty() ||
         members.isNotEmpty() || keyDates.isNotEmpty() || archive.isNotEmpty() ||
         expenses.isNotEmpty() || charges.isNotEmpty() || closedHistory.isNotEmpty() ||
-        album.isNotEmpty()
+        album.isNotEmpty() || memos.isNotEmpty()
 
     /** 清空全部数据(从空开始,仅保留一句欢迎语) */
     fun clearAll() {
@@ -720,6 +854,8 @@ class ButlerStore private constructor(context: Context) {
             }
         } catch (e: Exception) {
         }
+        // 先把备忘提醒的闹钟逐个取消,再清空数据(清空后就找不到这些 id 了)
+        memos.forEach { MemoReminders.cancel(appCtx, it.id) }
         clearLists()
         profileName.value = "小满"
         avatarPath.value = ""
@@ -736,6 +872,7 @@ class ButlerStore private constructor(context: Context) {
         tasks.clear(); subs.clear(); obligations.clear(); members.clear()
         keyDates.clear(); archive.clear(); chat.clear(); expenses.clear()
         charges.clear(); closedHistory.clear(); dismissed.clear(); album.clear()
+        memos.clear(); memoCategories.value = DEFAULT_MEMO_CATEGORIES
     }
 
     /* ── 备份与恢复 ── */
@@ -913,6 +1050,18 @@ class ButlerStore private constructor(context: Context) {
         expenses.add(ButlerExpense(id(), 86.5, "购物", "猫粮 + 猫砂", today.minusDays(1).toString(), System.currentTimeMillis() - 26L * 3600 * 1000))
         expenses.add(ButlerExpense(id(), 45.0, "餐饮", "同事聚餐 AA", today.minusDays(2).toString(), System.currentTimeMillis() - 30L * 3600 * 1000))
         expenses.add(ButlerExpense(id(), 3.0, "交通", "地铁通勤", today.minusDays(3).toString(), System.currentTimeMillis() - 50L * 3600 * 1000))
+
+        val t0 = System.currentTimeMillis()
+        memos.add(ButlerMemo(id(), "周末采购清单", "猫粮、猫砂、抽纸\n顺便取一下快递（3 件）", "生活", true, t0 - 3600_000, t0 - 1800_000, 0L))
+        memos.add(ButlerMemo(id(), "报销要留的票据", "打车发票 3 张、餐费小票 1 张\n周五前交到财务", "工作", false, t0 - 7200_000, t0 - 7200_000, 0L))
+        memos.add(ButlerMemo(id(), "想读的两本书", "《深度工作》\n《被讨厌的勇气》", "灵感", false, t0 - 10800_000, t0 - 10800_000, 0L))
+        memos.add(
+            ButlerMemo(
+                id(), "明天上午给妈妈打个电话", "她昨晚发过一条语音，还没回", "待办", false,
+                t0 - 14400_000, t0 - 14400_000,
+                today.plusDays(1).atTime(9, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+            ),
+        )
     }
 
     private fun save() {
@@ -945,6 +1094,13 @@ class ButlerStore private constructor(context: Context) {
             o.put("expenses", arr(expenses) { JSONObject().put("id", it.id).put("amount", it.amount).put("category", it.category).put("note", it.note).put("date", it.date).put("at", it.at) })
             o.put("charges", arr(charges) { JSONObject().put("id", it.id).put("name", it.subName).put("amount", it.amount).put("date", it.date).put("at", it.at).put("source", it.source) })
             o.put("closedSubs", arr(closedHistory) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("closedAt", it.closedAt) })
+            o.put("memos", arr(memos) {
+                JSONObject()
+                    .put("id", it.id).put("title", it.title).put("content", it.content)
+                    .put("category", it.category).put("pinned", it.pinned)
+                    .put("createdAt", it.createdAt).put("updatedAt", it.updatedAt).put("remindAt", it.remindAt)
+            })
+            o.put("memoCats", JSONArray(memoCategories.value))
             prefs.edit().putString("state_v1", o.toString()).apply()
         } catch (e: Exception) {
         }
@@ -1050,6 +1206,31 @@ class ButlerStore private constructor(context: Context) {
                 }
             }
 
+            o.optJSONArray("memoCats")?.let { a ->
+                val l = mutableListOf<String>()
+                for (i in 0 until a.length()) l.add(a.getString(i))
+                if (l.isNotEmpty()) {
+                    memoCategories.value = if (l.contains(MEMO_UNCATEGORIZED)) l else l + MEMO_UNCATEGORIZED
+                }
+            }
+            o.optJSONArray("memos")?.let { a ->
+                for (i in 0 until a.length()) {
+                    val j = a.getJSONObject(i)
+                    memos.add(
+                        ButlerMemo(
+                            j.getString("id"),
+                            j.optString("title", "无标题"),
+                            j.optString("content", ""),
+                            j.optString("category", MEMO_UNCATEGORIZED),
+                            j.optBoolean("pinned", false),
+                            j.optLong("createdAt", 0L),
+                            j.optLong("updatedAt", 0L),
+                            j.optLong("remindAt", 0L),
+                        ),
+                    )
+                }
+            }
+
             // 旧数据补全:曾经有过「关闭中」的订阅但没留历史 → 按现有数据补一条真实记录
             if (closedHistory.isEmpty()) {
                 subs.filter { it.closing }.forEach { s ->
@@ -1082,6 +1263,12 @@ class ButlerStore private constructor(context: Context) {
     }
 
     companion object {
+        /** 「未分类」是兜底分类,不参与删除;删除分类时其下备忘会改挂到这里 */
+        const val MEMO_UNCATEGORIZED = "未分类"
+
+        /** 首次安装 / 清空数据后的默认分类 */
+        val DEFAULT_MEMO_CATEGORIES = listOf("工作", "生活", "灵感", "待办", MEMO_UNCATEGORIZED)
+
         @Volatile
         private var instance: ButlerStore? = null
 

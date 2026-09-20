@@ -32,6 +32,7 @@ import com.lifebutler.app.ui.screens.ChatScreen
 import com.lifebutler.app.ui.screens.ExpenseScreen
 import com.lifebutler.app.ui.screens.FamilyScreen
 import com.lifebutler.app.ui.screens.GuardScreen
+import com.lifebutler.app.ui.screens.MemoScreen
 import com.lifebutler.app.ui.screens.MineScreen
 import com.lifebutler.app.ui.screens.MonthReportScreen
 import com.lifebutler.app.ui.screens.ObligationsScreen
@@ -78,7 +79,8 @@ fun LbApp(tabRequest: MutableState<String?> = mutableStateOf(null), initialTab: 
         tabRequest.value?.let { want ->
             overlay = null
             detailSubId = null
-            tab = want
+            // 备忘录是浮层页(不是底部 tab),通知点进来也走这里
+            if (want == "memo") overlay = "memo" else tab = want
             tabRequest.value = null
         }
     }
@@ -106,6 +108,7 @@ fun LbApp(tabRequest: MutableState<String?> = mutableStateOf(null), initialTab: 
                     "scan" -> ScanScreen(onBack = { overlay = null })
                     "duties" -> ObligationsScreen(onBack = { overlay = null })
                     "ledger" -> ExpenseScreen(onBack = { overlay = null })
+                    "memo" -> MemoScreen(onBack = { overlay = null })
                     "report" -> MonthReportScreen(onBack = { overlay = null })
                     "states" -> StatesScreen(onBack = { overlay = null }, onOpenScan = { overlay = "scan" })
                     "vault" -> VaultScreen(onOpenStates = { overlay = "states" })
@@ -129,6 +132,7 @@ fun LbApp(tabRequest: MutableState<String?> = mutableStateOf(null), initialTab: 
                         onOpenVault = { overlay = "vault" },
                         onOpenFamily = { tab = "家庭" },
                         onOpenReport = { overlay = "report" },
+                        onOpenMemo = { overlay = "memo" },
                     )
                     else -> {}
                 }

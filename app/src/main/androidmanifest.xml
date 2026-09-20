@@ -45,6 +45,10 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <!-- 备忘录里自己设定的提醒时间:由本机闹钟在到点那一刻唤起 -->
+        <receiver
+            android:name=".data.MemoReceiver"
+            android:exported="false" />
         <!-- 打开档案库里已保存的本机文件(仅把 App 私有目录里的文件以只读方式临时授权给查看器) -->
         <provider
             android:name="androidx.core.content.FileProvider"

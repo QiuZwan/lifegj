@@ -227,7 +227,7 @@ fun LbInputDialog(
 
 /** 日历选择器:快捷行 + 月份导航 + 星期表头 + 42 格网格,点选即返回(yyyy-MM-dd) */
 @Composable
-private fun LbDatePickerDialog(
+fun LbDatePickerDialog(
     initial: String,
     clearable: Boolean,
     onPick: (String) -> Unit,
