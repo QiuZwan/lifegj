@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -363,11 +364,11 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Image(
-                        painter = painterResource(R.drawable.lb_butler_scene),
+                        painter = painterResource(R.drawable.lb_butler3d),
                         contentDescription = "说一句，待办、订阅、记账、备忘都能动",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(134.dp)
+                            .aspectRatio(1.2f)
                             .padding(top = 2.dp),
                     )
                     Text(
@@ -1457,7 +1458,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.3.0",
+            "生活管家 · v2.4.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,

@@ -1,6 +1,6 @@
 # 生活管家 · Android(Compose)
 
-「上班族 × 个人生活管家」界面设计 V10 的 Android 实现（本机数据版 v2.3）。技术栈：Kotlin + Jetpack Compose + Material 3，按「静护」设计系统（骨白纸面 + 深玉绿）还原设计稿；数据为**用户自己记录、本机持久化、多模块联动**。所有记录都在本机；会联网的只有两处——可选的「桌面天气」，以及「智能管家」（**默认已开**，用打包在安装包里的共享免费额度，随时可关或换成自己的 Key，详见 v2.2 一节）。
+「上班族 × 个人生活管家」界面设计 V10 的 Android 实现（本机数据版 v2.4）。技术栈：Kotlin + Jetpack Compose + Material 3，按「静护」设计系统（骨白纸面 + 深玉绿）还原设计稿；数据为**用户自己记录、本机持久化、多模块联动**。所有记录都在本机；会联网的只有两处——可选的「桌面天气」，以及「智能管家」（**默认已开**，用打包在安装包里的共享免费额度，随时可关或换成自己的 Key，详见 v2.2 一节）。
 
 版本历程：
 
@@ -16,6 +16,7 @@
 - v2.1 **AI 管家内置 16 家预设（13 家有免费额度，带「去拿 Key」直达申请页）**、**内置备忘录模块**（新建 / 编辑 / 删除 / 分类管理、关键词搜索、按日期排序、单条提醒时间，本机持久化）
 - v2.2 **内置共享免费额度**：打包智谱 GLM-4-Flash（永久免费模型）的共享 Key，装完不填任何东西，对话页就已经能听懂整句话；可在「AI 智能管家」里一键关闭或换成自己的 Key
 - v2.3 **「智能管家」真能驱动全部模块**（写库 / 问清单 / 标完成 / 切深色 / 自动跳页，模拟器 16 条用例全通过）、页面加管家插图、**修掉「首装第一次落盘静默失败」的老 bug**、堵住「说了却没做」
+- v2.4 管家插图**换成 3D 版**：戴玉绿报童帽、圆框护目镜里亮着玉绿竖瞳的机器人，双手扒在卡片上沿往外探头；带真透明通道，深浅色模式共用一张（不再需要 `values-night` 配色）
 
 ## 诚信约定（v1.9 起，v2.0 延续）
 
@@ -55,11 +56,29 @@
 - 对话可用：接了 AI 就听整句话（加订阅 / 加家人 / 记日子 / 记账 / 问账）；没接 AI 时退化为规则模式，仍支持「记一下：……」「记账：午饭 25」「今天有什么安排」「今天花了多少」「订阅花了多少」「取消 XX」。
 - 联动：关闭订阅 → 守护清单「关闭中」+ 我的统计与省下金额；添加订阅 → 今日「替你盯着的」最近一笔；添加义务 → 时间线倒计时 + 今日计数；导出家庭档案 → 生成文本分享。
 
+## v2.4 新增
+
+### 管家插图换成 3D 版（带真透明通道）
+
+原来是按主题色画的一版矢量插图（`lb_butler_scene.xml` + `values-night` 里一套深色配色）。现在换成 3D 渲染的机器人：骨白陶瓷脑袋、玉绿报童帽、圆框护目镜里亮着玉绿竖瞳，两只机械手扒在一张深玉绿卡片的上沿往外探头。**只有这一张图**，深浅色模式共用——它不是"两套配色"，而是带 alpha 的透明位图，卡片和机器人自己就是完整的一幅画面，放在骨白底和墨绿底上都成立。
+
+- 资源：`res/drawable-xxhdpi/lb_butler3d.webp`（960×800，67 KB，WebP + alpha）。
+  放在 `xxhdpi` 而不是项目里其他插图所在的 `drawable-nodpi`，是为了让 Android 在低密度设备上解码时能下采样（nodpi 会一律按原始像素解码，960×800 的 RGBA 是约 3 MB 内存）。宽高比 **1.200**，界面按 `aspectRatio(1.2f)` 摆，改图别改这个比例。
+- 源图与预览：`design/butler3d/butler3d_source.png`（ImageGen 原始输出）、`design/butler3d/preview/`（浅色底 + 深色底各一张，用来肉眼验收边缘有没有白边）。
+- 生成脚本：`design/butler3d/make_butler3d.py`（和源图放在一起，跟仓库一起走）。**重做插图时用它，不要手工裁图**——里面做了三件事：(1) 抠背景（颜色谓词 + 从画布边缘漫水填充，只把"从边界连通过来的"那片当背景，避免把机器人身上的近白高光啃出洞）；(2) 裁掉右下角的生成水印、并把卡片裁到"自画面下方出画"；(3) 存 WebP 并出两张预览图。
+- 在应用里的样子：`design/butler3d/screenshot_app_light.png`（浅色模式下「智能管家」空态）。
+
+### 踩过的坑：`background: transparent` 不生效
+
+ImageGen 传 `background=transparent` 时，模型**不会**给 alpha 通道，而是把"透明"理解成图案、把灰白棋盘格**画进像素里**（实测输出是 RGB 而不是 RGBA，两色只差约 12 个灰阶还带噪点，按颜色抠不干净）。可行的做法是让它画**纯洋红底**（`RGB 255,0,255`——主体里永远不会出现的颜色）再自己按色度抠；但更省事的是先用一张构图满意的图，按上面的脚本把低对比背景整体抠掉。
+
 ## v2.3 新增
+
+
 
 ### 智能管家（原「对话」）现在真的能驱动全部模块
 
-底部第二个 tab 从「对话」改名为**「智能管家」**，页面里加了一张管家插图（`res/drawable/lb_butler_scene.xml`，深色模式有独立配色），空态下会写一句「说一句，待办 / 订阅 / 记账 / 备忘 都能动」。
+底部第二个 tab 从「对话」改名为**「智能管家」**，页面里加了一张管家插图（v2.3 时是矢量版，v2.4 已换成 3D 位图 `res/drawable-xxhdpi/lb_butler3d.webp`），空态下会写一句「说一句，待办 / 订阅 / 记账 / 备忘 都能动」。
 
 改名的原因是它原来只是「聊天」，现在它真的能替你办事。**在模拟器上逐条实测过，16 条用例全部通过**（`\.workbuddy/tools/e2e_ask.py run`，脚本会清空数据、逐条发中文、再读回本机记录核对，不只看回复文字）：
 
@@ -239,8 +258,9 @@ v2.0/v2.1 的 AI 管家要你自己去注册、拿 Key、粘进来，才能听�
 - 档案文件：存于 `filesDir`，对外只读授权走 `res/xml/file_paths.xml` + `AndroidManifest.xml` 里的 FileProvider（authority 为 `${applicationId}.fileprovider`）。
 - 本机图片：`decodeLocal(path, maxDim)` 按需下采样解码；`LocalImage` / `LocalPhoto` 是唯一渲染入口，传 `maxDim` 控制缩略图内存。新增图片位要记得传 `maxDim`。
 - 图标：`ui/icons/LbIcons.kt`（Tabler 路径内联；增改图标直接编辑 pathData）。
+- 「智能管家」的 3D 管家插图：`res/drawable-xxhdpi/lb_butler3d.webp`，界面在 `ui/screens/ScreensLife.kt` 的 `ChatScreen` 空态里，按 `aspectRatio(1.2f)` 摆（1.200 是这张图的宽高比，换图要一起改）。重做插图走 `design/butler3d/make_butler3d.py`（抠背景 → 裁掉生成水印 → 出 WebP + 浅/深色底预览），**别手工裁**；源图、脚本与预览都在 `design/butler3d/`。**它是位图不是矢量**，所以不再有 `values-night` 配色那套机制。
 - 演示数据：「我的 → 载入演示数据」触发，实现在 `ButlerStore.loadDemo()`；演示订阅的来源字段标为「演示」，界面显示角标。**不要把演示数据写进 `load()`**，首启必须为空。
-- 图片：`res/drawable-nodpi/` 下的 jpg。当前被代码引用的只有这 9 张：`hero_morning / archive_papers / family_home / review_journal / vault_shelf / avatar_mom / avatar_dad / avatar_user / avatar_cat`；同目录下的 `focus_desk / chat_faucet / family_tea / guard_wallet` 暂未被引用（早期版式留下的素材，删掉不影响构建）。
+- 图片：`res/drawable-nodpi/` 下的 jpg。当前被代码引用的只有这 9 张：`hero_morning / archive_papers / family_home / review_journal / vault_shelf / avatar_mom / avatar_dad / avatar_user / avatar_cat`；同目录下的 `focus_desk / chat_faucet / family_tea / guard_wallet` 暂未被引用（早期版式留下的素材，删掉不影响构建）。**例外**：「智能管家」那张 3D 管家插图在 `res/drawable-xxhdpi/lb_butler3d.webp`（带 alpha，深浅色共用），不在这个目录——它需要按密度下采样，放进 nodpi 会一律按原始像素解码。
 - 应用名：`AndroidManifest.xml` 中 `android:label`；版本号在 `app/build.gradle.kts`（`versionCode` / `versionName`）与 `ScreensLife.kt` 页脚文案两处，改的时候别只改一处。
 - 启动图标：自适应图标 `res/drawable/ic_launcher_background.xml / ic_launcher_foreground.xml / ic_launcher_mono.xml` + `res/mipmap-anydpi-v26/`。
 - 签名与发布：`keystore.properties` + `keystore/*.jks` 为**自用密钥，不入库**。本地补齐这两个文件后 `assembleRelease` 才会输出已签名包；缺失时 `assembleRelease` 会产出未签名包（`build.gradle.kts` 里对签名配置做了存在性判断）。
