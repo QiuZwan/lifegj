@@ -66,7 +66,7 @@
   放在 `xxhdpi` 而不是项目里其他插图所在的 `drawable-nodpi`，是为了让 Android 在低密度设备上解码时能下采样（nodpi 会一律按原始像素解码，960×800 的 RGBA 是约 3 MB 内存）。宽高比 **1.200**，界面按 `aspectRatio(1.2f)` 摆，改图别改这个比例。
 - 源图与预览：`design/butler3d/butler3d_source.png`（ImageGen 原始输出）、`design/butler3d/preview/`（浅色底 + 深色底各一张，用来肉眼验收边缘有没有白边）。
 - 生成脚本：`design/butler3d/make_butler3d.py`（和源图放在一起，跟仓库一起走）。**重做插图时用它，不要手工裁图**——里面做了三件事：(1) 抠背景（颜色谓词 + 从画布边缘漫水填充，只把"从边界连通过来的"那片当背景，避免把机器人身上的近白高光啃出洞）；(2) 裁掉右下角的生成水印、并把卡片裁到"自画面下方出画"；(3) 存 WebP 并出两张预览图。
-- 在应用里的样子：`design/butler3d/screenshot_app_light.png`（浅色模式下「智能管家」空态）。
+- 在应用里的样子：`design/butler3d/screenshot_app_light.png`（浅色模式）、`design/butler3d/screenshot_app_dark.png`（深色模式）—— 都是模拟器里「智能管家」空态的真实截图，可用来对照深浅色下的边缘有没有残留底色。
 
 ### 踩过的坑：`background: transparent` 不生效
 
@@ -78,7 +78,7 @@ ImageGen 传 `background=transparent` 时，模型**不会**给 alpha 通道，�
 
 ### 智能管家（原「对话」）现在真的能驱动全部模块
 
-底部第二个 tab 从「对话」改名为**「智能管家」**，页面里加了一张管家插图（v2.3 时是矢量版，v2.4 已换成 3D 位图 `res/drawable-xxhdpi/lb_butler3d.webp`），空态下会写一句「说一句，待办 / 订阅 / 记账 / 备忘 都能动」。
+底部第三个 tab（今日 / 守护 / **智能管家** / 家庭 / 我的）从「对话」改名为**「智能管家」**，页面里加了一张管家插图（v2.3 时是矢量版，v2.4 已换成 3D 位图 `res/drawable-xxhdpi/lb_butler3d.webp`），空态下会写一句「说一句，待办 / 订阅 / 记账 / 备忘 都能动」。
 
 改名的原因是它原来只是「聊天」，现在它真的能替你办事。**在模拟器上逐条实测过，16 条用例全部通过**（`\.workbuddy/tools/e2e_ask.py run`，脚本会清空数据、逐条发中文、再读回本机记录核对，不只看回复文字）：
 
@@ -254,6 +254,8 @@ v2.0/v2.1 的 AI 管家要你自己去注册、拿 Key、粘进来，才能听�
 - AI 的「用哪一套配置」全部走 `AiConfig.source()`：`OWN`（用户自己填的三项齐全）> `BUILTIN`（内置共享额度，默认开）> `NONE`（离线规则模式）。需要发请求的地方一律用 `AiConfig.effBase()/effKey()/effModel()`，**不要直接读 `base()/key()/model()`**，否则会绕过内置额度。内置额度相关的常量（`BUILTIN_BASE / BUILTIN_MODEL / BUILTIN_KEY_REVERSED / BUILTIN_LABEL`）都在这个文件顶部。
 - 数据落盘：`ButlerStore` 的 `init { load() }` **必须留在类体的最后**（见文件末尾的注释）。Kotlin 按声明顺序初始化属性，`load()` 里的 `save()` 用到了声明在后面的字段；放到前面执行会抛 NPE 被 `save()` 的 catch 吞掉，现象是「首装后 prefs 一直是空的、界面却正常」，极难查。
 - 端到端自测（Windows + 模拟器）：`.workbuddy/tools/e2e_ask.py` 用 `--es ask` 深链逐条发中文、再用 `--es dump` 把本机记录读回来核对真有没有落库（不只看回复文字）。`.workbuddy/tools/prompt_probe.py` 从源码里抽出真实提示词，在宿主机上直接打模型、秒级看它回了什么（改提示词的迭代用这个，别每次重装 App）。`.workbuddy/tools/model_ab.py` 横向比几个模型「会不会老实发动作」。**读本机记录不要退回去读 `shared_prefs`**：那是异步落盘，会读到旧内容。
+- 要看界面实机长什么样：`.workbuddy/tools/grab_shot.py --open-tab 智能管家 --out x.png`。它用 `open_tab` 深链直达目标页（**全程不发输入事件**），并在启动后高频截图、按画面特征自动挑出目标页那一帧。为什么这么绕：这台模拟器没有硬件加速，应用渲染首帧要 40~60 秒，之后系统会因为「5 秒内没响应焦点事件」把它 ANR 强杀 —— 所以**不能用 `input tap` 导航**（点本身就触发输入超时）。判定「还在启动图」的判据是**纯黑像素占比**（启动图 0.94 / 应用深色页 0.001），不要用「底部导航栏有没有内容」，系统手势白条会被误判。`.workbuddy/tools/shot_screen.py` 是按文字点控件的旧方案，`uiautomator dump` 在这种机器上经常直接失败，仅供备用。
+- 打包产物自证：`.workbuddy/tools/verify_apk.py`。**不要用文件大小判断包有没有更新**（历史上两个内容不同的 APK 字节数完全一样过）。它按内容查三件事：资源按 **SHA-1 哈希**比对（release 会被 `optimizeReleaseResources` 改名成 `res/3t.webp` 这种短名，按文件名找不到）、`classes*.dex` 里应有/不应有的字符串、`output-metadata.json` 的版本号。发布到 GitHub 的包建议再核一次哈希，见 `.workbuddy/tools/gh_release.py`。
 - 扫描逻辑（短信 / 通知关键词、商户提取、扣费日期解析、应用白名单、线索池）：`data/SubScanner.kt`；通知监听服务：`data/NotifListenerService.kt`；对应权限与 `<queries>`、服务声明在 `AndroidManifest.xml`。
 - 档案文件：存于 `filesDir`，对外只读授权走 `res/xml/file_paths.xml` + `AndroidManifest.xml` 里的 FileProvider（authority 为 `${applicationId}.fileprovider`）。
 - 本机图片：`decodeLocal(path, maxDim)` 按需下采样解码；`LocalImage` / `LocalPhoto` 是唯一渲染入口，传 `maxDim` 控制缩略图内存。新增图片位要记得传 `maxDim`。
@@ -269,10 +271,15 @@ v2.0/v2.1 的 AI 管家要你自己去注册、拿 Key、粘进来，才能听�
 
 1. **Gradle 目录被 IDE 锁住**：Android Studio 开着时，`~/.gradle/caches` 里的 `modules-2.lock`、`transforms/*/results.bin` 会被占用，直接跑命令行构建会 `AccessDeniedException`。绕法是给命令行一套独立的 Gradle 目录，同时把官方 cache 以**只读**方式挂进来（只读不抢锁）：
    ```bash
+   # 注意:GRADLE_RO_DEP_CACHE 必须写成 Windows 风格的绝对路径(C:/Users/...)。
+   # 写 $HOME/.gradle/caches 会被 Git Bash/MSYS 转成 C:\c\Users\...，Gradle 只会
+   # 轻描淡写地报一句 "read-only dependency cache is disabled"，然后在 --offline 下
+   # 报 AGP 插件解析失败 —— 看起来像网络问题，其实是路径问题。
    GRADLE_USER_HOME=<repo>/.gradlehome \
-   GRADLE_RO_DEP_CACHE=$HOME/.gradle/caches \
+   GRADLE_RO_DEP_CACHE=C:/Users/<你>/.gradle/caches \
    ./gradlew assembleDebug --max-workers=1
    ```
+   另外 `./gradlew` 自己会联网校验发行版（`validateDistributionUrl`），在会拦 TLS 的环境里会以 `PKIX path building failed` 失败。这时直接调本地已解压好的启动器即可：`~/.gradle/wrapper/dists/gradle-<版本>-bin/<hash>/gradle-<版本>/bin/gradle`。
 2. **并发 dex 偶发权限报错**：`mergeExtDexRelease` 在多 worker 下偶发 `AccessDeniedException`。加 `--max-workers=1`，并把 debug / release 分成两条命令分别跑，即可稳定通过。
 
 ## 质量说明
