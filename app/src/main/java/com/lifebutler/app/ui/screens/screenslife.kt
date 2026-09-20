@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -66,7 +67,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.lifebutler.app.R
+import com.lifebutler.app.data.AI_PRESETS
+import com.lifebutler.app.data.AiButler
+import com.lifebutler.app.data.AiConfig
 import com.lifebutler.app.data.ButlerMember
+import com.lifebutler.app.data.ButlerPhoto
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.Notifier
 import com.lifebutler.app.data.ReminderScheduler
@@ -110,7 +115,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-/* ── 05 对话管家(消息持久化,「记一下」写入今日待办) ── */
+/* ── 05 智能管家(接了 AI 就真办事,没接就是离线规则模式) ── */
+
+/** 没接 AI 时给用户抄的近路,点了直接填进输入框 */
+private val LB_CHAT_HINTS = listOf(
+    "记一下：周五交房租",
+    "记账：午饭 25",
+    "这个月订阅一共多少钱",
+    "帮我加个订阅：网易云 15 块，每月 5 号",
+    "妈妈生日 10 月 22 日，提前一周提醒我",
+)
 
 @Composable
 fun ChatScreen() {
@@ -119,6 +133,9 @@ fun ChatScreen() {
     val listState = rememberScrollState()
     var draft by remember { mutableStateOf("") }
     var typing by remember { mutableStateOf(false) }
+    // 每次进入这一页都重新问一次配置,刚在「我的」里填完 Key 回来就能用
+    val aiReady = remember { AiConfig.isReady(ctx) }
+    var lastActions by remember { mutableStateOf<List<String>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -138,8 +155,46 @@ fun ChatScreen() {
             .padding(horizontal = 20.dp),
     ) {
         Column(Modifier.padding(top = 10.dp)) {
-            Text("对话管家", style = MaterialTheme.typography.labelSmall)
-            Text("说出来，就有人接住", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 4.dp))
+            Text("智能管家", style = MaterialTheme.typography.labelSmall)
+            Text(
+                if (aiReady) "说一句，它替你办好" else "说出来，就有人接住",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+
+        LbCard(modifier = Modifier.padding(top = 12.dp), contentPadding = 12.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBadge(
+                    if (aiReady) LbIcons.messageCircle else LbIcons.inbox,
+                    if (aiReady) LbAccentSoft else LbSurface2,
+                    if (aiReady) LbAccent else LbInk2,
+                    size = 32.dp,
+                )
+                Column(
+                    Modifier
+                        .padding(start = 10.dp)
+                        .weight(1f),
+                ) {
+                    Text(
+                        if (aiReady) "AI 已接入 · ${AiConfig.model(ctx)}" else "离线规则模式",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbInk,
+                    )
+                    Text(
+                        if (aiReady) {
+                            "能听懂整句话：加订阅、加家人、记日子、记账、问账，说一句就真写进本机。"
+                        } else {
+                            "现在只能记事、记账、查账。去「我的 → AI 智能管家」填一个接口和 Key，就能用自然语言加订阅、家人、日期。"
+                        },
+                        fontSize = 11.sp,
+                        color = LbInk3,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
         }
 
         Column(
@@ -170,6 +225,7 @@ fun ChatScreen() {
                                     .width(196.dp)
                                     .height(132.dp)
                                     .clip(RoundedCornerShape(11.dp)),
+                                maxDim = 560,
                             )
                             if (m.text.isNotEmpty()) {
                                 Text(
@@ -186,40 +242,61 @@ fun ChatScreen() {
                     ChatBubble(m.fromUser, m.text)
                 }
             }
+
+            // 刚才这一句真正写进去的东西,单独列出来,不和模型的客套话混在一起
+            if (lastActions.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                    Column(
+                        Modifier
+                            .clip(RoundedCornerShape(14.dp, 14.dp, 14.dp, 5.dp))
+                            .background(LbAccentSoft)
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                    ) {
+                        Text("已写进本机", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
+                        lastActions.forEach { a ->
+                            Text(
+                                "· $a",
+                                fontSize = 11.5.sp,
+                                color = LbAccent,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             if (typing) {
                 Row(Modifier.fillMaxWidth()) {
                     TypingBubble()
                 }
             }
-        }
 
-        LaunchedEffect(store.chat.size, typing) {
-            listState.animateScrollTo(listState.maxValue)
-        }
-
-        LbCard(contentPadding = 10.dp) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(58.dp)
-                        .clip(RoundedCornerShape(14.dp)),
-                ) {
-                    Image(
-                        painterResource(R.drawable.focus_desk),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
-                }
+            // 头一回打开,给几句能直接点的话
+            if (store.chat.size <= 1 && !typing) {
                 Column(
-                    Modifier
-                        .padding(start = 11.dp)
-                        .weight(1f),
+                    Modifier.padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    Text("一句话收件箱", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-                    Text("说「记一下：……」直接写进今日待办", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 2.dp))
+                    Text("可以这样对我说（点一下填进输入框）", fontSize = 11.sp, color = LbInk3)
+                    LB_CHAT_HINTS.forEach { s ->
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(LbSurface)
+                                .border(1.dp, LbLine, RoundedCornerShape(12.dp))
+                                .clickable { draft = s }
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
+                        ) {
+                            Text(s, fontSize = 11.5.sp, color = LbInk2)
+                        }
+                    }
                 }
             }
+        }
+
+        LaunchedEffect(store.chat.size, typing, lastActions.size) {
+            listState.animateScrollTo(listState.maxValue)
         }
 
         Surface(
@@ -258,7 +335,7 @@ fun ChatScreen() {
                     decorationBox = { inner ->
                         Box {
                             if (draft.isEmpty()) {
-                                Text("说点什么，或点左边发一张图…", fontSize = 12.sp, color = LbInk3)
+                                Text("说一句话，比如「记一下：周五交房租」", fontSize = 12.sp, color = LbInk3)
                             }
                             inner()
                         }
@@ -275,11 +352,22 @@ fun ChatScreen() {
                                 store.addChat(true, t2)
                                 draft = ""
                                 typing = true
+                                lastActions = emptyList()
+                                val history = store.chat.dropLast(1).map { it.fromUser to it.text }
                                 scope.launch {
-                                    delay(800)
-                                    val r = store.reply(t2)
-                                    typing = false
-                                    store.addChat(false, r)
+                                    if (aiReady) {
+                                        val r = AiButler.ask(ctx, store, t2, history)
+                                        typing = false
+                                        store.addChat(false, r.text)
+                                        if (r.actions.isNotEmpty()) {
+                                            lastActions = r.actions
+                                        }
+                                    } else {
+                                        delay(500)
+                                        val r = store.reply(t2)
+                                        typing = false
+                                        store.addChat(false, r)
+                                    }
                                 }
                             }
                         },
@@ -373,7 +461,19 @@ fun FamilyScreen() {
         photoTargetId = null
         if (id != null && uri != null) {
             val ok = store.setMemberPhoto(id, uri)
-            Toast.makeText(ctx, if (ok) "照片已更新" else "照片保存失败", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, if (ok) "头像已更新" else "照片保存失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+    // 家庭相册:独立于家人头像,可一次多选
+    var albumViewer by remember { mutableStateOf<ButlerPhoto?>(null) }
+    val albumPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) {
+            val n = store.addAlbumPhotos(uris)
+            Toast.makeText(
+                ctx,
+                if (n > 0) "已放进相册 $n 张，只存在这台手机上" else "没能保存，换几张再试",
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
     var showEmergency by remember { mutableStateOf(false) }
@@ -453,33 +553,58 @@ fun FamilyScreen() {
             }
         }
 
-        val localPhotos = store.members.filter { store.isLocalPhoto(it.photo) }
-        SectionHeader("家人照片") {
-            Text(
-                if (localPhotos.isEmpty()) "还没有" else "${localPhotos.size} 张",
-                fontSize = 12.sp,
-                color = LbInk3,
-            )
-        }
-        if (localPhotos.isEmpty()) {
-            LbCard(contentPadding = 12.dp) {
+        // 相册独立成册:不再从家人头像里取图,头像是头像、相册是相册
+        SectionHeader("家庭相册") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "还没有家人照片。点任意一位家人 →「换一张照片」，图片会压缩后只存在这台手机上。",
+                    if (store.album.isEmpty()) "还没有" else "${store.album.size} 张",
                     fontSize = 12.sp,
                     color = LbInk3,
-                    lineHeight = 18.sp,
+                )
+                Spacer(Modifier.width(9.dp))
+                LbPlusButton(
+                    onClick = {
+                        albumPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    contentDescription = "往相册加照片",
+                )
+            }
+        }
+        if (store.album.isEmpty()) {
+            LbCard(contentPadding = 14.dp) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconBadge(LbIcons.camera, LbSurface2, LbInk2, size = 34.dp)
+                    Column(Modifier.padding(start = 11.dp)) {
+                        Text("相册还是空白的", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                        Text(
+                            "相册与家人头像是两件事：头像是每个人那一张脸，这里放全家人的照片，想放多少张都行。点右上角 + 一次可以选多张。",
+                            fontSize = 11.5.sp,
+                            color = LbInk3,
+                            lineHeight = 17.sp,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+                LbPrimaryButton(
+                    "添加照片",
+                    {
+                        albumPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
                 )
             }
         } else {
-            val shown = localPhotos.take(2)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                shown.forEach { m ->
-                    StripPhoto(m.photo, "${m.name} · ${m.label}", Modifier.weight(1f))
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                store.album.reversed().chunked(3).forEach { rowPhotos ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        rowPhotos.forEach { p ->
+                            AlbumThumb(p, Modifier.weight(1f)) { albumViewer = p }
+                        }
+                        repeat((3 - rowPhotos.size).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
+                    }
                 }
-                repeat((2 - shown.size).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
             }
         }
 
@@ -678,6 +803,18 @@ fun FamilyScreen() {
             },
         )
     }
+
+    albumViewer?.let { p ->
+        AlbumViewerDialog(
+            photo = p,
+            onDelete = {
+                store.removeAlbumPhoto(p.id)
+                albumViewer = null
+                Toast.makeText(ctx, "已从相册删除", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { albumViewer = null },
+        )
+    }
 }
 
 private fun emergencySummary(store: ButlerStore): String {
@@ -795,7 +932,7 @@ private fun MemberMenuDialog(
             Column(Modifier.padding(20.dp)) {
                 Text(name, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text("想为这位家人做什么？", fontSize = 12.sp, color = LbInk3, modifier = Modifier.padding(top = 4.dp))
-                MenuRow(LbIcons.camera, "换一张照片", onPhoto, Modifier.padding(top = 12.dp))
+                MenuRow(LbIcons.camera, "换一张头像", onPhoto, Modifier.padding(top = 12.dp))
                 MenuRow(LbIcons.pencil, "编辑称呼与日期", onEdit, Modifier.padding(top = 8.dp))
                 MenuRow(LbIcons.trash, "从列表移除", onRemove, Modifier.padding(top = 8.dp), danger = true)
                 Box(
@@ -847,32 +984,67 @@ private fun MenuRow(
     }
 }
 
+/** 相册缩略图:方形裁切,点了看大图 */
 @Composable
-private fun StripPhoto(path: String, cap: String, modifier: Modifier = Modifier) {
+private fun AlbumThumb(photo: ButlerPhoto, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
         modifier
-            .height(104.dp)
-            .clip(RoundedCornerShape(14.dp)),
+            .height(96.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(LbSurface2)
+            .clickable(onClick = onClick),
     ) {
-        LocalImage(path, Modifier.fillMaxSize())
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    androidx.compose.ui.graphics.Brush.verticalGradient(
-                        0.45f to Color.Transparent,
-                        1f to Color(0xB31E2A24),
-                    ),
-                ),
-        )
-        Text(
-            cap,
-            fontSize = 10.5.sp,
-            color = Color(0xFFF6F5F0),
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 10.dp, bottom = 8.dp),
-        )
+        LocalImage(photo.path, Modifier.fillMaxSize(), ContentScale.Crop, maxDim = 320)
+    }
+}
+
+/** 看大图:点任意处关闭,底部可以删掉这一张 */
+@Composable
+private fun AlbumViewerDialog(photo: ButlerPhoto, onDelete: () -> Unit, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(24.dp), color = LbDark) {
+            Column(Modifier.padding(12.dp)) {
+                LocalImage(
+                    photo.path,
+                    Modifier
+                        .fillMaxWidth()
+                        .height(330.dp)
+                        .clip(RoundedCornerShape(16.dp)),
+                    ContentScale.Fit,
+                    maxDim = 1280,
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, start = 4.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (photo.note.isNotEmpty()) photo.note else "只存在这台手机上",
+                        fontSize = 11.sp,
+                        color = Color(0x99F6F5F0),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0x1FF6F5F0))
+                            .clickable(onClick = onDelete)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(LbIcons.trash, contentDescription = null, tint = LbOnDark, modifier = Modifier.size(14.dp))
+                            Text(
+                                "删除这张",
+                                fontSize = 12.sp,
+                                color = LbOnDark,
+                                modifier = Modifier.padding(start = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -893,6 +1065,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
     }
     var showReminder by remember { mutableStateOf(false) }
+    var showAi by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
     var showRestore by remember { mutableStateOf(false) }
     var restoreInitial by remember { mutableStateOf("") }
@@ -1090,6 +1263,11 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                     Triple(LbIcons.users, "家庭守护设置", "连接到「家庭」页"),
                     Triple(LbIcons.moon, "深色模式", if (store.darkMode.value) "已开启" else "已关闭"),
                     Triple(LbIcons.cloud, "桌面天气", if (weatherOn) "已开启" else "未开启（不联网）"),
+                    Triple(
+                        LbIcons.messageCircle,
+                        "AI 智能管家",
+                        if (AiConfig.isReady(ctx)) "已接入" else "未接入（离线规则）",
+                    ),
                     Triple(LbIcons.fileText, "本月月报", "花销 · 订阅 · 省下"),
                     Triple(LbIcons.shieldLock, "数据与隐私", "全部保存在本机"),
                     Triple(LbIcons.download, "导出家庭档案", "一键整理成文本"),
@@ -1118,6 +1296,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                                         }
                                     }
                                     "桌面天气" -> showWeather = true
+                                    "AI 智能管家" -> showAi = true
                                     "本月月报" -> onOpenReport()
                                     "数据与隐私" -> showData = true
                                     "载入演示数据" -> showDemo = true
@@ -1195,7 +1374,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v1.9.0",
+            "生活管家 · v2.0.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
@@ -1225,10 +1404,11 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
     if (showData) {
         val totalRecords = store.tasks.size + store.subs.size + store.obligations.size +
             store.members.size + store.keyDates.size + store.archive.size +
-            store.chat.size + store.expenses.size + store.charges.size + store.archiveFileCount()
+            store.chat.size + store.expenses.size + store.charges.size + store.archiveFileCount() +
+            store.album.size
         LbConfirmDialog(
             title = "数据与隐私",
-            text = "所有数据只保存在本机，不联网上传，卸载即清除（天气是可选下载项，可在「桌面天气」里关闭）。\n\n当前共 $totalRecords 条记录，其中已归档文件 ${store.archiveFileCount()} 份。",
+            text = "所有数据只存在这台手机上，卸载即清除。\n\n只有两处会联网，且都由你自己决定：\n① 桌面天气（可随时关闭）；\n② AI 智能管家——你填了接口和 Key 才会启用，启用后你说的话以及一份本机数据摘要会发给你指定的那个模型服务，用来回答问题和执行记录。没填就完全离线。\n\n当前共 $totalRecords 条记录，其中家庭相册 ${store.album.size} 张、已归档文件 ${store.archiveFileCount()} 份。",
             confirmText = "知道了",
             onDismiss = { showData = false },
             onConfirm = { showData = false },
@@ -1252,7 +1432,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
     if (showClear) {
         LbConfirmDialog(
             title = "清空全部数据？",
-            text = "将删除全部记录（待办 / 订阅 / 对话 / 家人 / 日期），从零开始；此操作不可恢复。",
+            text = "将删除全部记录（待办 / 订阅 / 对话 / 家人 / 相册 / 日期），从零开始；此操作不可恢复。",
             confirmText = "清空",
             onDismiss = { showClear = false },
             onConfirm = {
@@ -1260,6 +1440,25 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                 showClear = false
                 Toast.makeText(ctx, "已清空，从今天开始记录", Toast.LENGTH_SHORT).show()
             },
+        )
+    }
+
+    if (showAi) {
+        AiManagerDialog(
+            initialBase = AiConfig.base(ctx),
+            initialKey = AiConfig.key(ctx),
+            initialModel = AiConfig.model(ctx),
+            onSave = { b, k, m ->
+                AiConfig.save(ctx, b, k, m)
+                showAi = false
+                Toast.makeText(ctx, "已保存，去「对话」页就能用了", Toast.LENGTH_SHORT).show()
+            },
+            onClear = {
+                AiConfig.clear(ctx)
+                showAi = false
+                Toast.makeText(ctx, "已关闭，回到离线规则模式", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showAi = false },
         )
     }
 
@@ -1348,7 +1547,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
     if (showRestore) {
         LbPasteDialog(
             title = "恢复备份",
-            hint = "把之前复制的备份内容粘贴到下面（含头像与家人照片）。",
+            hint = "把之前复制的备份内容粘贴到下面（含头像、家庭相册与家人照片）。",
             initial = restoreInitial,
             onDismiss = { showRestore = false },
             onConfirm = { raw ->
@@ -1370,7 +1569,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
     restorePending?.let { raw ->
         LbConfirmDialog(
             title = "恢复这份备份？",
-            text = "将覆盖当前全部数据（待办 / 订阅 / 对话 / 家人 / 照片），无法撤销。",
+            text = "将覆盖当前全部数据（待办 / 订阅 / 对话 / 家人 / 相册 / 照片），无法撤销。",
             confirmText = "覆盖恢复",
             onDismiss = { restorePending = null },
             onConfirm = {
@@ -1399,20 +1598,214 @@ private fun LocalPhoto(path: String, fallbackRes: Int, modifier: Modifier = Modi
     }
 }
 
+/** 按需要的尺寸解码本机图片,避免把整张原图读进内存(缩略图只解到 maxDim) */
+private fun decodeLocal(path: String, maxDim: Int): android.graphics.Bitmap? {
+    return try {
+        if (maxDim <= 0) {
+            android.graphics.BitmapFactory.decodeFile(path)
+        } else {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(path, bounds)
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= maxDim && bounds.outHeight / (sample * 2) >= maxDim) sample *= 2
+            android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+        }
+    } catch (e: Exception) {
+        null
+    }
+}
+
 /** 只渲染本机真实存在的图片;取不到就什么都不画,不拿占位图顶替 */
 @Composable
-private fun LocalImage(path: String, modifier: Modifier = Modifier) {
-    val bmp = remember(path) {
-        if (path.isEmpty()) null else android.graphics.BitmapFactory.decodeFile(path)?.asImageBitmap()
+private fun LocalImage(
+    path: String,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    maxDim: Int = 0,
+) {
+    val bmp = remember(path, maxDim) {
+        if (path.isEmpty()) null else decodeLocal(path, maxDim)?.asImageBitmap()
     }
     if (bmp != null) {
-        Image(bitmap = bmp, contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop)
+        Image(bitmap = bmp, contentDescription = null, modifier = modifier, contentScale = contentScale)
     } else {
         Box(
             modifier.background(LbSurface2),
             contentAlignment = Alignment.Center,
         ) {
             Text("图片已失效", fontSize = 11.sp, color = LbInk3)
+        }
+    }
+}
+
+/* ── AI 管家配置弹窗 ── */
+
+@Composable
+private fun AiField(label: String, value: String, hint: String, onChange: (String) -> Unit) {
+    Column(Modifier.padding(top = 10.dp)) {
+        Text(label, fontSize = 11.5.sp, color = LbInk3)
+        Surface(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = LbBg,
+            border = androidx.compose.foundation.BorderStroke(1.dp, LbLine),
+        ) {
+            Box(Modifier.padding(horizontal = 12.dp, vertical = 11.dp)) {
+                if (value.isEmpty()) {
+                    Text(hint, fontSize = 12.sp, color = LbInk3)
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onChange,
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 12.5.sp, color = LbInk),
+                    cursorBrush = SolidColor(LbAccent),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 配置 AI 管家。三项都填了才生效;填不全就等于没接,对话页会明说是离线规则模式。
+ * Key 只写在本机 SharedPreferences,不进备份文本。
+ */
+@Composable
+private fun AiManagerDialog(
+    initialBase: String,
+    initialKey: String,
+    initialModel: String,
+    onSave: (String, String, String) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var base by remember { mutableStateOf(initialBase) }
+    var key by remember { mutableStateOf(initialKey) }
+    var model by remember { mutableStateOf(initialModel) }
+    var testing by remember { mutableStateOf(false) }
+    var testOk by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val hadConfig = initialBase.isNotBlank() || initialKey.isNotBlank() || initialModel.isNotBlank()
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
+            Column(
+                Modifier
+                    .padding(20.dp)
+                    .heightIn(max = 540.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text("AI 智能管家", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text(
+                    "填一个 OpenAI 兼容的接口，对话页就能听懂整句话。Key 只写在你这台手机上，不进备份文本，也不会发给这个地址以外的任何服务。",
+                    fontSize = 11.5.sp,
+                    color = LbInk3,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+
+                Text("常用服务（点一下自动填好）", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 12.dp))
+                AI_PRESETS.forEach { p ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(LbBg)
+                            .clickable {
+                                base = p.base
+                                model = p.model
+                                testResult = null
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(p.label, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = LbInk, modifier = Modifier.weight(1f))
+                        Text(p.model, fontSize = 10.5.sp, color = LbInk3)
+                    }
+                }
+
+                AiField("接口地址", base, "如 https://api.deepseek.com/v1") { base = it; testResult = null }
+                AiField("API Key", key, "sk-…（只存在本机）") { key = it; testResult = null }
+                AiField("模型名", model, "如 deepseek-chat") { model = it; testResult = null }
+
+                testResult?.let {
+                    Text(
+                        it,
+                        fontSize = 11.5.sp,
+                        color = if (testOk) LbAccent else LbRust,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 9.dp),
+                    )
+                }
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(LbSurface2)
+                        .clickable(enabled = !testing) {
+                            testing = true
+                            testResult = null
+                            scope.launch {
+                                val err = AiButler.ping(base, key, model)
+                                testing = false
+                                testOk = err == null
+                                testResult = err ?: "通了，这个接口能用。"
+                            }
+                        }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (testing) "正在测试…" else "测试连接（不写入任何记录）",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbInk2,
+                    )
+                }
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    LbGhostButton("取消", onDismiss, Modifier.weight(1f))
+                    LbPrimaryButton("保存", {
+                        if (base.isBlank() || key.isBlank() || model.isBlank()) {
+                            testOk = false
+                            testResult = "三项都要填上才生效；只想用离线规则模式的话，直接点「取消」。"
+                        } else {
+                            onSave(base, key, model)
+                        }
+                    }, Modifier.weight(1f))
+                }
+
+                if (hadConfig) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "关闭 AI（回到离线规则模式）",
+                            fontSize = 12.sp,
+                            color = LbRust,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(onClick = onClear)
+                                .padding(8.dp),
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1634,7 +2027,7 @@ private fun BackupDialog(onCopy: () -> Unit, onRestore: () -> Unit, onDismiss: (
             Column(Modifier.padding(20.dp)) {
                 Text("备份与恢复", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    "备份会复制一段本机数据文本（含头像与家人照片），保存到聊天记录或文件即可；换机后粘贴即可恢复（覆盖当前数据）。",
+                    "备份会复制一段本机数据文本（含头像、家庭相册与家人照片），保存到聊天记录或文件即可；换机后粘贴即可恢复（覆盖当前数据）。",
                     fontSize = 12.sp,
                     color = LbInk3,
                     lineHeight = 18.sp,
@@ -1684,6 +2077,10 @@ private fun buildExport(store: ButlerStore): String {
     store.obligations.forEach { sb.append("- ${it.title}:${store.daysText(it.date)}${if (it.done) "（已完成）" else ""}\n") }
     sb.append("\n【档案】\n")
     store.archive.forEach { sb.append("- ${it.title}:${it.files.size} 个文件 · ${it.note}\n") }
+    if (store.album.isNotEmpty()) {
+        sb.append("\n【家庭相册】\n")
+        sb.append("- 共 ${store.album.size} 张照片,照片文件只存在本机,不随文本导出\n")
+    }
     return sb.toString()
 }
 
@@ -1964,6 +2361,7 @@ fun VaultScreen(onOpenStates: () -> Unit) {
                                                 Modifier
                                                     .size(30.dp)
                                                     .clip(RoundedCornerShape(7.dp)),
+                                                maxDim = 160,
                                             )
                                         }
                                     }
@@ -2389,6 +2787,7 @@ fun StatesScreen(onBack: () -> Unit, onOpenScan: () -> Unit) {
                 DataRow("待办", "${store.tasks.count { !it.done }} 件待处理 · 共 ${store.tasks.size} 件")
                 DataRow("义务", "${store.obligations.count { !it.done }} 件待处理 · 共 ${store.obligations.size} 件")
                 DataRow("家人", "${store.members.size} 位")
+                DataRow("相册", "${store.album.size} 张照片")
                 DataRow("档案", "${store.archive.size} 组 · ${store.archiveFileCount()} 个文件")
                 DataRow("对话", "${store.chat.size} 条")
                 DataRow("本机文件占用", sizeText)

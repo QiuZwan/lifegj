@@ -26,6 +26,13 @@ data class ButlerMember(val id: String, val name: String, val label: String, val
 data class ButlerKeyDate(val id: String, val title: String, val date: String, val note: String)
 data class ButlerArchive(val id: String, val title: String, val count: Int, val note: String, val files: List<String>)
 data class ButlerChat(val id: String, val fromUser: Boolean, val text: String, val photoPath: String)
+
+/**
+ * 家庭相册里的一张照片。
+ * 与「家人头像」是两件事:头像 = 每位家人的那张脸(挂在成员卡上);
+ * 相册 = 全家人的照片墙(独立成册,可以放很多张)。两者互不覆盖。
+ */
+data class ButlerPhoto(val id: String, val path: String, val note: String, val at: Long)
 data class ButlerExpense(val id: String, val amount: Double, val category: String, val note: String, val date: String, val at: Long)
 
 /** 真实扣费流水:只由用户手动记录,或扫描/通知真的命中时写入;不由程序推算。 */
@@ -62,6 +69,7 @@ class ButlerStore private constructor(context: Context) {
     val subs: SnapshotStateList<ButlerSub> = mutableStateListOf()
     val obligations: SnapshotStateList<ButlerObligation> = mutableStateListOf()
     val members: SnapshotStateList<ButlerMember> = mutableStateListOf()
+    val album: SnapshotStateList<ButlerPhoto> = mutableStateListOf()
     val keyDates: SnapshotStateList<ButlerKeyDate> = mutableStateListOf()
     val archive: SnapshotStateList<ButlerArchive> = mutableStateListOf()
     val chat: SnapshotStateList<ButlerChat> = mutableStateListOf()
@@ -284,6 +292,45 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
+    /* ── 家庭相册(与家人头像分开存,互不覆盖) ── */
+
+    /** 一次可多选:每张单独压缩后落盘,返回真正存进去的张数 */
+    fun addAlbumPhotos(uris: List<android.net.Uri>, note: String = ""): Int {
+        var ok = 0
+        uris.forEach { u ->
+            try {
+                val f = fileOf("album_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.jpg")
+                if (saveShrunk(u, f, 1600)) {
+                    album.add(ButlerPhoto(id(), f.absolutePath, note.trim(), System.currentTimeMillis()))
+                    ok++
+                }
+            } catch (e: Exception) {
+            }
+        }
+        if (ok > 0) save()
+        return ok
+    }
+
+    fun updateAlbumNote(id: String, note: String) {
+        val i = album.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            album[i] = album[i].copy(note = note.trim())
+            save()
+        }
+    }
+
+    fun removeAlbumPhoto(id: String) {
+        val i = album.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            try {
+                File(album[i].path).delete()
+            } catch (e: Exception) {
+            }
+            album.removeAt(i)
+            save()
+        }
+    }
+
     /** 对话图片:压缩后存本机,返回可直接渲染的绝对路径 */
     fun saveChatPhoto(uri: android.net.Uri): String? {
         return try {
@@ -502,7 +549,8 @@ class ButlerStore private constructor(context: Context) {
             d.year == year && d.monthValue == month
         }
 
-    private fun guessExpenseCategory(text: String): String = when {
+    /** 从一句话里猜记账分类(离线规则模式和 AI 管家共用) */
+    fun guessExpenseCategory(text: String): String = when {
         Regex("吃|饭|餐|外卖|奶茶|咖啡|火锅|烧烤|水果|零食|早餐|午餐|晚餐|宵夜|食堂").containsMatchIn(text) -> "餐饮"
         Regex("打车|地铁|公交|加油|停车|高铁|机票|单车|滴滴|出租车").containsMatchIn(text) -> "交通"
         Regex("买|购|淘宝|京东|拼多多|快递|衣服|鞋|数码|超市|商场").containsMatchIn(text) -> "购物"
@@ -658,14 +706,17 @@ class ButlerStore private constructor(context: Context) {
 
     fun hasAnyRecord(): Boolean = tasks.isNotEmpty() || subs.isNotEmpty() || obligations.isNotEmpty() ||
         members.isNotEmpty() || keyDates.isNotEmpty() || archive.isNotEmpty() ||
-        expenses.isNotEmpty() || charges.isNotEmpty() || closedHistory.isNotEmpty()
+        expenses.isNotEmpty() || charges.isNotEmpty() || closedHistory.isNotEmpty() ||
+        album.isNotEmpty()
 
     /** 清空全部数据(从空开始,仅保留一句欢迎语) */
     fun clearAll() {
         // 顺带清掉本机私人文件,避免「已清空」后照片还留在磁盘上
         try {
             appCtx.filesDir.listFiles()?.forEach { f ->
-                if (f.isFile && (f.name.startsWith("member_") || f.name.startsWith("chat_") || f.name.startsWith("arch_"))) f.delete()
+                if (f.isFile && (f.name.startsWith("member_") || f.name.startsWith("chat_") ||
+                        f.name.startsWith("arch_") || f.name.startsWith("album_"))
+                ) f.delete()
             }
         } catch (e: Exception) {
         }
@@ -684,7 +735,7 @@ class ButlerStore private constructor(context: Context) {
     private fun clearLists() {
         tasks.clear(); subs.clear(); obligations.clear(); members.clear()
         keyDates.clear(); archive.clear(); chat.clear(); expenses.clear()
-        charges.clear(); closedHistory.clear(); dismissed.clear()
+        charges.clear(); closedHistory.clear(); dismissed.clear(); album.clear()
     }
 
     /* ── 备份与恢复 ── */
@@ -713,6 +764,7 @@ class ButlerStore private constructor(context: Context) {
             }
             putFile(File(appCtx.filesDir, "avatar_v1.jpg"))
             members.forEach { m -> if (m.photo.startsWith("/")) putFile(File(m.photo)) }
+            album.forEach { p -> if (p.path.startsWith("/")) putFile(File(p.path)) }
             chat.forEach { c -> if (c.photoPath.startsWith("/")) putFile(File(c.photoPath)) }
             archive.forEach { a -> a.files.forEach { putFile(fileOf(it)) } }
             if (blobs.length() > 0) base.put("fileBlobs", blobs)
@@ -767,6 +819,14 @@ class ButlerStore private constructor(context: Context) {
             val n = if (p.startsWith("/")) File(p).name else ""
             if (n.isNotEmpty() && n in names) {
                 members[i] = members[i].copy(photo = fileOf(n).absolutePath)
+                changed = true
+            }
+        }
+        for (i in album.indices) {
+            val p = album[i].path
+            val n = if (p.startsWith("/")) File(p).name else ""
+            if (n.isNotEmpty() && n in names) {
+                album[i] = album[i].copy(path = fileOf(n).absolutePath)
                 changed = true
             }
         }
@@ -874,6 +934,7 @@ class ButlerStore private constructor(context: Context) {
             o.put("subs", arr(subs) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("date", it.nextDate).put("closing", it.closing).put("source", it.source).put("closingAt", it.closingAt) })
             o.put("obligations", arr(obligations) { JSONObject().put("id", it.id).put("title", it.title).put("note", it.note).put("date", it.date).put("tag", it.tag).put("done", it.done) })
             o.put("members", arr(members) { JSONObject().put("id", it.id).put("name", it.name).put("label", it.label).put("date", it.date).put("photo", it.photo) })
+            o.put("album", arr(album) { JSONObject().put("id", it.id).put("path", it.path).put("note", it.note).put("at", it.at) })
             o.put("keyDates", arr(keyDates) { JSONObject().put("id", it.id).put("title", it.title).put("date", it.date).put("note", it.note) })
             o.put("archive", arr(archive) {
                 JSONObject()
@@ -940,6 +1001,12 @@ class ButlerStore private constructor(context: Context) {
                 for (i in 0 until a.length()) {
                     val j = a.getJSONObject(i)
                     members.add(ButlerMember(j.getString("id"), j.getString("name"), j.optString("label"), j.optString("date"), j.optString("photo")))
+                }
+            }
+            o.optJSONArray("album")?.let { a ->
+                for (i in 0 until a.length()) {
+                    val j = a.getJSONObject(i)
+                    album.add(ButlerPhoto(j.getString("id"), j.optString("path"), j.optString("note"), j.optLong("at", 0L)))
                 }
             }
             o.optJSONArray("keyDates")?.let { a ->
