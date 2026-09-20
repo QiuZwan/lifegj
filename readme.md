@@ -36,17 +36,17 @@
 
 | 界面 | 位置 | 对应设计稿 |
 |---|---|---|
-| 今日 · 晨间简报 | `ui/screens/ScreensToday.kt` | 01 |
-| 扣款守护 · 扣款全景 | `ui/screens/ScreensGuard.kt` | 02 |
-| 订阅详情 · 拦截处置 | `ScreensGuard.kt / SubscriptionDetailScreen` | 03 |
-| 义务时间线 · 证件与保单 | `ScreensGuard.kt / ObligationsScreen` | 04 |
-| 智能管家 · 说一句就替你办 | `ui/screens/ScreensLife.kt / ChatScreen` | 05 |
-| 家庭守护 · 家人 / 相册 / 关键日期 | `ScreensLife.kt / FamilyScreen` | 06 |
-| 我的 · 托管中心 | `ScreensLife.kt / MineScreen` | 07 |
-| 档案库 · 证件与证据 | `ScreensLife.kt / VaultScreen` | 08 |
-| 系统状态 · 本机运行状态 | `ScreensLife.kt / StatesScreen` | 09 |
-| 记账本 · 花销明细 | `ui/screens/ScreensLedger.kt` | 新增 |
-| 月报 · 本月回顾 | `ui/screens/ScreensReport.kt` | 新增 |
+| 今日 · 晨间简报 | `ui/screens/screenstoday.kt` | 01 |
+| 扣款守护 · 扣款全景 | `ui/screens/screensguard.kt` | 02 |
+| 订阅详情 · 拦截处置 | `screensguard.kt / SubscriptionDetailScreen` | 03 |
+| 义务时间线 · 证件与保单 | `screensguard.kt / ObligationsScreen` | 04 |
+| 智能管家 · 说一句就替你办 | `ui/screens/screenslife.kt / ChatScreen` | 05 |
+| 家庭守护 · 家人 / 相册 / 关键日期 | `screenslife.kt / FamilyScreen` | 06 |
+| 我的 · 托管中心 | `screenslife.kt / MineScreen` | 07 |
+| 档案库 · 证件与证据 | `screenslife.kt / VaultScreen` | 08 |
+| 系统状态 · 本机运行状态 | `screenslife.kt / StatesScreen` | 09 |
+| 记账本 · 花销明细 | `ui/screens/screensledger.kt` | 新增 |
+| 月报 · 本月回顾 | `ui/screens/screensreport.kt` | 新增 |
 | 备忘录 · 随手记 | `ui/screens/ScreensMemo.kt` | 新增 |
 
 ## 数据与链路（本机数据版）
@@ -143,7 +143,7 @@ v2.0/v2.1 的 AI 管家要你自己去注册、拿 Key、粘进来，才能听�
 
 **用户能怎么改**：「我的 → AI 智能管家」→ 顶部「内置免费额度」卡片上的按钮一键开启 / 关闭；关掉之后没填自己的 Key，就回到离线规则模式。想换成自己的，把三项填上保存即可。
 
-**开发者怎么换 / 撤这把 Key**（全部在 `data/AiButler.kt`）：
+**开发者怎么换 / 撤这把 Key**（全部在 `data/aibutler.kt`）：
 
 - 换 Key：把 `BUILTIN_KEY_REVERSED` 改成新 Key 的**倒序字符串**（用 Python 一行就能算：`print(key[::-1])`）。
 - 换平台或换模型：改 `BUILTIN_BASE` / `BUILTIN_MODEL`；换成非智谱的服务时注意 `AiButler.postJson()` 里用的是 `Authorization: Bearer $key`（智谱与绝大多数 OpenAI 兼容服务都是这个）。
@@ -246,26 +246,28 @@ v2.0/v2.1 的 AI 管家要你自己去注册、拿 Key、粘进来，才能听�
 
 ## 修改指南
 
-- 颜色 / 圆角 / 字体阶梯：`ui/theme/Theme.kt`（token 与设计稿一一对应）。
-- 数据层：字段、派生统计、日期计算与对话回复规则均在 `data/ButlerStore.kt`。相册模型是 `ButlerPhoto`（字段 `path` 为绝对路径），与 `ButlerMember.photo`（家人头像）互不相关。
-- 备忘录：模型 `ButlerMemo`、分类列表 `memoCategories`、增删改 / 搜索 `searchMemos()` / 排序 `sortedMemos()` / 分类管理都在 `data/ButlerStore.kt`；界面在 `ui/screens/ScreensMemo.kt`（含编辑弹窗与提醒时间选择器）。单条提醒的闹钟与通知集中在 `data/Reminders.kt` 的 `MemoReminders`（排期 / 取消 / 重排）与 `MemoReceiver`（到点发通知）；收件器已在 `AndroidManifest.xml` 声明，开机时随每日简报一起 `rescheduleAll()`。**要改提醒行为，只动这两个对象即可，界面无需改动。**
-- AI 管家：`data/AiButler.kt`。上半部分是 `AiConfig`（配置读写 + 掩码 + 内置额度），下半部分是 `AiButler`（`ask()` 一次请求拿 reply + actions、`ping()` 测连接、`systemPrompt()` / `snapshot()` 组装提示词与快照、`applyAction()` 校验并落库、`repairActions()` 追补动作）。**要加一个可执行动作，只需在 `applyAction()` 里加一个 `case`，并在 `ACTION_CHEATSHEET`（动作格式表）里加一行**——那份格式表被系统提示词和「追补」那一轮共用，改一处两边都跟上；另外把新动作写进 `resolveScreen()`（只有跳转类才需要）。配置入口 UI 是 `ScreensLife.kt / AiManagerDialog`。
+- 颜色 / 圆角 / 字体阶梯：`ui/theme/theme.kt`（token 与设计稿一一对应）。
+- 数据层：字段、派生统计、日期计算与对话回复规则均在 `data/butlerstore.kt`。相册模型是 `ButlerPhoto`（字段 `path` 为绝对路径），与 `ButlerMember.photo`（家人头像）互不相关。
+- 备忘录：模型 `ButlerMemo`、分类列表 `memoCategories`、增删改 / 搜索 `searchMemos()` / 排序 `sortedMemos()` / 分类管理都在 `data/butlerstore.kt`；界面在 `ui/screens/ScreensMemo.kt`（含编辑弹窗与提醒时间选择器）。单条提醒的闹钟与通知集中在 `data/reminders.kt` 的 `MemoReminders`（排期 / 取消 / 重排）与 `MemoReceiver`（到点发通知）；收件器已在 `androidmanifest.xml` 声明，开机时随每日简报一起 `rescheduleAll()`。**要改提醒行为，只动这两个对象即可，界面无需改动。**
+- AI 管家：`data/aibutler.kt`。上半部分是 `AiConfig`（配置读写 + 掩码 + 内置额度），下半部分是 `AiButler`（`ask()` 一次请求拿 reply + actions、`ping()` 测连接、`systemPrompt()` / `snapshot()` 组装提示词与快照、`applyAction()` 校验并落库、`repairActions()` 追补动作）。**要加一个可执行动作，只需在 `applyAction()` 里加一个 `case`，并在 `ACTION_CHEATSHEET`（动作格式表）里加一行**——那份格式表被系统提示词和「追补」那一轮共用，改一处两边都跟上；另外把新动作写进 `resolveScreen()`（只有跳转类才需要）。配置入口 UI 是 `screenslife.kt / AiManagerDialog`。
 - 「说了却没做」的防线（别拆掉）：`applyAction()` 返回 `Applied(what, wrote)`，只有 `wrote=true` 才算办成——「没找到…未改动」这类解释性返回必须以「未改动」结尾，否则会被当成成功，让模型的假承诺躲过校对。`looksLikeClaim()` 判断回复像不像在宣称办好了，是的话就 `repairActions()` 追一次；追完仍没落库，回复后面会挂一句「这句我没能写进本机」。
 - AI 的「用哪一套配置」全部走 `AiConfig.source()`：`OWN`（用户自己填的三项齐全）> `BUILTIN`（内置共享额度，默认开）> `NONE`（离线规则模式）。需要发请求的地方一律用 `AiConfig.effBase()/effKey()/effModel()`，**不要直接读 `base()/key()/model()`**，否则会绕过内置额度。内置额度相关的常量（`BUILTIN_BASE / BUILTIN_MODEL / BUILTIN_KEY_REVERSED / BUILTIN_LABEL`）都在这个文件顶部。
 - 数据落盘：`ButlerStore` 的 `init { load() }` **必须留在类体的最后**（见文件末尾的注释）。Kotlin 按声明顺序初始化属性，`load()` 里的 `save()` 用到了声明在后面的字段；放到前面执行会抛 NPE 被 `save()` 的 catch 吞掉，现象是「首装后 prefs 一直是空的、界面却正常」，极难查。
 - 端到端自测（Windows + 模拟器）：`.workbuddy/tools/e2e_ask.py` 用 `--es ask` 深链逐条发中文、再用 `--es dump` 把本机记录读回来核对真有没有落库（不只看回复文字）。`.workbuddy/tools/prompt_probe.py` 从源码里抽出真实提示词，在宿主机上直接打模型、秒级看它回了什么（改提示词的迭代用这个，别每次重装 App）。`.workbuddy/tools/model_ab.py` 横向比几个模型「会不会老实发动作」。**读本机记录不要退回去读 `shared_prefs`**：那是异步落盘，会读到旧内容。
 - 要看界面实机长什么样：`.workbuddy/tools/grab_shot.py --open-tab 智能管家 --out x.png`。它用 `open_tab` 深链直达目标页（**全程不发输入事件**），并在启动后高频截图、按画面特征自动挑出目标页那一帧。为什么这么绕：这台模拟器没有硬件加速，应用渲染首帧要 40~60 秒，之后系统会因为「5 秒内没响应焦点事件」把它 ANR 强杀 —— 所以**不能用 `input tap` 导航**（点本身就触发输入超时）。判定「还在启动图」的判据是**纯黑像素占比**（启动图 0.94 / 应用深色页 0.001），不要用「底部导航栏有没有内容」，系统手势白条会被误判。`.workbuddy/tools/shot_screen.py` 是按文字点控件的旧方案，`uiautomator dump` 在这种机器上经常直接失败，仅供备用。
 - 打包产物自证：`.workbuddy/tools/verify_apk.py`。**不要用文件大小判断包有没有更新**（历史上两个内容不同的 APK 字节数完全一样过）。它按内容查三件事：资源按 **SHA-1 哈希**比对（release 会被 `optimizeReleaseResources` 改名成 `res/3t.webp` 这种短名，按文件名找不到）、`classes*.dex` 里应有/不应有的字符串、`output-metadata.json` 的版本号。发布到 GitHub 的包建议再核一次哈希，见 `.workbuddy/tools/gh_release.py`。
-- 扫描逻辑（短信 / 通知关键词、商户提取、扣费日期解析、应用白名单、线索池）：`data/SubScanner.kt`；通知监听服务：`data/NotifListenerService.kt`；对应权限与 `<queries>`、服务声明在 `AndroidManifest.xml`。
-- 档案文件：存于 `filesDir`，对外只读授权走 `res/xml/file_paths.xml` + `AndroidManifest.xml` 里的 FileProvider（authority 为 `${applicationId}.fileprovider`）。
+- 扫描逻辑（短信 / 通知关键词、商户提取、扣费日期解析、应用白名单、线索池）：`data/subscanner.kt`；通知监听服务：`data/notiflistenerservice.kt`；对应权限与 `<queries>`、服务声明在 `androidmanifest.xml`。
+- 档案文件：存于 `filesDir`，对外只读授权走 `res/xml/file_paths.xml` + `androidmanifest.xml` 里的 FileProvider（authority 为 `${applicationId}.fileprovider`）。
 - 本机图片：`decodeLocal(path, maxDim)` 按需下采样解码；`LocalImage` / `LocalPhoto` 是唯一渲染入口，传 `maxDim` 控制缩略图内存。新增图片位要记得传 `maxDim`。
 - 图标：`ui/icons/LbIcons.kt`（Tabler 路径内联；增改图标直接编辑 pathData）。
-- 「智能管家」的 3D 管家插图：`res/drawable-xxhdpi/lb_butler3d.webp`，界面在 `ui/screens/ScreensLife.kt` 的 `ChatScreen` 空态里，按 `aspectRatio(1.2f)` 摆（1.200 是这张图的宽高比，换图要一起改）。重做插图走 `design/butler3d/make_butler3d.py`（抠背景 → 裁掉生成水印 → 出 WebP + 浅/深色底预览），**别手工裁**；源图、脚本与预览都在 `design/butler3d/`。**它是位图不是矢量**，所以不再有 `values-night` 配色那套机制。
+- 「智能管家」的 3D 管家插图：`res/drawable-xxhdpi/lb_butler3d.webp`，界面在 `ui/screens/screenslife.kt` 的 `ChatScreen` 空态里，按 `aspectRatio(1.2f)` 摆（1.200 是这张图的宽高比，换图要一起改）。重做插图走 `design/butler3d/make_butler3d.py`（抠背景 → 裁掉生成水印 → 出 WebP + 浅/深色底预览），**别手工裁**；源图、脚本与预览都在 `design/butler3d/`。**它是位图不是矢量**，所以不再有 `values-night` 配色那套机制。
 - 演示数据：「我的 → 载入演示数据」触发，实现在 `ButlerStore.loadDemo()`；演示订阅的来源字段标为「演示」，界面显示角标。**不要把演示数据写进 `load()`**，首启必须为空。
 - 图片：`res/drawable-nodpi/` 下的 jpg。当前被代码引用的只有这 9 张：`hero_morning / archive_papers / family_home / review_journal / vault_shelf / avatar_mom / avatar_dad / avatar_user / avatar_cat`；同目录下的 `focus_desk / chat_faucet / family_tea / guard_wallet` 暂未被引用（早期版式留下的素材，删掉不影响构建）。**例外**：「智能管家」那张 3D 管家插图在 `res/drawable-xxhdpi/lb_butler3d.webp`（带 alpha，深浅色共用），不在这个目录——它需要按密度下采样，放进 nodpi 会一律按原始像素解码。
-- 应用名：`AndroidManifest.xml` 中 `android:label`；版本号在 `app/build.gradle.kts`（`versionCode` / `versionName`）与 `ScreensLife.kt` 页脚文案两处，改的时候别只改一处。
+- 应用名：`androidmanifest.xml` 中 `android:label`；版本号在 `app/build.gradle.kts`（`versionCode` / `versionName`）与 `screenslife.kt` 页脚文案两处，改的时候别只改一处。
 - 启动图标：自适应图标 `res/drawable/ic_launcher_background.xml / ic_launcher_foreground.xml / ic_launcher_mono.xml` + `res/mipmap-anydpi-v26/`。
 - 签名与发布：`keystore.properties` + `keystore/*.jks` 为**自用密钥，不入库**。本地补齐这两个文件后 `assembleRelease` 才会输出已签名包；缺失时 `assembleRelease` 会产出未签名包（`build.gradle.kts` 里对签名配置做了存在性判断）。
+- ⚠️ **源码文件名几乎全是小写**，连清单都是 `app/src/main/androidmanifest.xml`（不是 `AndroidManifest.xml`）。只有 `ui/screens/ScreensMemo.kt` 与 `ui/icons/LbIcons.kt` 是首字母大写。
+  Windows 大小写不敏感，所以本机怎么都能构建；但推到 Linux / CI 会因为找不到清单直接失败。**往 CI 上放之前必须先统一改名。** 本文档里的路径已按真实文件名写全小写。
 
 ## 本地构建的两个坑（Windows + 本仓库）
 
