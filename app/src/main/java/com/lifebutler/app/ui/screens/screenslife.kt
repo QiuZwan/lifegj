@@ -70,6 +70,10 @@ import com.lifebutler.app.R
 import com.lifebutler.app.data.AI_PRESETS
 import com.lifebutler.app.data.AiButler
 import com.lifebutler.app.data.AiConfig
+import com.lifebutler.app.data.BUILTIN_BASE
+import com.lifebutler.app.data.BUILTIN_KEY
+import com.lifebutler.app.data.BUILTIN_LABEL
+import com.lifebutler.app.data.BUILTIN_MODEL
 import com.lifebutler.app.data.ButlerMember
 import com.lifebutler.app.data.ButlerPhoto
 import com.lifebutler.app.data.ButlerStore
@@ -133,8 +137,9 @@ fun ChatScreen() {
     val listState = rememberScrollState()
     var draft by remember { mutableStateOf("") }
     var typing by remember { mutableStateOf(false) }
-    // 每次进入这一页都重新问一次配置,刚在「我的」里填完 Key 回来就能用
-    val aiReady = remember { AiConfig.isReady(ctx) }
+    // 每次进入这一页都重新问一次配置:刚在「我的」里填完 Key、或关掉内置额度,回来就能看到变化
+    val aiSource = remember { AiConfig.source(ctx) }
+    val aiReady = aiSource != AiConfig.Source.NONE
     var lastActions by remember { mutableStateOf<List<String>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -177,16 +182,23 @@ fun ChatScreen() {
                         .weight(1f),
                 ) {
                     Text(
-                        if (aiReady) "AI 已接入 · ${AiConfig.model(ctx)}" else "离线规则模式",
+                        // 一行说清现在用的是哪一个,不玩含糊
+                        AiConfig.statusText(ctx),
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = LbInk,
                     )
                     Text(
-                        if (aiReady) {
-                            "能听懂整句话：加订阅、加家人、记日子、记账、问账，说一句就真写进本机。"
-                        } else {
-                            "现在只能记事、记账、查账。去「我的 → AI 智能管家」填一个接口和 Key，就能用自然语言加订阅、家人、日期。"
+                        when (aiSource) {
+                            AiConfig.Source.OWN ->
+                                "能听懂整句话：加订阅、加家人、记日子、记账、问账，说一句就真写进本机。"
+
+                            AiConfig.Source.BUILTIN ->
+                                "不用填任何东西就能用。这份额度是打包在安装包里的共享 Key，用的人多了可能排队或被限流；" +
+                                    "想更稳、或者不想和别人共用，就去「我的 → AI 智能管家」换成自己的 Key。"
+
+                            AiConfig.Source.NONE ->
+                                "现在只能记事、记账、查账。去「我的 → AI 智能管家」打开内置免费额度，或者填一个自己的接口。"
                         },
                         fontSize = 11.sp,
                         color = LbInk3,
@@ -1267,7 +1279,11 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                     Triple(
                         LbIcons.messageCircle,
                         "AI 智能管家",
-                        if (AiConfig.isReady(ctx)) "已接入" else "未接入（离线规则）",
+                        when (AiConfig.source(ctx)) {
+                            AiConfig.Source.OWN -> "你自己的接口"
+                            AiConfig.Source.BUILTIN -> "内置免费额度"
+                            AiConfig.Source.NONE -> "未接入（离线规则）"
+                        },
                     ),
                     Triple(LbIcons.fileText, "本月月报", "花销 · 订阅 · 省下"),
                     Triple(LbIcons.shieldLock, "数据与隐私", "全部保存在本机"),
@@ -1376,7 +1392,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.1.0",
+            "生活管家 · v2.2.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
@@ -1410,7 +1426,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
             store.album.size + store.memos.size
         LbConfirmDialog(
             title = "数据与隐私",
-            text = "所有数据只存在这台手机上，卸载即清除。\n\n只有两处会联网，且都由你自己决定：\n① 桌面天气（可随时关闭）；\n② AI 智能管家——你填了接口和 Key 才会启用，启用后你说的话以及一份本机数据摘要会发给你指定的那个模型服务，用来回答问题和执行记录。没填就完全离线。\n\n当前共 $totalRecords 条记录，其中家庭相册 ${store.album.size} 张、已归档文件 ${store.archiveFileCount()} 份。",
+            text = "所有数据只存在这台手机上，卸载即清除。\n\n会联网的只有两处：\n① 桌面天气（可随时关闭）；\n② AI 智能管家——默认就是开着的，用的是打包在安装包里的共享免费额度（智谱 GLM-4-Flash），所以你不填任何东西它也会联网。启用后，你说的话和一份本机数据摘要会发到 open.bigmodel.cn，用来回答问题和执行记录；这把共享 Key 就在安装包里（代码里倒序存放，防的只是扫包脚本，反编译照样能还原，不是加密），用的人多了也可能排队或被平台限流。介意的话就在「AI 智能管家」里换成自己的 Key，或者把内置额度关掉——关掉又没填自己的，就完全离线。\n\n当前共 $totalRecords 条记录，其中家庭相册 ${store.album.size} 张、已归档文件 ${store.archiveFileCount()} 份。",
             confirmText = "知道了",
             onDismiss = { showData = false },
             onConfirm = { showData = false },
@@ -1450,15 +1466,37 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
             initialBase = AiConfig.base(ctx),
             initialKey = AiConfig.key(ctx),
             initialModel = AiConfig.model(ctx),
+            builtinOn = AiConfig.useBuiltin(ctx),
+            onToggleBuiltin = { on ->
+                AiConfig.setUseBuiltin(ctx, on)
+                Toast.makeText(
+                    ctx,
+                    if (on) "已打开内置免费额度，对话页现在就能用" else "已关掉内置额度；没填自己的 Key 就是离线规则模式",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            },
             onSave = { b, k, m ->
-                AiConfig.save(ctx, b, k, m)
-                showAi = false
-                Toast.makeText(ctx, "已保存，去「对话」页就能用了", Toast.LENGTH_SHORT).show()
+                if (b.isBlank() && k.isBlank() && m.isBlank()) {
+                    // 没填自己的:清掉旧的,继续走内置额度(或者离线,看开关)
+                    AiConfig.clearOwn(ctx)
+                    showAi = false
+                    Toast.makeText(
+                        ctx,
+                        if (AiConfig.useBuiltin(ctx)) "没填自己的接口，继续用内置免费额度" else "没填接口，保持离线规则模式",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    AiConfig.save(ctx, b, k, m)
+                    showAi = false
+                    Toast.makeText(ctx, "已保存，现在用你自己的接口", Toast.LENGTH_SHORT).show()
+                }
             },
             onClear = {
-                AiConfig.clear(ctx)
+                // 两个都关掉,才是真的回到离线规则模式;否则内置额度会顶上,点了像没反应
+                AiConfig.clearOwn(ctx)
+                AiConfig.setUseBuiltin(ctx, false)
                 showAi = false
-                Toast.makeText(ctx, "已关闭，回到离线规则模式", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, "已关掉 AI，回到离线规则模式", Toast.LENGTH_SHORT).show()
             },
             onDismiss = { showAi = false },
         )
@@ -1672,7 +1710,10 @@ private fun AiField(label: String, value: String, hint: String, onChange: (Strin
 }
 
 /**
- * 配置 AI 管家。三项都填了才生效;填不全就等于没接,对话页会明说是离线规则模式。
+ * 配置 AI 管家。三件事分开管:
+ * 1. 内置共享额度(默认开)——开箱就能用,不用填任何东西;
+ * 2. 你自己填的接口(三项齐全时优先级最高,内置额度自动让位);
+ * 3. 两个都关/两个都没有 = 离线规则模式。
  * Key 只写在本机 SharedPreferences,不进备份文本。
  */
 @Composable
@@ -1680,6 +1721,8 @@ private fun AiManagerDialog(
     initialBase: String,
     initialKey: String,
     initialModel: String,
+    builtinOn: Boolean,
+    onToggleBuiltin: (Boolean) -> Unit,
     onSave: (String, String, String) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit,
@@ -1687,6 +1730,7 @@ private fun AiManagerDialog(
     var base by remember { mutableStateOf(initialBase) }
     var key by remember { mutableStateOf(initialKey) }
     var model by remember { mutableStateOf(initialModel) }
+    var builtin by remember { mutableStateOf(builtinOn) }
     var testing by remember { mutableStateOf(false) }
     var testOk by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
@@ -1704,24 +1748,90 @@ private fun AiManagerDialog(
             ) {
                 Text("AI 智能管家", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    "填一个 OpenAI 兼容的接口，对话页就能听懂整句话——说「加个订阅：网易云 15 块，每月 5 号」，它会真的写进守护清单。\n\n" +
-                        "下面内置了十几家，点一下自动填好地址和模型名。但 Key 得你自己去那家注册领一个（本应用不代申请、不内置共享 Key），" +
-                        "点右边的「去拿 Key」会打开它的申请页。Key 只写在你这台手机上，不进备份文本。",
+                    "开箱就已经能用了：安装包里内置了一份共享的免费额度（智谱 GLM-4-Flash，永久免费的模型），" +
+                        "不填任何东西也能听懂整句话——说「加个订阅：网易云 15 块，每月 5 号」，它会真写进守护清单。\n\n" +
+                        "这份额度是所有装了本应用的人共用的，人多时会排队甚至被限流；而且这把 Key 就在安装包里，注定拿得到" +
+                        "（代码里做了倒序存放，防的只是扫包脚本，不算加密）。" +
+                        "想更稳、或者不想和别人共用，就在下面填自己的：内置了十几家，点一下自动填好地址和模型名，" +
+                        "Key 得去那家注册领一个，点「去拿 Key」会打开申请页。自己填的 Key 只写在你这台手机上，不进备份文本。",
                     fontSize = 11.5.sp,
                     color = LbInk3,
                     lineHeight = 17.sp,
                     modifier = Modifier.padding(top = 6.dp),
                 )
 
-                AiField("接口地址", base, "如 https://open.bigmodel.cn/api/paas/v4") { base = it; testResult = null }
-                AiField("API Key", key, "去下面挑那家注册，把 Key 粘进来") { key = it; testResult = null }
-                AiField("模型名", model, "如 glm-4-flash") { model = it; testResult = null }
+                /* ── 内置共享额度:默认开,不填任何东西也能用 ── */
+                Surface(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (builtin) LbAccentSoft else LbBg,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, if (builtin) LbAccent else LbLine),
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 11.dp)) {
+                        Text(
+                            BUILTIN_LABEL,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LbInk,
+                        )
+                        Text(
+                            if (builtin) {
+                                "已开启，现在用的就是它。共享额度，人多时会排队或被限流。"
+                            } else {
+                                "已关闭。没填自己的 Key 的话，对话页就是离线规则模式。"
+                            },
+                            fontSize = 10.5.sp,
+                            color = LbInk3,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Box(
+                            Modifier
+                                .padding(top = 8.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (builtin) LbAccent else LbAccentSoft)
+                                .clickable {
+                                    builtin = !builtin
+                                    onToggleBuiltin(builtin)
+                                    testResult = null
+                                }
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                if (builtin) "关闭内置额度" else "打开内置额度",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (builtin) LbOnAccent else LbAccent,
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    "或者用你自己的接口（三项都填了就以你自己的为准，内置额度自动让位）",
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = LbInk2,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+
+                AiField("接口地址", base, "如 $BUILTIN_BASE") { base = it; testResult = null }
+                AiField("API Key", key, "不填就用上面的内置额度") { key = it; testResult = null }
+                AiField("模型名", model, "如 $BUILTIN_MODEL") { model = it; testResult = null }
 
                 val picked = AI_PRESETS.firstOrNull { it.base == base && it.model == model }
+                val ownFilled = base.isNotBlank() || key.isNotBlank() || model.isNotBlank()
                 Text(
-                    if (picked != null) "当前选的是：${picked.label}" else "当前选的是：自定义（上面三项你自己填的）",
+                    when {
+                        !ownFilled && builtin -> "当前用的：$BUILTIN_LABEL"
+                        !ownFilled -> "当前用的：离线规则模式（内置额度也关着）"
+                        picked != null -> "当前选的是：${picked.label}"
+                        else -> "当前选的是：自定义（上面三项你自己填的）"
+                    },
                     fontSize = 11.sp,
-                    color = if (picked != null) LbAccent else LbInk3,
+                    color = if (ownFilled) LbAccent else LbInk3,
                     modifier = Modifier.padding(top = 9.dp),
                 )
 
@@ -1742,20 +1852,50 @@ private fun AiManagerDialog(
                         .clip(RoundedCornerShape(14.dp))
                         .background(LbSurface2)
                         .clickable(enabled = !testing) {
-                            testing = true
-                            testResult = null
-                            scope.launch {
-                                val err = AiButler.ping(base, key, model)
-                                testing = false
-                                testOk = err == null
-                                testResult = err ?: "通了，这个接口能用。"
+                            val ownReady = base.isNotBlank() && key.isNotBlank() && model.isNotBlank()
+                            val tb: String
+                            val tk: String
+                            val tm: String
+                            val isBuiltin: Boolean
+                            when {
+                                ownReady -> {
+                                    tb = base; tk = key; tm = model; isBuiltin = false
+                                }
+
+                                builtin -> {
+                                    tb = BUILTIN_BASE; tk = BUILTIN_KEY; tm = BUILTIN_MODEL; isBuiltin = true
+                                }
+
+                                else -> {
+                                    tb = ""; tk = ""; tm = ""; isBuiltin = false
+                                }
+                            }
+                            if (tb.isBlank()) {
+                                testOk = false
+                                testResult = "内置额度关着，上面三项也没填全，现在没有可测的东西。"
+                            } else {
+                                testing = true
+                                testResult = null
+                                scope.launch {
+                                    val err = AiButler.ping(tb, tk, tm)
+                                    testing = false
+                                    testOk = err == null
+                                    testResult = err ?: if (isBuiltin) "通了，内置免费额度现在能用。" else "通了，这个接口能用。"
+                                }
                             }
                         }
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        if (testing) "正在测试…" else "测试连接（不写入任何记录）",
+                        when {
+                            testing -> "正在测试…"
+                            base.isNotBlank() && key.isNotBlank() && model.isNotBlank() ->
+                                "测试连接（不写入任何记录）"
+
+                            builtin -> "测试内置免费额度（不写入任何记录）"
+                            else -> "测试连接（不写入任何记录）"
+                        },
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = LbInk2,
@@ -1807,16 +1947,24 @@ private fun AiManagerDialog(
                 ) {
                     LbGhostButton("取消", onDismiss, Modifier.weight(1f))
                     LbPrimaryButton("保存", {
-                        if (base.isBlank() || key.isBlank() || model.isBlank()) {
-                            testOk = false
-                            testResult = "三项都要填上才生效；只想用离线规则模式的话，直接点「取消」。"
-                        } else {
-                            onSave(base, key, model)
+                        val ownFilled = base.isNotBlank() || key.isNotBlank() || model.isNotBlank()
+                        val ownReady = base.isNotBlank() && key.isNotBlank() && model.isNotBlank()
+                        when {
+                            // 一个都没填 = 不打算用自己的接口,那就别报错,按当前设置收工
+                            !ownFilled -> onSave("", "", "")
+
+                            !ownReady -> {
+                                testOk = false
+                                testResult = "三项要么都填、要么都不填。只填一部分不会生效（不想填就全部留空，直接用内置额度）。"
+                            }
+
+                            else -> onSave(base, key, model)
                         }
                     }, Modifier.weight(1f))
                 }
 
-                if (hadConfig) {
+                // 真的接了 AI 才给「关掉」这个出口
+                if (hadConfig || builtin) {
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -1824,7 +1972,7 @@ private fun AiManagerDialog(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "关闭 AI（回到离线规则模式）",
+                            if (hadConfig) "关闭 AI（回到离线规则模式）" else "关掉 AI 与内置额度（回到离线规则模式）",
                             fontSize = 12.sp,
                             color = LbRust,
                             modifier = Modifier

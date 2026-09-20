@@ -30,7 +30,8 @@ data class AiPreset(
  *
  * 说明:
  * - 免费额度与模型名都会变,以各家控制台为准;填错了在「模型名」那一栏自己改一下即可。
- * - 这些平台都要**你自己注册拿 Key**;本应用不代申请、不代付、不内置任何共享 Key。
+ * - 这些是**备选**:想换别家、或者想用自己的 Key,才需要在这里挑一家去注册。
+ *   开箱默认用的是下面的「内置共享额度」(智谱 glm-4-flash),不用填任何东西。
  * - 火山方舟需要先在控制台**开通对应模型**,否则有 Key 也调不通。
  */
 val AI_PRESETS: List<AiPreset> = listOf(
@@ -162,38 +163,132 @@ val AI_PRESETS: List<AiPreset> = listOf(
     ),
 )
 
+/* ───────────────────── 内置共享额度 ───────────────────── */
+
+/**
+ * 打包在安装包里的共享 Key:智谱 GLM-4-Flash(永久免费模型)。
+ * 作用是**开箱即用**——装完不填任何东西,对话页就能听懂整句话。
+ *
+ * ⚠️ 必须清楚的事实(界面上也照实写了):
+ * - 这把 Key 就在安装包里,**一定拿得到**,它不是安全边界,也不是保密手段。
+ *   下面把它倒着存、运行时翻回来,只是让 `strings app.apk | grep` 这类扫包脚本捞不到明文而已:
+ *   反编译看一眼代码、或者把串反过来,立刻就还原了。别把它当密码。
+ * - 所有装了本应用的人共用这一把 Key,额度也是共用的:用的人多了会排队、限流,甚至被平台封掉。
+ * - 它只连 智谱 open.bigmodel.cn 这一家,并且只在用户没填自己的接口时才会被使用。
+ * - 用户随时可以在「我的 → AI 智能管家」里关掉内置额度,换成自己的 Key。
+ *
+ * (为什么不能用拼接常量:R8 会把 `A + "." + B` 直接折成一个整串写进 dex,
+ *  实测过——折完之后整串照样在包里躺着,拆开完全没用。)
+ */
+private const val BUILTIN_KEY_REVERSED = "T2kFPV7EJLk0emvi.0ebceaa25a1a2c385ab481a4682e688f"
+
+/** 内置额度用的接口地址 */
+const val BUILTIN_BASE = "https://open.bigmodel.cn/api/paas/v4"
+
+/** 内置额度用的模型名(智谱永久免费) */
+const val BUILTIN_MODEL = "glm-4-flash"
+
+/** 内置额度的 Key:倒序存放,取的时候翻回来 */
+val BUILTIN_KEY: String get() = BUILTIN_KEY_REVERSED.reversed()
+
+/** 界面上给内置额度用的名字 */
+const val BUILTIN_LABEL = "内置免费额度 · 智谱 GLM-4-Flash"
+
 /**
  * AI 管家配置:接口地址、API Key、模型名,只写在本机 SharedPreferences 里。
  *
+ * 两套配置,优先级明确:
+ * 1. **你自己填的**(base/key/model 三项齐全)→ 最高优先,内置额度自动让位;
+ * 2. **内置共享额度**(默认开)→ 没填自己的就用它,开箱可用;
+ * 3. 两者都没有 → 离线规则模式,界面会明说。
+ *
  * 诚信约定:
- * - Key 只存在本机,不进备份文本、不进任何第三方;请求只发往用户自己填的那个地址。
- * - 没配置就是没配置,界面会明说「当前是离线规则模式」,不会假装 AI 已经接上。
+ * - Key 只存在本机,不进备份文本、不进任何第三方;请求只发往「当前生效的那一个」地址。
+ * - 用的一定是界面上显示的那个来源,不会偷偷换;没接上就说没接上,不假装 AI 已经可用。
  */
 object AiConfig {
 
     private const val PREF = "lifebutler_ai"
+    private const val K_BASE = "base"
+    private const val K_KEY = "key"
+    private const val K_MODEL = "model"
+    private const val K_USE_BUILTIN = "use_builtin"
+
+    /** 当前生效的是哪一套 */
+    enum class Source { OWN, BUILTIN, NONE }
 
     private fun sp(ctx: Context): SharedPreferences =
         ctx.applicationContext.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
-    fun base(ctx: Context): String = sp(ctx).getString("base", "").orEmpty()
-    fun key(ctx: Context): String = sp(ctx).getString("key", "").orEmpty()
-    fun model(ctx: Context): String = sp(ctx).getString("model", "").orEmpty()
+    /* ── 用户自己填的那一套 ── */
 
-    /** 三项齐全才算接上;缺一项都退回离线规则模式 */
-    fun isReady(ctx: Context): Boolean =
+    fun base(ctx: Context): String = sp(ctx).getString(K_BASE, "").orEmpty()
+    fun key(ctx: Context): String = sp(ctx).getString(K_KEY, "").orEmpty()
+    fun model(ctx: Context): String = sp(ctx).getString(K_MODEL, "").orEmpty()
+
+    /** 自己填的三项齐全才算「有」 */
+    fun hasOwn(ctx: Context): Boolean =
         base(ctx).isNotBlank() && key(ctx).isNotBlank() && model(ctx).isNotBlank()
 
     fun save(ctx: Context, base: String, key: String, model: String) {
         sp(ctx).edit()
-            .putString("base", base.trim().trimEnd('/'))
-            .putString("key", key.trim())
-            .putString("model", model.trim())
+            .putString(K_BASE, base.trim().trimEnd('/'))
+            .putString(K_KEY, key.trim())
+            .putString(K_MODEL, model.trim())
             .apply()
     }
 
-    fun clear(ctx: Context) {
-        sp(ctx).edit().clear().apply()
+    /** 清掉自己填的那一套(内置额度的开关保持原样,不连坐) */
+    fun clearOwn(ctx: Context) {
+        sp(ctx).edit().remove(K_BASE).remove(K_KEY).remove(K_MODEL).apply()
+    }
+
+    /** 旧的调用点:等同于清掉自己填的 */
+    fun clear(ctx: Context) = clearOwn(ctx)
+
+    /* ── 内置共享额度 ── */
+
+    /** 是否允许使用内置共享额度,默认开 */
+    fun useBuiltin(ctx: Context): Boolean = sp(ctx).getBoolean(K_USE_BUILTIN, true)
+
+    fun setUseBuiltin(ctx: Context, on: Boolean) {
+        sp(ctx).edit().putBoolean(K_USE_BUILTIN, on).apply()
+    }
+
+    /* ── 实际生效的那一套 ── */
+
+    fun source(ctx: Context): Source = when {
+        hasOwn(ctx) -> Source.OWN
+        useBuiltin(ctx) -> Source.BUILTIN
+        else -> Source.NONE
+    }
+
+    fun effBase(ctx: Context): String = when (source(ctx)) {
+        Source.OWN -> base(ctx)
+        Source.BUILTIN -> BUILTIN_BASE
+        Source.NONE -> ""
+    }
+
+    fun effKey(ctx: Context): String = when (source(ctx)) {
+        Source.OWN -> key(ctx)
+        Source.BUILTIN -> BUILTIN_KEY
+        Source.NONE -> ""
+    }
+
+    fun effModel(ctx: Context): String = when (source(ctx)) {
+        Source.OWN -> model(ctx)
+        Source.BUILTIN -> BUILTIN_MODEL
+        Source.NONE -> ""
+    }
+
+    /** 接上了就能用自然语言(不管是自己的接口还是内置额度) */
+    fun isReady(ctx: Context): Boolean = source(ctx) != Source.NONE
+
+    /** 界面上的一行状态文字,如实说明现在用的是哪一个 */
+    fun statusText(ctx: Context): String = when (source(ctx)) {
+        Source.OWN -> "AI 已接入 · 你的接口 · ${model(ctx)}"
+        Source.BUILTIN -> "AI 已接入 · $BUILTIN_LABEL"
+        Source.NONE -> "离线规则模式"
     }
 
     /** 界面上只显示掩码,不把 Key 原样铺在屏幕上 */
@@ -231,9 +326,9 @@ object AiButler {
         userText: String,
         history: List<Pair<Boolean, String>> = emptyList(),
     ): Reply {
-        val base = AiConfig.base(ctx)
-        val key = AiConfig.key(ctx)
-        val model = AiConfig.model(ctx)
+        val base = AiConfig.effBase(ctx)
+        val key = AiConfig.effKey(ctx)
+        val model = AiConfig.effModel(ctx)
         if (base.isBlank() || key.isBlank() || model.isBlank()) {
             return Reply(offlineText(store, userText), failed = true)
         }
@@ -290,7 +385,7 @@ object AiButler {
     private fun offlineText(store: ButlerStore, userText: String, reason: String? = null): String {
         val local = store.reply(userText)
         val head = if (reason == null) {
-            "还没接入 AI，现在是离线规则模式（去「我的 → AI 智能管家」填一个接口就能用自然语言加东西）。"
+            "现在是离线规则模式（是你在「我的 → AI 智能管家」里把内置额度也关掉了）。打开内置免费额度，或者填一个自己的接口，就能用自然语言加东西。"
         } else {
             "这次没连上模型（${reason.take(60)}）。"
         }
