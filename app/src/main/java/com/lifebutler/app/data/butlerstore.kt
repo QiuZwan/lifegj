@@ -74,6 +74,10 @@ class ButlerStore private constructor(context: Context) {
     private val prefs = context.getSharedPreferences("lifebutler", Context.MODE_PRIVATE)
     private val appCtx = context.applicationContext
 
+    /** 只有 debug 包才往 logcat 写排查信息,用户的包里一行都不写 */
+    private val debuggable =
+        (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
     val profileName: MutableState<String> = mutableStateOf("小满")
     val bloodType: MutableState<String> = mutableStateOf("")
     val meds: MutableState<String> = mutableStateOf("")
@@ -100,9 +104,10 @@ class ButlerStore private constructor(context: Context) {
     /** 备忘分类:在「未分类」之外可由用户自增自删 */
     val memoCategories: MutableState<List<String>> = mutableStateOf(DEFAULT_MEMO_CATEGORIES)
 
-    init {
-        load()
-    }
+    // 载入放在类体最后(见文件末尾的 init)。
+    // 别挪回这里:Kotlin 按声明顺序初始化属性,而 save() 会用到处处声明的 dismissed(第 43x 行),
+    // 放在这里执行时它还是未初始化的 val,load() 里的 save() 会抛 NPE 被静默吞掉 ——
+    // 表现就是「首次安装后 prefs 里一直是空的」,界面上却什么都正常,极难查。
 
     /* ── 派生统计(全部可从上面的列表复算,不存冗余数字) ── */
 
@@ -1064,6 +1069,19 @@ class ButlerStore private constructor(context: Context) {
         )
     }
 
+    /**
+     * 仅供 debug 包自检(端到端脚本用):prefs 里到底落过盘没有、内存里现在各有多少条。
+     *
+     * 为什么要有这一行:端到端脚本曾长期读不到基线 —— 界面上明明已经有了那条欢迎语,
+     * 但 exportState() 读的 prefs 里是空的,于是脚本把欢迎语当成「第一条新回复」,整张表错位一格。
+     * 有了它就能一眼分清是「prefs 没落盘」还是「内存里压根没数据」,不用再猜。release 包里没人调用。
+     */
+    fun debugProbe(): String {
+        val persisted = prefs.getString("state_v1", null)
+        return "persistedLen=${persisted?.length ?: -1} chat=${chat.size} tasks=${tasks.size}" +
+            " memos=${memos.size} expenses=${expenses.size} archive=${archive.size} dark=${darkMode.value}"
+    }
+
     private fun save() {
         try {
             val o = JSONObject()
@@ -1103,6 +1121,9 @@ class ButlerStore private constructor(context: Context) {
             o.put("memoCats", JSONArray(memoCategories.value))
             prefs.edit().putString("state_v1", o.toString()).apply()
         } catch (e: Exception) {
+            // 不要静默吞:首装的第一次 save() 曾经因为属性初始化顺序问题在这里悄悄失败,
+            // 表现是「prefs 里一直是空的、界面上却正常」,查了很久。debug 包留一行。
+            if (debuggable) android.util.Log.d("LbState", "[save] 落盘失败: ${e::class.java.simpleName} ${e.message}")
         }
     }
 
@@ -1260,6 +1281,18 @@ class ButlerStore private constructor(context: Context) {
             chat.add(ButlerChat(id(), false, "本地数据读取失败，已从空白开始。之前的内容可以在「我的 → 备份与恢复」里用备份找回。", ""))
             save()
         }
+    }
+
+    /**
+     * 载入本机记录。
+     *
+     * 这个 init **必须待在类体的最后**:Kotlin 按声明顺序初始化属性,而 load() 会调用 save(),
+     * save() 里用到了声明在后面的 dismissed / BLOB_* 等。放在前面执行时它们还是未初始化的 val,
+     * save() 会抛 NPE 被自己的 catch 静默吞掉 —— 现象是「首次安装后 prefs 里一直是空的」,
+     * 但界面上一切正常(数据在内存里),端到端脚本也因此长期读不到基线。
+     */
+    init {
+        load()
     }
 
     companion object {

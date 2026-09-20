@@ -131,7 +131,11 @@ private val LB_CHAT_HINTS = listOf(
 )
 
 @Composable
-fun ChatScreen() {
+fun ChatScreen(
+    onOpen: (String) -> Unit = {},
+    autoAsk: String? = null,
+    onAskConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     val listState = rememberScrollState()
@@ -141,6 +145,7 @@ fun ChatScreen() {
     val aiSource = remember { AiConfig.source(ctx) }
     val aiReady = aiSource != AiConfig.Source.NONE
     var lastActions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var lastNav by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -151,6 +156,53 @@ fun ChatScreen() {
             } else {
                 Toast.makeText(ctx, "图片保存失败，换一张试试", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    /** 发一句话:接了就交给管家(回答 + 落库 + 可能带你去某一页),没接就退离线规则 */
+    val send: (String) -> Unit = { raw ->
+        val t2 = raw.trim()
+        if (t2.isNotEmpty() && !typing) {
+            store.addChat(true, t2)
+            draft = ""
+            typing = true
+            lastActions = emptyList()
+            lastNav = null
+            val history = store.chat.dropLast(1).map { it.fromUser to it.text }
+            scope.launch {
+                if (aiReady) {
+                    val r = AiButler.ask(ctx, store, t2, history)
+                    typing = false
+                    store.addChat(false, r.text)
+                    if (r.actions.isNotEmpty()) lastActions = r.actions
+                    lastNav = r.nav
+                } else {
+                    delay(500)
+                    val r = store.reply(t2)
+                    typing = false
+                    store.addChat(false, r)
+                }
+            }
+        }
+    }
+
+    // 深链带一句话进来(自动化测试用):进页面就把这句发出去,发完通知上层清掉,好接下一句
+    LaunchedEffect(autoAsk) {
+        if (!autoAsk.isNullOrBlank()) {
+            send(autoAsk)
+            onAskConsumed()
+        }
+    }
+
+    // 管家说要带你去某一页(open_screen)时,说完就真的翻过去。
+    // 用户说「打开档案库让我看看」,要的是翻过去,不是再让他点一下——这才是「管家能驱动」。
+    // 留 600ms:让这句回复先落进对话列表,免得一眨眼就翻走、连回答都没看清。
+    // 回复本身还在对话里,回退一页就能看到;下面那个「带我去…」按钮留着当再去的入口。
+    LaunchedEffect(lastNav) {
+        val route = lastNav ?: return@LaunchedEffect
+        if (route != "chat") {
+            delay(600)
+            onOpen(route)
         }
     }
 
@@ -278,18 +330,55 @@ fun ChatScreen() {
                 }
             }
 
+            // 管家说要带你去某一页时,给一个真能点的按钮(它自己跳不了,得由这一层办)
+            lastNav?.let { route ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(LbDark)
+                            .clickable { onOpen(route) }
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                    ) {
+                        Text(
+                            "带我去${navLabel(route)}  →",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LbOnDark,
+                        )
+                    }
+                }
+            }
+
             if (typing) {
                 Row(Modifier.fillMaxWidth()) {
                     TypingBubble()
                 }
             }
 
-            // 头一回打开,给几句能直接点的话
+            // 头一回打开,先给一张图 + 几句能直接点的话
             if (store.chat.size <= 1 && !typing) {
                 Column(
                     Modifier.padding(top = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
+                    Image(
+                        painter = painterResource(R.drawable.lb_butler_scene),
+                        contentDescription = "说一句，待办、订阅、记账、备忘都能动",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(134.dp)
+                            .padding(top = 2.dp),
+                    )
+                    Text(
+                        "说一句，待办 / 订阅 / 记账 / 备忘 都能动",
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 4.dp),
+                    )
                     Text("可以这样对我说（点一下填进输入框）", fontSize = 11.sp, color = LbInk3)
                     LB_CHAT_HINTS.forEach { s ->
                         Box(
@@ -358,31 +447,7 @@ fun ChatScreen() {
                         .size(32.dp)
                         .clip(CircleShape)
                         .background(if (draft.isBlank()) LbSurface2 else LbAccent)
-                        .clickable(enabled = draft.isNotBlank() && !typing) {
-                            val t2 = draft.trim()
-                            if (t2.isNotEmpty() && !typing) {
-                                store.addChat(true, t2)
-                                draft = ""
-                                typing = true
-                                lastActions = emptyList()
-                                val history = store.chat.dropLast(1).map { it.fromUser to it.text }
-                                scope.launch {
-                                    if (aiReady) {
-                                        val r = AiButler.ask(ctx, store, t2, history)
-                                        typing = false
-                                        store.addChat(false, r.text)
-                                        if (r.actions.isNotEmpty()) {
-                                            lastActions = r.actions
-                                        }
-                                    } else {
-                                        delay(500)
-                                        val r = store.reply(t2)
-                                        typing = false
-                                        store.addChat(false, r)
-                                    }
-                                }
-                            }
-                        },
+                        .clickable(enabled = draft.isNotBlank() && !typing) { send(draft) },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -1392,7 +1457,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.2.0",
+            "生活管家 · v2.3.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
@@ -1985,6 +2050,22 @@ private fun AiManagerDialog(
             }
         }
     }
+}
+
+/** 内部路由 → 用户看得懂的名字(给「带我去…」按钮用) */
+private fun navLabel(route: String): String = when (route) {
+    "vault" -> "档案库"
+    "ledger" -> "记账本"
+    "memo" -> "备忘录"
+    "report" -> "本月月报"
+    "duties" -> "义务时间线"
+    "scan" -> "一键扫描"
+    "states" -> "系统状态"
+    "today" -> "今日"
+    "guard" -> "扣款守护"
+    "family" -> "家庭"
+    "mine" -> "我的"
+    else -> "智能管家"
 }
 
 /** 打开一个网址(申请 Key 用);没有浏览器就如实提示,不静默失败 */

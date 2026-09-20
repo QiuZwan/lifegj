@@ -1,5 +1,7 @@
 package com.lifebutler.app.ui.theme
 
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -7,12 +9,14 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -122,6 +126,14 @@ private val LbShapes = Shapes(
 @Composable
 fun LifeButlerTheme(dark: Boolean = LbTheme.dark, content: @Composable () -> Unit) {
     SideEffect { LbTheme.dark = dark }
+    // 系统栏样式跟着主题走:不管是在「我的」里手点,还是智能管家替他打开深色模式,都不会出现状态栏看不清
+    val activity = LocalContext.current as? androidx.activity.ComponentActivity
+    LaunchedEffect(dark) {
+        activity?.enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { _ -> dark },
+            navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { _ -> dark },
+        )
+    }
     MaterialTheme(
         colorScheme = lbColorScheme(dark),
         typography = lbTypography(),

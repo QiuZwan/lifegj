@@ -313,8 +313,35 @@ object AiButler {
     data class Reply(
         val text: String,
         val actions: List<String> = emptyList(),
+        /** 模型要求打开的页面(内部路由),界面会给一个「带我去」的按钮;null = 不跳 */
+        val nav: String? = null,
         val failed: Boolean = false,
     )
+
+    /** 一个动作执行完的结果。wrote=false 表示没写进本机,what 只是一句解释 */
+    private data class Applied(val what: String, val wrote: Boolean = true)
+
+    /**
+     * 动作格式表。
+     * `systemPrompt()` 和「追补」时的追问**共用这一份** —— 以前格式只写在系统提示词里,
+     * 追补那一轮模型看不到格式,只能回一句「做不到」,等于白追。
+     * 新增动作时只改这里一处,两边的清单不会走散。
+     */
+    private val ACTION_CHEATSHEET = """
+{"type":"add_task","text":"要做的事","meta":"补充说明，可空"}
+{"type":"add_expense","amount":25,"category":"餐饮","note":"午饭"}
+{"type":"add_subscription","name":"网易云音乐","amount":15,"next_date":"2026-10-05"}
+{"type":"add_charge","name":"网易云音乐","amount":15,"date":"2026-09-05"}
+{"type":"close_subscription","name":"爱奇艺"}
+{"type":"add_obligation","title":"车险续保","date":"2026-11-01","note":"可先比价","tag":"车辆"}
+{"type":"add_member","name":"妈妈","label":"复诊","date":"2026-09-24"}
+{"type":"add_key_date","title":"爸妈结婚纪念日","date":"10-22","note":""}
+{"type":"add_archive","title":"保单","note":"续保可提前比价"}
+{"type":"add_memo","title":"体检报告","content":"周五前把报告取回来","category":"生活","remind_at":"2026-09-25 09:00"}
+{"type":"complete_task","text":"交物业费"}
+{"type":"toggle_dark","on":true}
+{"type":"open_screen","screen":"vault"}
+""".trim()
 
     private const val TIMEOUT_CONNECT = 20_000
     private const val TIMEOUT_READ = 60_000
@@ -333,29 +360,143 @@ object AiButler {
             return Reply(offlineText(store, userText), failed = true)
         }
         return try {
-            val body = buildBody(model, systemPrompt(store), history, userText)
+            val sys = systemPrompt(store)
+            logDebug(ctx, "来源", "${AiConfig.source(ctx).name} / $model / $base")
+            logDebug(ctx, "提示词", sys)
+            val body = buildBody(model, sys, history, userText)
             val raw = postJson("$base/chat/completions", key, body)
+            logDebug(ctx, "原文", raw)
             val content = JSONObject(raw)
                 .optJSONArray("choices")?.optJSONObject(0)
                 ?.optJSONObject("message")?.optString("content").orEmpty()
 
-            val obj = extractJson(content)
+            var obj = extractJson(content)
             if (obj == null) {
                 // 没有按约定给 JSON:把这句原样当回答用,但不擅自执行任何写入
-                Reply(content.trim().ifBlank { "模型这次没返回内容，再说一次试试。" })
-            } else {
-                val reply = obj.optString("reply").trim().ifBlank { "记下了。" }
-                val done = ArrayList<String>()
-                obj.optJSONArray("actions")?.let { arr ->
-                    for (i in 0 until arr.length()) {
-                        arr.optJSONObject(i)?.let { a -> applyAction(store, a)?.let { done.add(it) } }
+                return Reply(content.trim().ifBlank { "模型这次没返回内容，再说一次试试。" })
+            }
+            var rawReply = obj.optString("reply").trim().ifBlank { "记下了。" }
+            var (done, nav) = runActions(ctx, store, obj)
+
+            // 它嘴上说「已经加好了」,actions 却是空的 —— 本机什么都没写。
+            // 提示词里已经专门警告过这一条,但 glm-4-flash / glm-4.5-flash 都还会偶尔犯(实测约 1/16),
+            // 光靠提示词收不干净。这里带着它自己刚才那段 JSON 再追一次,只要它把 actions 补上。
+            if (done.isEmpty() && looksLikeClaim(rawReply)) {
+                logDebug(ctx, "追补", "说了做却没给动作，追问一次：$rawReply")
+                val fixed = repairActions(ctx, base, key, model, sys, history, userText, content)
+                if (fixed != null) {
+                    val (d2, n2) = runActions(ctx, store, fixed)
+                    if (d2.isNotEmpty()) {
+                        done = d2
+                        nav = n2
+                        fixed.optString("reply").trim().takeIf { it.isNotBlank() }?.let { rawReply = it }
                     }
                 }
-                Reply(reply, done)
             }
+
+            // 补过一次还是没落库,就不能再让用户以为已经写进去了 —— 如实说没做到。
+            val reply = if (done.isEmpty() && looksLikeClaim(rawReply)) {
+                "$rawReply（这句我没能写进本机，补上金额或时间再说一次）"
+            } else rawReply
+            Reply(reply, done, nav)
         } catch (e: Exception) {
             Reply(offlineText(store, userText, e.message), failed = true)
         }
+    }
+
+    /* ── 动作执行 ── */
+
+    /** 逐个执行模型给的 actions。跳转(action=open_screen)不是写入,单独还给界面去办 */
+    private fun runActions(
+        ctx: Context,
+        store: ButlerStore,
+        obj: JSONObject,
+    ): Pair<List<String>, String?> {
+        val done = ArrayList<String>()
+        var nav: String? = null
+        obj.optJSONArray("actions")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val a = arr.optJSONObject(i) ?: continue
+                if (a.optString("type") == "open_screen") {
+                    resolveScreen(a.optString("screen"))?.let { nav = it }
+                    continue
+                }
+                val r = applyAction(ctx, store, a) ?: continue
+                // 只把真写进去的算「办好了」;「没找到…未改动」不算,否则回复里那句
+                // 「已经标好了」就没人纠得动了。
+                if (r.wrote) done.add(r.what)
+            }
+        }
+        return done to nav
+    }
+
+    /**
+     * 这句话像不像「我做好了」的承诺?
+     * 只用来判断要不要追补、要不要在回复后面挂一句实话,判错也只是多打一次请求,不会误改数据。
+     * 特意避开「还没有/没有添加/没找到」这种否定说法,免得用户每问一句都白追一次。
+     */
+    private fun looksLikeClaim(reply: String): Boolean =
+        CLAIM_WORDS.any { reply.contains(it) } &&
+            listOf("没有添加", "没找到", "还没有", "没有记录", "没有添加任何").none { reply.contains(it) }
+
+    private val CLAIM_WORDS = listOf(
+        "已经", "已添加", "已记", "已保存", "已创建", "已设置", "已帮你",
+        "记下了", "记好了", "记录好了", "创建好了", "添加好了", "加好了", "保存好了", "设置好了", "帮你",
+    )
+
+    /**
+     * 追补动作:把第一轮的原文以 assistant 轮塞回去,再明确要求只输出 JSON、把 actions 补上。
+     * 拿不到合法 JSON 就返回 null(视为补不回来,由调用方如实告知用户)。
+     */
+    private suspend fun repairActions(
+        ctx: Context,
+        base: String,
+        key: String,
+        model: String,
+        sys: String,
+        history: List<Pair<Boolean, String>>,
+        userText: String,
+        firstContent: String,
+    ): JSONObject? = try {
+        val msgs = JSONArray()
+        msgs.put(JSONObject().put("role", "system").put("content", sys))
+        history.filter { it.second.isNotBlank() }.takeLast(8).forEach { (fromUser, text) ->
+            msgs.put(
+                JSONObject()
+                    .put("role", if (fromUser) "user" else "assistant")
+                    .put("content", if (fromUser) text else asProtocolJson(text)),
+            )
+        }
+        msgs.put(JSONObject().put("role", "user").put("content", userText))
+        msgs.put(JSONObject().put("role", "assistant").put("content", firstContent))
+        msgs.put(
+            JSONObject().put("role", "user").put(
+                "content",
+                "你上面这条 reply 说这件事已经办好了，但 actions 是空的，本机其实什么都没写。" +
+                    "用户刚才说的是：「$userText」。现在只输出一个 JSON，" +
+                    "把该做的 action 按下面的格式补进 actions 里，**不要留空**：\n" +
+                    ACTION_CHEATSHEET +
+                    "\n只有「删改已有记录 / 往相册加照片 / 往档案组加文件 / 打电话发短信 / 改系统设置 / 查外部信息」" +
+                    "这几种才允许给空数组。上面这类记一笔、加一条的事，你都能做，没有理由不做。" +
+                    "不要写解释，不要用代码块。",
+            ),
+        )
+        val body = JSONObject()
+            .put("model", model)
+            .put("messages", msgs)
+            .put("temperature", 0.2)
+            .put("max_tokens", 900)
+            .put("stream", false)
+            .toString()
+        val raw = postJson("$base/chat/completions", key, body)
+        logDebug(ctx, "追补原文", raw)
+        val c = JSONObject(raw)
+            .optJSONArray("choices")?.optJSONObject(0)
+            ?.optJSONObject("message")?.optString("content").orEmpty()
+        extractJson(c)
+    } catch (e: Exception) {
+        logDebug(ctx, "追补失败", e.message ?: "未知")
+        null
     }
 
     /** 测试连接:发一句最短的问候,能拿到回复就算通 */
@@ -380,6 +521,20 @@ object AiButler {
         }
     }
 
+    /* ── 调试 ── */
+
+    /**
+     * 只有 debug 包才打日志:把发出去的提示词和拿回来的原文留在 logcat 里。
+     * 排「模型没按格式回 JSON」「动作没落库」这类问题时,没这个就只能猜。
+     * 用 logcat -s LbAI:V 看;release 包里这段直接 return,不会把用户数据写进系统日志。
+     */
+    private fun logDebug(ctx: Context, label: String, text: String) {
+        val debuggable = (ctx.applicationInfo.flags and
+            android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) return
+        android.util.Log.d("LbAI", "[$label] " + text.replace('\n', '⏎').take(3500))
+    }
+
     /* ── 离线兜底:没配置 / 连不上时,规则引擎照样能记事记账 ── */
 
     private fun offlineText(store: ButlerStore, userText: String, reason: String? = null): String {
@@ -402,7 +557,8 @@ object AiButler {
      * 执行模型给出的一个动作。
      * 返回一句「做了什么」的人类可读描述;返回 null 表示这个动作不合法或无事可做。
      */
-    private fun applyAction(store: ButlerStore, a: JSONObject): String? = when (a.optString("type")) {
+    private fun applyAction(ctx: Context, store: ButlerStore, a: JSONObject): Applied? {
+        val what: String? = when (a.optString("type")) {
         "add_task" -> {
             val text = a.optString("text").trim()
             if (text.isEmpty()) null
@@ -497,7 +653,109 @@ object AiButler {
             }
         }
 
+        "add_memo" -> {
+            val content = a.optString("content").trim()
+            val title = a.optString("title").trim().ifBlank { content.replace('\n', ' ').take(16) }
+            if (title.isEmpty()) null
+            else {
+                val at = parseDateTime(a.optString("remind_at"))
+                val memo = store.addMemo(title, content, a.optString("category").trim().ifBlank { "未分类" }, at)
+                if (memo != null && at > 0) MemoReminders.schedule(ctx, memo.id, title, at)
+                val askedRemind = a.optString("remind_at").isNotBlank()
+                "备忘「$title」" + when {
+                    at > 0 -> "（提醒 ${stamp(at)}）"
+                    askedRemind -> "（提醒时间没看懂，没设提醒）"
+                    else -> ""
+                }
+            }
+        }
+
+        "complete_task" -> {
+            // 模型常把待办说短:待办是「明天下午三点去物业交费」,它会写「交物业费」。
+            // 原来的 contains 双向判断对不上这种,于是它嘴上说「已标记完成」而本机没动。
+            // 改成取最长公共片段,重叠 2 个字以上就算同一条,并在候选中挑重叠最多的那个。
+            val text = a.optString("text").trim()
+            val pending = store.tasks.filter { !it.done }
+            val hit = if (text.isEmpty()) null
+            else pending.maxByOrNull { overlap(it.text, text) }?.takeIf { overlap(it.text, text) >= 2 }
+            when {
+                text.isEmpty() -> null
+                hit == null -> "没找到「$text」这条待办，未改动"
+                else -> {
+                    store.toggleTask(hit.id)
+                    "已完成待办「${hit.text}」"
+                }
+            }
+        }
+
+        "toggle_dark" -> {
+            val on = a.optBoolean("on", !store.darkMode.value)
+            store.setDarkMode(on)
+            if (on) "深色模式已打开" else "深色模式已关闭"
+        }
+
         else -> null
+        }
+        if (what == null) return null
+        // 「没找到…，未改动」这种不是写入,只是给用户一句解释(约定:凡没写成都以「未改动」结尾)。
+        // 必须区分开:真写进去了才算「动作完成」,否则模型嘴上一句「已完成」就把它盖过去了。
+        return Applied(what, wrote = !what.endsWith("未改动"))
+    }
+
+    /**
+     * 两句话之间最长的公共片段有多少个字。
+     * 用来把「交物业费」对到「明天下午三点去物业交费」——模型给的待办名往往和原文不完全一样。
+     * 字符串都很短(十几个字),O(n·m) 足够。
+     */
+    private fun overlap(a: String, b: String): Int {
+        var best = 0
+        for (i in a.indices) {
+            for (j in b.indices) {
+                var k = 0
+                while (i + k < a.length && j + k < b.length && a[i + k] == b[j + k]) k++
+                if (k > best) best = k
+            }
+        }
+        return best
+    }
+
+    /**
+     * 把模型写的页面名对到应用内部路由。
+     * 认不出来的返回 null —— 宁可不动,也不要拿着瞎猜的路由跳错页。
+     */
+    private fun resolveScreen(raw: String): String? {
+        val s = raw.trim().lowercase()
+        if (s.isEmpty()) return null
+        return when {
+            listOf("vault", "archive", "archives", "档案", "档案库", "文件").any { s == it || s.contains(it) } -> "vault"
+            listOf("ledger", "expense", "expenses", "记账", "记账本", "账单", "花销", "明细").any { s == it || s.contains(it) } -> "ledger"
+            listOf("memo", "memos", "note", "notes", "备忘", "备忘录", "笔记").any { s == it || s.contains(it) } -> "memo"
+            listOf("report", "monthly", "月报", "报表", "报表页").any { s == it || s.contains(it) } -> "report"
+            listOf("duties", "duty", "obligation", "义务", "时间线", "证件").any { s == it || s.contains(it) } -> "duties"
+            listOf("scan", "扫描").any { s == it || s.contains(it) } -> "scan"
+            listOf("states", "status", "状态", "系统状态").any { s == it || s.contains(it) } -> "states"
+            listOf("today", "home", "今日", "首页").any { s == it || s.contains(it) } -> "today"
+            listOf("guard", "subs", "subscription", "守护", "订阅", "扣款").any { s == it || s.contains(it) } -> "guard"
+            listOf("family", "member", "家庭", "家人").any { s == it || s.contains(it) } -> "family"
+            listOf("mine", "settings", "我的", "设置").any { s == it || s.contains(it) } -> "mine"
+            listOf("chat", "butler", "管家", "对话").any { s == it || s.contains(it) } -> "chat"
+            else -> null
+        }
+    }
+
+    /** 解析「yyyy-MM-dd HH:mm」这类提醒时间;解析不出来就返回 0(不设提醒),不猜 */
+    private fun parseDateTime(s: String): Long {
+        if (s.isBlank()) return 0L
+        val t = s.trim().replace('T', ' ').replace('：', ':')
+        for (f in listOf("yyyy-MM-dd HH:mm", "yyyy-M-d H:mm", "yyyy-MM-dd HH:mm:ss")) {
+            try {
+                val d = java.time.LocalDateTime.parse(t, java.time.format.DateTimeFormatter.ofPattern(f))
+                return d.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (e: Exception) {
+                // 换下一个格式继续试
+            }
+        }
+        return 0L
     }
 
     /* ── 提示词 ── */
@@ -511,10 +769,18 @@ object AiButler {
 ${snapshot(store)}
 
 【怎么做事】
-1. 用户说一件事，你就把它真正记进对应的地方（待办 / 记账 / 订阅 / 义务 / 家人 / 关键日期 / 档案组）。
+1. 用户说一件事，你就把它真正记进对应的地方（待办 / 记账 / 订阅 / 义务 / 家人 / 关键日期 / 档案组 / 备忘录）。
 2. 用户问你问题时，只依据上面的快照回答。快照里没有的，直说本机没有这条记录，绝不猜测、绝不编造数字和日期。
-3. 你不能替用户打电话、发短信、联系客服，也不能真的取消第三方订阅。遇到这类请求要如实说做不到，并帮他把这件事记成待办。
-4. 金额一律用 ¥。
+3. 用户问某个模块的清单（比如「我有哪些档案」「备忘里有什么」「这个月记了几笔」）时，**直接把内容列出来**：
+   条数少就全列，条数多就列前几条并说清总数，不要只回一句「请去档案页查看」。
+4. 如果用户明显是想看那一页（说「打开」「让我看看」），除了回答，再给一个 open_screen 动作把他带过去。
+5. 金额一律用 ¥。
+
+【你做不到的事，必须如实说，不要假装能做到】
+- 你不能替用户往相册加照片、往档案组加文件（那要他本人去选文件），也**不能修改或删除已有记录**（只能新增，或把待办标成已完成）。想改金额、改日期、改内容，就如实说做不到，并建议他在对应页面长按编辑。
+- 你不能替用户打电话、发短信、联系客服，也不能真的取消第三方订阅。
+- 你不能改系统设置（通知权限、位置权限、通知使用权）。
+- 你查不到外面的信息（天气、汇率、新闻、别人的电话）。只能依据本机快照回答。
 
 【输出格式】只输出一个 JSON 对象，不要写解释，不要用代码块包裹：
 {"reply":"对用户说的话","actions":[]}
@@ -522,18 +788,26 @@ ${snapshot(store)}
 reply：中文、口语化、最多 3 句，不要用星号井号或列表符号。
 actions：没有要执行的就给空数组；有就按下面的格式，一次可以给多个。
 
-{"type":"add_task","text":"要做的事","meta":"补充说明，可空"}
-{"type":"add_expense","amount":25,"category":"餐饮","note":"午饭"}
-{"type":"add_subscription","name":"网易云音乐","amount":15,"next_date":"2026-10-05"}
-{"type":"add_charge","name":"网易云音乐","amount":15,"date":"2026-09-05"}
-{"type":"close_subscription","name":"爱奇艺"}
-{"type":"add_obligation","title":"车险续保","date":"2026-11-01","note":"可先比价","tag":"车辆"}
-{"type":"add_member","name":"妈妈","label":"复诊","date":"2026-09-24"}
-{"type":"add_key_date","title":"爸妈结婚纪念日","date":"10-22","note":""}
-{"type":"add_archive","title":"保单","note":"续保可提前比价"}
+⚠️ 最容易犯的错：reply 里说「已经帮你加好了」，actions 却是空的。这就是骗人——本机什么都没写。
+只要用户是在让你记 / 加 / 建 / 存（哪怕话说得很随意），actions 就必须非空；
+只有「用户只是问问题」或「你做不到这件事」时，才允许给空数组。
+先想清楚要写哪一类，再照着下面的格式把它写出来。
+
+$ACTION_CHEATSHEET
+
+open_screen 的 screen 只能填这几个：vault(档案库) / ledger(记账本) / memo(备忘录) / report(月报) /
+duties(义务时间线) / scan(一键扫描) / states(系统状态) / today(今日) / guard(守护与订阅) / family(家庭) / mine(我的)。
+用户没要求看某一页时就不要给这个动作。
 
 日期规则：能确定年份就写 yyyy-MM-dd；只说了月日（生日、纪念日这类）就写 MM-DD，系统会按最近的将来算。
+提醒时间 remind_at 只能写 yyyy-MM-dd HH:mm（24 小时制）；用户没说具体时间就不要给这个字段，不要自己编一个时间。
 记账 category 只能是：餐饮 / 交通 / 购物 / 居家 / 娱乐 / 医疗 / 人情 / 其他。
+
+两处最容易放错地方，看清楚再写：
+- 有到期日、需要用户本人去办的事（车险续保、年检、证件到期、该去体检了）→ add_obligation（到期事务）。
+  只是要记住的日子（生日、纪念日、节日）→ add_key_date（关键日期）。别把「续保」这类放进关键日期。
+- 用户问「我有哪些档案」问的是**档案组本身**，哪怕那个组里一个文件都还没放也要把组名报出来，
+  不能因为「0 个文件」就答成「没有任何档案」。
 """.trim()
 
     /** 本机数据快照:只放模型回答问题时真正需要的东西,并做长度上限 */
@@ -579,13 +853,45 @@ actions：没有要执行的就给空数组；有就按下面的格式，一次�
             store.keyDates.take(15).joinToString("；") { "${it.title}·${it.date}" },
         ).append('\n')
 
-        sb.append("档案组")
+        sb.append("档案组（共 ").append(store.archive.size).append(" 组）")
         if (store.archive.isEmpty()) sb.append("：无\n")
         else sb.append("：").append(
-            store.archive.take(15).joinToString("；") { "${it.title}(${it.files.size} 个文件)" },
+            store.archive.take(15).joinToString("；") { a ->
+                val names = a.files.take(5).joinToString("、") { it.substringAfterLast('/') }
+                val more = if (a.files.size > 5) " 等 ${a.files.size} 个" else ""
+                // 别只写「0 个文件」:模型会顺势答成「一个档案都没有」,把组本身给漏掉
+                val inner = if (a.files.isEmpty()) "里面还没放文件" else "${a.files.size} 个文件：$names$more"
+                "${a.title}（$inner）" + (if (a.note.isBlank()) "" else "(备注：${a.note.take(24)})")
+            },
         ).append('\n')
 
-        sb.append("家庭相册：").append(store.album.size).append(" 张照片（照片本身不参与问答）\n")
+        val memos = store.memos
+        sb.append("备忘录（共 ").append(memos.size).append(" 条")
+        if (memos.isNotEmpty()) {
+            sb.append("，分类：").append(
+                memos.groupingBy { it.category.ifBlank { "未分类" } }.eachCount()
+                    .entries.joinToString("、") { "${it.key}${it.value}" },
+            )
+        }
+        sb.append("）")
+        if (memos.isEmpty()) sb.append("：无\n")
+        else sb.append("：").append(
+            memos.sortedByDescending { it.updatedAt }.take(15).joinToString("；") { m ->
+                val body = m.content.replace('\n', ' ').trim().take(30)
+                "${m.title}${if (body.isBlank()) "" else "($body)"}·分类:${m.category.ifBlank { "未分类" }}" +
+                    (if (m.remindAt > 0) "·提醒 ${stamp(m.remindAt)}" else "") +
+                    (if (m.pinned) "·置顶" else "")
+            },
+        ).append('\n')
+
+        sb.append("家庭相册：共 ").append(store.album.size).append(" 张")
+        val noted = store.album.filter { it.note.isNotBlank() }
+        if (noted.isNotEmpty()) {
+            sb.append("，其中带备注的 ").append(noted.size).append(" 张（").append(
+                noted.sortedByDescending { it.at }.take(8).joinToString("、") { it.note.take(14) },
+            ).append("）")
+        }
+        sb.append("。照片本身不参与问答，只能按照片数量与上面的备注回答，不要编造照片内容\n")
 
         val todayList = store.expenses.filter { it.date == today.toString() }
         sb.append("今天记账：").append(todayList.size).append(" 笔，合计 ¥")
@@ -625,6 +931,12 @@ actions：没有要执行的就给空数组；有就按下面的格式，一次�
         return sb.toString()
     }
 
+    /** 时间戳 → 「M-d HH:mm」,快照里说备忘录提醒时间用 */
+    private fun stamp(ms: Long): String = java.time.Instant.ofEpochMilli(ms)
+        .atZone(java.time.ZoneId.systemDefault())
+        .toLocalDateTime()
+        .let { "%d-%d %02d:%02d".format(it.monthValue, it.dayOfMonth, it.hour, it.minute) }
+
     /* ── HTTP ── */
 
     private fun buildBody(
@@ -636,7 +948,14 @@ actions：没有要执行的就给空数组；有就按下面的格式，一次�
         val msgs = JSONArray()
         msgs.put(JSONObject().put("role", "system").put("content", system))
         history.filter { it.second.isNotBlank() }.takeLast(8).forEach { (fromUser, text) ->
-            msgs.put(JSONObject().put("role", if (fromUser) "user" else "assistant").put("content", text))
+            if (fromUser) {
+                msgs.put(JSONObject().put("role", "user").put("content", text))
+            } else {
+                // 关键:助手这一侧必须始终长成「协议 JSON」的样子。
+                // 历史里只要混进一条纯文本的助手发言(欢迎语、离线规则回复),模型就会照抄那个风格,
+                // 之后一律用大白话回答、连 JSON 都不肯吐 —— 实测过,「说记下了但什么都没写进本机」就是这个原因。
+                msgs.put(JSONObject().put("role", "assistant").put("content", asProtocolJson(text)))
+            }
         }
         msgs.put(JSONObject().put("role", "user").put("content", userText))
         return JSONObject()
@@ -645,6 +964,15 @@ actions：没有要执行的就给空数组；有就按下面的格式，一次�
             .put("temperature", 0.3)
             .put("max_tokens", 900)
             .put("stream", false)
+            .toString()
+    }
+
+    /** 把任意一条助手历史发言统一成 {"reply":…,"actions":[]} 的形态 */
+    private fun asProtocolJson(text: String): String {
+        extractJson(text)?.let { if (it.has("reply")) return it.toString() }
+        return JSONObject()
+            .put("reply", text.take(200))
+            .put("actions", JSONArray())
             .toString()
     }
 

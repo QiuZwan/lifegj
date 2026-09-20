@@ -388,7 +388,7 @@ fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
     val items = listOf(
         "今日" to LbIcons.home2,
         "守护" to LbIcons.shieldCheck,
-        "对话" to LbIcons.messageCircle,
+        "智能管家" to LbIcons.messageCircle,
         "家庭" to LbIcons.users,
         "我的" to LbIcons.user,
     )

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「智能管家」插图:说一句,四个模块一起动。
+     由 design/lb_butler_scene.svg 同源生成,改形状请两处一起改。
+     颜色走 @color/lb_scene_*,深色模式在 values-night/colors.xml。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="240dp"
+    android:height="150dp"
+    android:viewportWidth="240"
+    android:viewportHeight="150">
+    <path android:pathData="M93.0,53.0 L88.2,51.6 M84.4,50.4 L79.6,49.0 M75.8,47.8 L71.0,46.4 M67.1,45.2 L63.0,44.0" android:strokeColor="@color/lb_scene_line" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M147.0,53.0 L151.8,51.6 M155.6,50.4 L160.4,49.0 M164.2,47.8 L169.0,46.4 M172.9,45.2 L177.0,44.0" android:strokeColor="@color/lb_scene_line" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M93.0,87.0 L88.8,89.7 M85.4,91.8 L81.2,94.5 M77.8,96.6 L73.6,99.3 M70.2,101.4 L66.0,104.1" android:strokeColor="@color/lb_scene_line" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M147.0,87.0 L151.2,89.7 M154.6,91.8 L158.8,94.5 M162.2,96.6 L166.4,99.3 M169.8,101.4 L174.0,104.1" android:strokeColor="@color/lb_scene_line" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M26.0,14.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:fillColor="@color/lb_scene_soft" />
+    <path android:pathData="M26.0,14.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:strokeColor="@color/lb_scene_jade" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M34.0,29.5 l4.2,4.4 L46.4,24.0" android:strokeColor="@color/lb_scene_jade_deep" android:strokeWidth="2.0" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M186.0,14.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:fillColor="@color/lb_scene_soft" />
+    <path android:pathData="M186.0,14.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:strokeColor="@color/lb_scene_jade" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M206.0,29.0 A6.0,6.0 0 1 1 200.0,23.0 M197.4,22.6 l2.6,0.4 l-1.2,2.4" android:strokeColor="@color/lb_scene_jade_deep" android:strokeWidth="2.0" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M26.0,106.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:fillColor="@color/lb_scene_soft" />
+    <path android:pathData="M26.0,106.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:strokeColor="@color/lb_scene_jade" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M33.5,127.0 L33.5,122.0 M38.5,127.0 L38.5,118.5 M43.5,127.0 L43.5,115.5 " android:strokeColor="@color/lb_scene_jade_deep" android:strokeWidth="2.2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M186.0,106.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:fillColor="@color/lb_scene_soft" />
+    <path android:pathData="M186.0,106.0 h28.0 a9.0,9.0 0 0 1 9.0,9.0 v12.0 a9.0,9.0 0 0 1 -9.0,9.0 h-28.0 a9.0,9.0 0 0 1 -9.0,-9.0 v-12.0 a9.0,9.0 0 0 1 9.0,-9.0 Z" android:strokeColor="@color/lb_scene_jade" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M193.5,116.0 L206.5,116.0 M193.5,121.0 L206.5,121.0 M193.5,126.0 L201.5,126.0 " android:strokeColor="@color/lb_scene_jade_deep" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M105.0,48.0 h30.0 a15.0,15.0 0 0 1 15.0,15.0 v14.0 a15.0,15.0 0 0 1 -15.0,15.0 h-30.0 a15.0,15.0 0 0 1 -15.0,-15.0 v-14.0 a15.0,15.0 0 0 1 15.0,-15.0 Z" android:fillColor="@color/lb_scene_jade" />
+    <path android:pathData="M104.0,90.0 L99.0,104.0 L120.0,90.0 Z" android:fillColor="@color/lb_scene_jade" />
+    <path android:pathData="M106.0,70.0 l8.5,9 L134.0,61.0" android:strokeColor="@color/lb_scene_on_jade" android:strokeWidth="4.2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

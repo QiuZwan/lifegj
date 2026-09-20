@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「智能管家」插图的深色版用色，对应 values/colors.xml。
+     墨绿夜色 + 浅玉绿，与 theme/Theme.kt 的 dark token 一致。 -->
+<resources>
+    <!-- LbLine(dark) -->
+    <color name="lb_scene_line">#2B322C</color>
+    <!-- LbAccentSoft(dark) -->
+    <color name="lb_scene_soft">#1F322A</color>
+    <!-- LbAccent(dark) -->
+    <color name="lb_scene_jade">#6FB79A</color>
+    <!-- LbAccentDeep(dark) -->
+    <color name="lb_scene_jade_deep">#8FC7AE</color>
+    <!-- LbOnAccent(dark) -->
+    <color name="lb_scene_on_jade">#0E2019</color>
+</resources>
