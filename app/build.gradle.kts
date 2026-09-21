@@ -19,8 +19,8 @@ android {
         applicationId = "com.lifebutler.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "2.4"
+        versionCode = 17
+        versionName = "2.6"
     }
 
     signingConfigs {
@@ -40,6 +40,10 @@ android {
             if (keystoreProps.isNotEmpty()) {
                 signingConfig = signingConfigs.getByName("release")
             }
+            // 接入 Filament(真 3D)之后,native 库有 arm64-v8a / armeabi-v7a / x86 / x86_64 四份,
+            // 全带上会让安装包凭空多十几 MB。minSdk 26 的机器几乎都是 arm64,release 只留这一份。
+            // debug 不限制,模拟器(x86_64)要能装来实测。
+            ndk { abiFilters += listOf("arm64-v8a") }
         }
     }
 
@@ -69,5 +73,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // 真 3D:Filament 渲染 + glTF 加载,Compose 原生 API。v2.6 起智能管家页的机器人是模型不是图片。
+    // 卡在 4.18.0:4.20+ 用 kotlin-stdlib 2.4 编译(元数据 2.4,本项目 Kotlin 2.2.10 读不了),4.35+ 还要求 compileSdk 37。
+    implementation("io.github.sceneview:sceneview:4.18.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

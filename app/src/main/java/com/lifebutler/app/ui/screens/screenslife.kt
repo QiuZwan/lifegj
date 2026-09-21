@@ -81,6 +81,7 @@ import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.Notifier
 import com.lifebutler.app.data.ReminderScheduler
 import com.lifebutler.app.data.Weather
+import com.lifebutler.app.ui.components.ButlerScene
 import com.lifebutler.app.ui.components.ChipTone
 import com.lifebutler.app.ui.components.HeroCard
 import com.lifebutler.app.ui.components.IconBadge
@@ -363,13 +364,13 @@ fun ChatScreen(
                     Modifier.padding(top = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    Image(
-                        painter = painterResource(R.drawable.lb_butler3d),
-                        contentDescription = "说一句，待办、订阅、记账、备忘都能动",
+                    // v2.6 起是**真的 3D 模型**（可拖动旋转），不是图片。
+                    // ButlerScene 里模型加载失败会自己回退成静态图,这里不用管。
+                    ButlerScene(
                         modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
                             .fillMaxWidth()
-                            .aspectRatio(1.2f)
-                            .padding(top = 2.dp),
+                            .height(340.dp),
                     )
                     Text(
                         "说一句，待办 / 订阅 / 记账 / 备忘 都能动",
@@ -1458,7 +1459,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.4.0",
+            "生活管家 · v2.6.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,

@@ -38,17 +38,22 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.lifebutler.app.R
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
 import com.lifebutler.app.ui.theme.LbAccentSoft
@@ -383,14 +388,53 @@ fun LbListRow(
     }
 }
 
+/** 一个底部 tab:线性图标(`line`),或带 alpha 的位图图标(`raster`,3D 插图用)。 */
+private data class LbTab(
+    val label: String,
+    val line: ImageVector,
+    val raster: Int? = null,
+)
+
+/** 位图图标主体(骨白陶瓷头)在 255 里大约的亮度,用来把未选中态压到 LbInk3 的调子。 */
+private const val RASTER_ICON_TYPICAL_LUMA = 0.82f
+
+/**
+ * 位图图标「未选中」时的着色:去饱和 + 整体乘一个系数,把亮度压到 [color](即 LbInk3)的量级。
+ *
+ * 为什么不直接降 alpha:`Image` 降 alpha 是往**背景色**靠,而浅色主题的背景(LbBg #F4F3EF,
+ * 亮度约 0.95)比图标的骨白头(约 0.82)还亮 —— 降 alpha 只会让它更白、更看不见。
+ * 去饱和 + 压暗则在深浅两个主题下都读成「灰的」,同时保留 3D 的立体明暗。
+ *
+ * 一个 4x5 ColorMatrix 一次做完:前 3 行都取整幅图的亮度权重(0.299/0.587/0.114)再乘 k,
+ * 等价于「先转灰度、再乘 k」;第 4 行原样透传 alpha。
+ */
+private fun inkTone(color: Color): ColorFilter {
+    val k = (color.luminance() / RASTER_ICON_TYPICAL_LUMA).coerceIn(0.3f, 1f)
+    val r = 0.299f * k
+    val g = 0.587f * k
+    val b = 0.114f * k
+    return ColorFilter.colorMatrix(
+        ColorMatrix(
+            floatArrayOf(
+                r, g, b, 0f, 0f,
+                r, g, b, 0f, 0f,
+                r, g, b, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        ),
+    )
+}
+
 @Composable
 fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
     val items = listOf(
-        "今日" to LbIcons.home2,
-        "守护" to LbIcons.shieldCheck,
-        "智能管家" to LbIcons.messageCircle,
-        "家庭" to LbIcons.users,
-        "我的" to LbIcons.user,
+        LbTab("今日", LbIcons.home2),
+        LbTab("守护", LbIcons.shieldCheck),
+        // 「智能管家」用 3D 小机器人位图(design/butler3d/make_nav_icon.py 生成)。
+        // 线性图标那套 tint 对彩色位图没用,所以选中/未选中改成「全彩 / 去饱和压暗」来区分。
+        LbTab("智能管家", LbIcons.messageCircle, R.drawable.lb_nav_butler),
+        LbTab("家庭", LbIcons.users),
+        LbTab("我的", LbIcons.user),
     )
     Column(Modifier.fillMaxWidth().background(LbBg)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(LbLine))
@@ -399,25 +443,35 @@ fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
                 .fillMaxWidth()
                 .padding(top = 8.dp, bottom = 10.dp),
         ) {
-            items.forEach { (label, icon) ->
-                val active = label == current
+            items.forEach { item ->
+                val active = item.label == current
                 val tint by animateColorAsState(if (active) LbAccent else LbInk3, tween(160), label = "tabTint")
                 Column(
                     Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
-                        .lbPressable(onClick = { onSelect(label) })
+                        .lbPressable(onClick = { onSelect(item.label) })
                         .padding(vertical = 2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Icon(
-                        icon,
-                        contentDescription = label,
-                        tint = tint,
-                        modifier = Modifier.size(22.dp),
-                    )
+                    val raster = item.raster
+                    if (raster != null) {
+                        Image(
+                            painter = painterResource(raster),
+                            contentDescription = item.label,
+                            colorFilter = if (active) null else remember(tint) { inkTone(tint) },
+                            modifier = Modifier.size(24.dp),
+                        )
+                    } else {
+                        Icon(
+                            item.line,
+                            contentDescription = item.label,
+                            tint = tint,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                     Text(
-                        label,
+                        item.label,
                         fontSize = 10.5.sp,
                         color = tint,
                         modifier = Modifier.padding(top = 3.dp),
