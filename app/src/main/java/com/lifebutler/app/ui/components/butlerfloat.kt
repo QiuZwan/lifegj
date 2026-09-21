@@ -83,17 +83,22 @@ private const val MIN_LAYER_PX = 320
 /**
  * App 内全局悬浮的「小管家」。
  *
- * 少帅的原话:「把机器人小机器人拖到侧边，在侧边可以随意拖动到手机屏幕任何地方且点击进行互动」。
+ * 少帅的原话:「把机器人小机器人拖到侧边,在侧边可以随意拖动到手机屏幕任何地方且点击进行互动」。
  * 所以它由三件事组成:
- *  1. 一个**一直自转**的小机器人(复用智能管家页那 24 帧序列帧,见 [ButlerSpin]),默认贴右侧;
+ *  1. 一个**一直在自转**的小机器人(复用智能管家页那 24 帧序列帧,见 [ButlerSpin]),默认贴右侧;
  *  2. **拖到哪儿就是哪儿**:自由二维拖动,松手把位置按**归一化坐标**存进 [ButlerStore] 下次还在那;
  *  3. **点一下就地说话**:旁边弹出一个小面板,直接打字发给管家,回复显示在机器人上方,
  *     不用先跳到「智能管家」页再打。写进本机的东西也会在这里如实列出来。
+ *     v2.10 起**点一下它还会原地停转**,再点一下(收起面板)才继续转 —— 少帅要的是
+ *     「点一下在原地但是不转了,再点一下才转」。停转只是不推进帧,位置和大小都不许动。
  *
  * 位置为什么存归一化分数而不存像素:可拖动范围会随设备/系统栏变化,存像素下次就可能跑到屏幕外。
  *
  * ⚠️ 拖动用的是逐帧累加位移,不是 [ButlerSpin] 里那套「手指绝对位置」映射——那边是把手指位置
  * 映射成旋转角度,这边是把手指的位移搬给机器人,语义不同,不能照抄。
+ *
+ * ⚠️ **位置换算的基准必须是"面板收起时"的层高**(见 [baseArea]):面板打开会加 [imePadding],
+ * 层高被键盘压矮一大截,拿它当基准做比例换算的话,机器人会整体往上跳、收起又跳回来。
  */
 @Composable
 fun ButlerFloat(
@@ -117,6 +122,16 @@ fun ButlerFloat(
 
     /** 可拖动区域(已经扣掉状态栏/导航栏/底栏)。 */
     var area by remember { mutableStateOf(IntSize.Zero) }
+
+    /**
+     * 位置换算的**基准**尺寸 —— 只在面板收起时更新。
+     *
+     * 面板打开会给悬浮层加 [imePadding],层高被键盘压矮一大截(实测 1080×2047 → 1080×1227)。
+     * 位置是「归一化分数 × 层高」,拿被压矮的层高去算,机器人会**整体往上跳**,收起面板又跳回来 ——
+     * 在用户眼里就是"点一下它就不在原地了"。所以基准只认"面板收起时"那个尺寸,
+     * 层变矮时只做「别被键盘挡住」的夹取,不做比例缩放。
+     */
+    var baseArea by remember { mutableStateOf(IntSize.Zero) }
     // 位置用归一化分数当唯一真源:区域尺寸一变(键盘弹起、转屏),像素位置自动跟着重算。
     var fx by remember { mutableFloatStateOf(if (store.butlerFx in 0f..1f) store.butlerFx else 1f) }
     var fy by remember { mutableFloatStateOf(if (store.butlerFy in 0f..1f) store.butlerFy else 0.6f) }
@@ -135,10 +150,14 @@ fun ButlerFloat(
     val aiReady = aiSource != AiConfig.Source.NONE
     val focusRequester = remember { FocusRequester() }
 
-    val maxX = (area.width - wPx).coerceAtLeast(0f)
-    val maxY = (area.height - hPx).coerceAtLeast(0f)
-    val bx = fx * maxX
-    val by = fy * maxY
+    val base = if (baseArea.width > 0 && baseArea.height > 0) baseArea else area
+    val maxX = (base.width - wPx).coerceAtLeast(0f)
+    val maxY = (base.height - hPx).coerceAtLeast(0f)
+    // 键盘弹起后的**可视**范围。位置只在这里面夹取:本来就在键盘上方的,一格都不动。
+    val visMaxX = ((if (area.width > 0) area.width else base.width) - wPx).coerceAtLeast(0f)
+    val visMaxY = ((if (area.height > 0) area.height else base.height) - hPx).coerceAtLeast(0f)
+    val bx = if (visMaxX > 0f) (fx * maxX).coerceIn(0f, visMaxX) else fx * maxX
+    val by = if (visMaxY > 0f) (fy * maxY).coerceIn(0f, visMaxY) else fy * maxY
 
     val panelHPx = if (panelH > 0) panelH.toFloat() else estimatePx
     val panelX = (bx + wPx / 2f - panelWPx / 2f).coerceIn(0f, (area.width - panelWPx).coerceAtLeast(0f))
@@ -195,7 +214,16 @@ fun ButlerFloat(
                 // 只认「像一整层」的尺寸。实测见过一次宽度短暂退化成约等于机器人宽度:
                 // 那一刻 maxX≈0,接着一次拖动就把归一化坐标直接压成 0(机器人被甩到屏幕最左边)。
                 // 退化尺寸没有意义,直接忽略,宁可继续用上一次的真实尺寸。
-                if (sz.width >= MIN_LAYER_PX && sz.height >= MIN_LAYER_PX) area = sz
+                if (sz.width >= MIN_LAYER_PX && sz.height >= MIN_LAYER_PX) {
+                    if (sz != area) {
+                        store.debugFloat(
+                            "层尺寸变化 ${area.width}x${area.height} -> ${sz.width}x${sz.height} panelOpen=$panelOpen",
+                        )
+                    }
+                    area = sz
+                    // 只有"面板收起时"量到的才是定位基准,键盘压矮后的尺寸不能当基准
+                    if (!panelOpen) baseArea = sz
+                }
             },
     ) {
         /* ① 机器人本体 */
@@ -242,11 +270,20 @@ fun ButlerFloat(
                     }
                 }
                 .pointerInput(Unit) {
-                    detectTapGestures { panelOpen = !panelOpen }
+                    detectTapGestures {
+                        // 点一下:面板开合(**同时**让机器人原地停转 / 继续转,见下面的 spinning)。
+                        store.debugFloat(
+                            "点中机器人 panelOpen $panelOpen -> ${!panelOpen} " +
+                                "pos=(${bx.roundToInt()},${by.roundToInt()}) " +
+                                "area=${area.width}x${area.height} base=${baseArea.width}x${baseArea.height}",
+                        )
+                        panelOpen = !panelOpen
+                    }
                 },
         ) {
-            // interactive = false:拖动已经被外层用来搬位置了,这里只负责「一直自己转」。
-            ButlerSpin(Modifier.fillMaxSize(), interactive = false)
+            // interactive = false:拖动已经被外层用来搬位置了,这里只负责「转 / 停」。
+            // 面板开着 = 停下来(原地),收起 = 接着转 —— 少帅要的就是这个。
+            ButlerSpin(Modifier.fillMaxSize(), interactive = false, spinning = !panelOpen)
         }
 
         /* ② 就地弹出的对话面板(画在机器人之后,保证它压在上面) */
