@@ -1459,7 +1459,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.9.0",
+            "生活管家 · v2.9.1",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
