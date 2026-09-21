@@ -395,11 +395,17 @@ private data class LbTab(
     val raster: Int? = null,
 )
 
-/** 位图图标主体(骨白陶瓷头)在 255 里大约的亮度,用来把未选中态压到 LbInk3 的调子。 */
-private const val RASTER_ICON_TYPICAL_LUMA = 0.82f
+/**
+ * 位图图标「未选中」时压到多暗。
+ *
+ * **别按 LbInk3 的亮度去压**(那是给线性图标用的:线性图标是描边,压到近黑依然读得出形状;
+ * 而位图机器人有一大块深色面罩,压到那个亮度整张就糊成一团黑,少帅直接反馈"不点它就是黑的,不对")。
+ * 现在只去饱和 + 轻微压暗,读成"灰的机器人",形状和五官都还在。
+ */
+private const val RASTER_ICON_INACTIVE_K = 0.72f
 
 /**
- * 位图图标「未选中」时的着色:去饱和 + 整体乘一个系数,把亮度压到 [color](即 LbInk3)的量级。
+ * 位图图标「未选中」时的着色:去饱和 + 乘一个系数。
  *
  * 为什么不直接降 alpha:`Image` 降 alpha 是往**背景色**靠,而浅色主题的背景(LbBg #F4F3EF,
  * 亮度约 0.95)比图标的骨白头(约 0.82)还亮 —— 降 alpha 只会让它更白、更看不见。
@@ -408,8 +414,8 @@ private const val RASTER_ICON_TYPICAL_LUMA = 0.82f
  * 一个 4x5 ColorMatrix 一次做完:前 3 行都取整幅图的亮度权重(0.299/0.587/0.114)再乘 k,
  * 等价于「先转灰度、再乘 k」;第 4 行原样透传 alpha。
  */
-private fun inkTone(color: Color): ColorFilter {
-    val k = (color.luminance() / RASTER_ICON_TYPICAL_LUMA).coerceIn(0.3f, 1f)
+private fun inkTone(): ColorFilter {
+    val k = RASTER_ICON_INACTIVE_K
     val r = 0.299f * k
     val g = 0.587f * k
     val b = 0.114f * k
@@ -459,7 +465,7 @@ fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
                         Image(
                             painter = painterResource(raster),
                             contentDescription = item.label,
-                            colorFilter = if (active) null else remember(tint) { inkTone(tint) },
+                            colorFilter = if (active) null else inkTone(),
                             modifier = Modifier.size(24.dp),
                         )
                     } else {

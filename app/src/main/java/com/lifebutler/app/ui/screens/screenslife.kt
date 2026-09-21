@@ -373,7 +373,7 @@ fun ChatScreen(
                             .height(340.dp),
                     )
                     Text(
-                        "说一句，待办 / 订阅 / 记账 / 备忘 都能动",
+                        "说一句，待办 / 订阅 / 记账 / 备忘 都能动 · 拖动或点击转圈",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         textAlign = TextAlign.Center,
@@ -1459,7 +1459,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.7.0",
+            "生活管家 · v2.8.0",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,

@@ -36,8 +36,12 @@ def page_image(cut, height=900, pad_ratio=0.04):
     return out
 
 
-def head_square(cut, band=0.46, zoom=1.06):
-    """头部图标:取内容最上面 band 比例的横带当"头部"区域,在其四周取正方形。"""
+def head_square(cut, band=0.62, zoom=0.98):
+    """底栏图标:取内容最上面 band 比例的横带当"上半身"区域,在其四周取正方形。
+
+    为什么不用"只有头"的特写:头壳里那块深色面罩占比太大,缩到 24dp 就糊成一团黑
+    (少帅反馈过"不点它就是黑的")。取到胸口一带,白色壳体和橙色圈都进来,小尺寸才读得出是机器人。
+    """
     b = content_box(cut)
     x0, y0, x1, y1 = b
     ch = y1 - y0

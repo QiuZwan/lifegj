@@ -4,8 +4,14 @@ import android.content.Context
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.GLES20
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -13,6 +19,7 @@ import androidx.compose.ui.res.painterResource
 import com.google.android.filament.IndirectLight
 import com.lifebutler.app.R
 import io.github.sceneview.SceneView
+import io.github.sceneview.math.Rotation
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.rememberCameraManipulator
 import io.github.sceneview.rememberEngine
@@ -25,7 +32,9 @@ import io.github.sceneview.rememberModelLoader
  * 智能管家页的 3D 小机器人。
  *
  * v2.6 起这里是**真的 3D 模型**（assets/models/butler3d.glb，腾讯混元图生 3D 出的），
- * 不再是一张渲染图。用户可以拖动旋转、双指缩放（[rememberCameraManipulator] 自带的轨道相机）。
+ * 不再是一张渲染图。用户可以拖动旋转、双指缩放（[rememberCameraManipulator] 自带的轨道相机），
+ * 另外 v2.8 起**静止时它自己也会慢慢转**（[SPIN_PERIOD_MS] 一圈）——少帅反馈过"机器人是死的,
+ * 动不了没互动",光靠"能拖"是不够的:你得先知道它能拖。
  *
  * 为什么环境光用球谐常数而不是 HDR 文件：
  * Filament 的 PBR 材质必须有一份 IndirectLight（间接光），否则整个模型发黑。
@@ -33,11 +42,12 @@ import io.github.sceneview.rememberModelLoader
  * 用 `IndirectLight.Builder().irradiance(1, sh)` 给一组球谐常数就够了——零资源、零体积。
  * [SH_R] 里的三个数就是 (R,G,B) 的环境光强度。
  *
- * 两层回退，都落到 v2.5 的静态图 [R.drawable.lb_butler3d]，不至于空白或崩溃：
+ * 两层回退，都不会空白或崩溃：
  *  1. 软件渲染的设备（GPU 名带 "SwiftShader"，典型是模拟器）：Filament 的 blitLow 着色器
  *     在 SwiftShader 的 GLSL 编译器上编译不过（结构体构造不被支持），引擎会直接 native
- *     panic 把进程带走——所以在进 Filament **之前**就拦下，直接用静态图。真机 GPU
- *     （Adreno/Mali/PowerVR）不受影响。
+ *     panic 把进程带走——所以在进 Filament **之前**就拦下，交给 [ButlerSpin]：
+ *     事先 CPU 渲染好的 24 张角度序列帧，空闲自转 + 横向拖动转圈 + 点一下转一整圈。
+ *     真机 GPU（Adreno/Mali/PowerVR）不受影响，走下面的真 3D。
  *  2. 模型加载失败（instance == null）：静态图垫底。
  */
 private const val SH_R = 1.00f
@@ -49,6 +59,12 @@ private const val IBL_INTENSITY = 50_000f
 
 /** 机器人摆到多大规模。glb 里模型本身的单位很随意，用 scaleToUnits 归一到 1 个世界单位。 */
 private const val MODEL_SCALE_TO_UNITS = 1.0f
+
+/**
+ * 静止时自转一圈要多久。故意慢：这是"它还活着"的暗示，不是让你盯着看的风扇。
+ * （模拟器那条路的 [ButlerSpin] 是 24 帧序列帧，约 17 秒一圈。）
+ */
+private const val SPIN_PERIOD_MS = 30_000
 
 /**
  * SwiftShader = 模拟器/软件渲染的 GPU。Filament 的 blitLow 着色器在它的 GLSL 编译器上
@@ -112,12 +128,9 @@ private fun isSoftwareGpu(ctx: Context): Boolean {
 fun ButlerScene(modifier: Modifier) {
     val context = LocalContext.current
     if (isSoftwareGpu(context)) {
-        Image(
-            painter = painterResource(R.drawable.lb_butler3d),
-            contentDescription = "智能管家",
-            contentScale = ContentScale.Fit,
-            modifier = modifier,
-        )
+        // 软件渲染(模拟器等):Filament 会崩,改用事先 CPU 渲染好的角度序列帧,
+        // 空闲自转 + 横向拖动转圈 + 点一下自转一整圈 —— 不是一张贴死的图。
+        ButlerSpin(modifier = modifier)
         return
     }
     val engine = rememberEngine()
@@ -145,6 +158,15 @@ fun ButlerScene(modifier: Modifier) {
         environmentLoader.createEnvironment(indirect, null, null)
     }
 
+    // 静止自转。走节点的 rotation 而不是相机:相机是给用户拖的,别跟用户抢。
+    val spin = rememberInfiniteTransition(label = "butlerSpin")
+    val yaw by spin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(SPIN_PERIOD_MS, easing = LinearEasing)),
+        label = "butlerYaw",
+    )
+
     SceneView(
         modifier = modifier,
         engine = engine,
@@ -155,6 +177,7 @@ fun ButlerScene(modifier: Modifier) {
         ModelNode(
             modelInstance = instance,
             scaleToUnits = MODEL_SCALE_TO_UNITS,
+            rotation = Rotation(y = yaw),
         )
     }
 }
