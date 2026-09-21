@@ -1,6 +1,6 @@
 # 生活管家 · Android(Compose)
 
-「上班族 × 个人生活管家」界面设计 V10 的 Android 实现（本机数据版 v2.6）。技术栈：Kotlin + Jetpack Compose + Material 3，按「静护」设计系统（骨白纸面 + 深玉绿）还原设计稿；数据为**用户自己记录、本机持久化、多模块联动**。所有记录都在本机；会联网的只有两处——可选的「桌面天气」，以及「智能管家」（**默认已开**，用打包在安装包里的共享免费额度，随时可关或换成自己的 Key，详见 v2.2 一节）。
+「上班族 × 个人生活管家」界面设计 V10 的 Android 实现（本机数据版 v2.7）。技术栈：Kotlin + Jetpack Compose + Material 3，按「静护」设计系统（骨白纸面 + 深玉绿）还原设计稿；数据为**用户自己记录、本机持久化、多模块联动**。所有记录都在本机；会联网的只有两处——可选的「桌面天气」，以及「智能管家」（**默认已开**，用打包在安装包里的共享免费额度，随时可关或换成自己的 Key，详见 v2.2 一节）。
 
 版本历程：
 
@@ -19,6 +19,7 @@
 - v2.4 管家插图**换成 3D 版**：戴玉绿报童帽、圆框护目镜里亮着玉绿竖瞳的机器人，双手扒在卡片上沿往外探头；带真透明通道，深浅色模式共用一张（不再需要 `values-night` 配色）
 - v2.5 管家形象**全身化**：智能管家页换成有身体的全身渲染形象，底部 tab 图标换成同款头部特写（`lb_nav_butler.webp`）
 - v2.6 智能管家页是**真的 3D 模型**：腾讯混元图生 3D 生成的 glTF 机器人（打包在 APK 内，约 3 MB），进页面就能拖动旋转、双指缩放；软件渲染的设备（模拟器等）自动回退 v2.5 的静态图，不会崩
+- v2.7 管家形象**换成一款新的小机器人**（奶白机身 + 橙色点缀 + 深色面罩里一双青蓝眼睛）：按你给的四视图重出一套 3D 模型，页面插图与底部 tab 图标也一起换成同一台，三处不会再错位
 
 ## 诚信约定（v1.9 起，v2.0 延续）
 
@@ -57,6 +58,18 @@
 - 记录入口：今日 / 守护 / 时间线 / 家庭 / 档案各页均有「+」；点任务 / 义务可标记完成，长按可删除或编辑。
 - 对话可用：接了 AI 就听整句话（加订阅 / 加家人 / 记日子 / 记账 / 问账）；没接 AI 时退化为规则模式，仍支持「记一下：……」「记账：午饭 25」「今天有什么安排」「今天花了多少」「订阅花了多少」「取消 XX」。
 - 联动：关闭订阅 → 守护清单「关闭中」+ 我的统计与省下金额；添加订阅 → 今日「替你盯着的」最近一笔；添加义务 → 时间线倒计时 + 今日计数；导出家庭档案 → 生成文本分享。
+
+## v2.7 新增
+
+### 管家换成新的小机器人（3D 模型 + 静态形象一起换）
+
+按四视图（正 / 3-4 / 侧 / 背）重做了整套：**3D 模型、页面静态图、底部 tab 图标来自同一张图**，所以真机（3D）与软件渲染设备（静态图）看到的是同一台机器人。
+
+- 拆分与抠图：`design/butler3d/split_views.py` 按「暗像素列分布」把四视图切成四张单视图（背景是浅灰蓝渐变、机身是奶白，只有面罩/关节/鞋底这些深色件能可靠区分四台）。
+  `design/butler3d/cutout_neutral.py` 抠图。**这里有个反直觉的点**：按「与相邻像素的局部色差」做漫水填充会顺着轮廓上的抗锯齿过渡带一路爬进机身（第一版实测头壳、手臂、腹壳全被啃成透明）；正解是**按行估计背景色**（每行取最左/最右各 8 像素的中位数），再要求像素与本行背景色足够接近，过渡带离本行背景色差 20+ 就被挡住了。脚本还会切掉脚底的软接触阴影——留着会让图生 3D 在底座上糊出一块灰片（第一版模型脚底真出了一个白色圆盘，确认后重生成了一次）。
+- 3D：以 3/4 视角那张为输入，混元图生 3D 出 6 万面 GLB（37.6 MB）→ `shrink_glb.py` 瘦身到 **3.4 MB** → 替换 `app/src/main/assets/models/butler3d.glb`。
+- 静态资源：`design/butler3d/make_assets_from_cut.py` 从同一张抠图出页面图 `lb_butler3d.webp`（563×972）与底栏头部图标 `lb_nav_butler.webp`（192×192，选中玉绿、未选中经 `inkTone()` 去饱和）。
+- 原始素材与预览都在 `design/butler3d/robot2_raw/`、`design/butler3d/robot2_preview/`，随仓库走。
 
 ## v2.6 新增
 
@@ -281,7 +294,7 @@ v2.0/v2.1 的 AI 管家要你自己去注册、拿 Key、粘进来，才能听�
 - 档案文件：存于 `filesDir`，对外只读授权走 `res/xml/file_paths.xml` + `androidmanifest.xml` 里的 FileProvider（authority 为 `${applicationId}.fileprovider`）。
 - 本机图片：`decodeLocal(path, maxDim)` 按需下采样解码；`LocalImage` / `LocalPhoto` 是唯一渲染入口，传 `maxDim` 控制缩略图内存。新增图片位要记得传 `maxDim`。
 - 图标：`ui/icons/LbIcons.kt`（Tabler 路径内联；增改图标直接编辑 pathData）。
-- 「智能管家」页 v2.6 起是**真 3D 模型**：`app/src/main/assets/models/butler3d.glb`（3.2 MB），由 `ui/components/butlerscene.kt` 的 `ButlerScene` 加载（SceneView + Filament，可拖动旋转/缩放），软件渲染设备回退静态图 `res/drawable-xxhdpi/lb_butler3d.webp`（v2.5 全身版，830×1078，宽高比 0.770）。重做模型：先用 `design/butler3d/make_char3d.py` 处理出输入图，走图生 3D 出 GLB，再用 `design/butler3d/shrink_glb.py` 瘦身（**它会重写 bufferView，别忘了每张图要带 `buffer: 0`、`buffers[0].byteLength` 要等于新 BIN 长度——漏一个 Filament 就报 "Unable to parse glTF file"**）。底部 tab 图标是 `res/drawable-xxhdpi/lb_nav_butler.webp`（头部特写，未选中态用 `inkTone()` 着色）。
+- 「智能管家」页 v2.6 起是**真 3D 模型**：`app/src/main/assets/models/butler3d.glb`（v2.7 新机器人，3.4 MB），由 `ui/components/butlerscene.kt` 的 `ButlerScene` 加载（SceneView + Filament，可拖动旋转/缩放），软件渲染设备回退静态图 `res/drawable-xxhdpi/lb_butler3d.webp`（563×972，同一台机器人）。**重做整套形象的顺序**（脚本都在 `design/butler3d/`）：`split_views.py` 拆四视图 → `cutout_neutral.py` 抠图（按行估计背景色；**别改成"与相邻像素比"**，会顺着抗锯齿爬进机身）→ 图生 3D 出 GLB → `shrink_glb.py` 瘦身（**它会重写 bufferView：每张图要带 `buffer: 0`、`buffers[0].byteLength` 要等于新 BIN 长度——漏一个 Filament 就报 "Unable to parse glTF file"**）→ `make_assets_from_cut.py` 出页面图与底栏图标。底部 tab 图标是 `res/drawable-xxhdpi/lb_nav_butler.webp`（头部特写，未选中态用 `inkTone()` 着色）。
 - 演示数据：「我的 → 载入演示数据」触发，实现在 `ButlerStore.loadDemo()`；演示订阅的来源字段标为「演示」，界面显示角标。**不要把演示数据写进 `load()`**，首启必须为空。
 - 图片：`res/drawable-nodpi/` 下的 jpg。当前被代码引用的只有这 9 张：`hero_morning / archive_papers / family_home / review_journal / vault_shelf / avatar_mom / avatar_dad / avatar_user / avatar_cat`；同目录下的 `focus_desk / chat_faucet / family_tea / guard_wallet` 暂未被引用（早期版式留下的素材，删掉不影响构建）。**例外**：「智能管家」的静态回退图在 `res/drawable-xxhdpi/lb_butler3d.webp`（带 alpha，深浅色共用）、底栏图标 `lb_nav_butler.webp` 同目录，不在这个目录——它们需要按密度下采样，放进 nodpi 会一律按原始像素解码。
 - 应用名：`androidmanifest.xml` 中 `android:label`；版本号在 `app/build.gradle.kts`（`versionCode` / `versionName`）与 `screenslife.kt` 页脚文案两处，改的时候别只改一处。
