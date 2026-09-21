@@ -103,8 +103,15 @@ private fun norm(deg: Float): Float {
     return if (m < 0f) m + 360f else m
 }
 
+/**
+ * @param interactive 是否自己接管横向拖动/点击手势。
+ *   默认 true（智能管家页那一台大字号的，自己管旋转和点击）。
+ *   悬浮小管家传 false：它要的是「一直自己转，但拖动交给外层去搬位置」——
+ *   如果这里也挂 [detectHorizontalDragGestures]，手指一按就变成「原地转」而不是「把机器人搬走」，
+ *   两个手势会抢同一个事件。
+ */
 @Composable
-fun ButlerSpin(modifier: Modifier = Modifier) {
+fun ButlerSpin(modifier: Modifier = Modifier, interactive: Boolean = true) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -162,51 +169,61 @@ fun ButlerSpin(modifier: Modifier = Modifier) {
         label = "butlerBreathePhase",
     )
 
-    Box(
-        modifier = modifier
-            .pointerInput(Unit) {
-                // 只认横向拖动:纵向留给页面的滚动,不然机器人这块会把上滑手势吃掉。
-                // ⚠️ `onHorizontalDrag` 的第二个参数是 **Float(已经就是横向位移)**,
-                // 不是 `detectDragGestures` 那样的 `Offset`——写成 `drag.x` 编译不过。
-                //
-                // ⚠️ 角度按**手指绝对位置**算,不要把每次的位移累加。指针事件是会丢的
-                // (这台软件渲染的模拟器上实测一次 400px 的滑动只送到 ~200px 的量,
-                // 累加法于是只转了半圈),而绝对位置法永远等于手指当前位置,丢多少都不影响结果。
-                var startX = 0f
-                var startAngle = 0f
-                detectHorizontalDragGestures(
-                    onDragStart = { off ->
-                        lastTouch = SystemClock.uptimeMillis()
-                        startX = off.x
-                        startAngle = angle
-                    },
-                    onDragEnd = { lastTouch = SystemClock.uptimeMillis() },
-                    onDragCancel = { lastTouch = SystemClock.uptimeMillis() },
-                ) { change, _ ->
-                    change.consume()
-                    lastTouch = SystemClock.uptimeMillis()
-                    angle = norm(
-                        startAngle - (change.position.x - startX) / DRAG_PX_PER_TURN * 360f,
-                    )
-                }
-            }
-            .pointerInput(Unit) {
-                detectTapGestures {
-                    lastTouch = SystemClock.uptimeMillis()
-                    val from = angle
-                    scope.launch {
-                        // 用 withFrameNanos 跟着 Compose 的帧钟走,比 delay(16) 稳
-                        val t0 = withFrameNanos { it }
-                        while (true) {
-                            val now = withFrameNanos { it }
-                            val p = ((now - t0) / 1_000_000f / TAP_TURN_MS).coerceIn(0f, 1f)
+    // 手势只在 interactive 时挂上。悬浮小管家要的是「一直自己转，拖动交给外层搬位置」：
+    // 这里若也挂 detectHorizontalDragGestures，手指一按就变成「原地转」而不是「把它搬走」，
+    // 两个手势会抢同一个事件。
+    val gestures =
+        if (!interactive) {
+            Modifier
+        } else {
+            Modifier
+                .pointerInput(Unit) {
+                    // 只认横向拖动:纵向留给页面的滚动,不然机器人这块会把上滑手势吃掉。
+                    // ⚠️ `onHorizontalDrag` 的第二个参数是 **Float(已经就是横向位移)**,
+                    // 不是 `detectDragGestures` 那样的 `Offset`——写成 `drag.x` 编译不过。
+                    //
+                    // ⚠️ 角度按**手指绝对位置**算,不要把每次的位移累加。指针事件是会丢的
+                    // (这台软件渲染的模拟器上实测一次 400px 的滑动只送到 ~200px 的量,
+                    // 累加法于是只转了半圈),而绝对位置法永远等于手指当前位置,丢多少都不影响结果。
+                    var startX = 0f
+                    var startAngle = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { off ->
                             lastTouch = SystemClock.uptimeMillis()
-                            angle = norm(from + 360f * FastOutSlowInEasing.transform(p))
-                            if (p >= 1f) break
+                            startX = off.x
+                            startAngle = angle
+                        },
+                        onDragEnd = { lastTouch = SystemClock.uptimeMillis() },
+                        onDragCancel = { lastTouch = SystemClock.uptimeMillis() },
+                    ) { change, _ ->
+                        change.consume()
+                        lastTouch = SystemClock.uptimeMillis()
+                        angle = norm(
+                            startAngle - (change.position.x - startX) / DRAG_PX_PER_TURN * 360f,
+                        )
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        lastTouch = SystemClock.uptimeMillis()
+                        val from = angle
+                        scope.launch {
+                            // 用 withFrameNanos 跟着 Compose 的帧钟走,比 delay(16) 稳
+                            val t0 = withFrameNanos { it }
+                            while (true) {
+                                val now = withFrameNanos { it }
+                                val p = ((now - t0) / 1_000_000f / TAP_TURN_MS).coerceIn(0f, 1f)
+                                lastTouch = SystemClock.uptimeMillis()
+                                angle = norm(from + 360f * FastOutSlowInEasing.transform(p))
+                                if (p >= 1f) break
+                            }
                         }
                     }
                 }
-            },
+        }
+
+    Box(
+        modifier = modifier.then(gestures),
         contentAlignment = Alignment.Center,
     ) {
         val shown = frame

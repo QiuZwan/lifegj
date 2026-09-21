@@ -88,6 +88,19 @@ class ButlerStore private constructor(context: Context) {
     val darkMode: MutableState<Boolean> = mutableStateOf(false)
     private var startDate: String = LocalDate.now().toString()
 
+    /**
+     * 悬浮管家（App 内全局那个小机器人）被拖到的位置，**归一化到 0~1**（相对可拖动区域的宽/高）。
+     *
+     * 为什么存分数不存像素：屏幕上可拖动的范围会变（换设备、系统字体、深色模式下的状态栏），
+     * 存像素下次就可能跑到屏幕外或压在按钮上；存分数永远落在「看起来一样的地方」。
+     * -1 表示用户还没拖过它，界面按「默认贴右侧」处理。
+     *
+     * 故意**不是** Compose state：拖动过程中每帧都会变，做成 state 会把整棵界面树重组一遍；
+     * 这里只在松手时读一次、写一次盘，拖动中的实时位置由 ButlerFloat 自己的局部状态管。
+     */
+    var butlerFx: Float = -1f
+    var butlerFy: Float = -1f
+
     val tasks: SnapshotStateList<ButlerTask> = mutableStateListOf()
     val subs: SnapshotStateList<ButlerSub> = mutableStateListOf()
     val obligations: SnapshotStateList<ButlerObligation> = mutableStateListOf()
@@ -843,6 +856,24 @@ class ButlerStore private constructor(context: Context) {
         save()
     }
 
+    /** 排查用的 debug 通道(只有 debug 包写 logcat)。release 包里这个方法什么都不做。 */
+    fun debugFloat(msg: String) {
+        if (debuggable) android.util.Log.d("LbState", "[float] $msg")
+    }
+
+    /**
+     * 记下悬浮管家被拖到的位置（归一化坐标 0~1）。拖动松手时调一次，拖动过程中不要调——
+     * 每帧写一次盘纯属浪费，位置也不需要那么高的落盘频率。
+     */
+    fun setButlerPos(fx: Float, fy: Float) {
+        butlerFx = fx.coerceIn(0f, 1f)
+        butlerFy = fy.coerceIn(0f, 1f)
+        // debug 包留一行:这个值只应该"用户拖完"才变。要是界面上出现了没拖它却变了的情况,
+        // 有这行才能分清是「真发生了一次拖动」还是别处在写。release 包里不写。
+        if (debuggable) android.util.Log.d("LbState", "[float] setButlerPos $butlerFx $butlerFy")
+        save()
+    }
+
     fun hasAnyRecord(): Boolean = tasks.isNotEmpty() || subs.isNotEmpty() || obligations.isNotEmpty() ||
         members.isNotEmpty() || keyDates.isNotEmpty() || archive.isNotEmpty() ||
         expenses.isNotEmpty() || charges.isNotEmpty() || closedHistory.isNotEmpty() ||
@@ -868,6 +899,8 @@ class ButlerStore private constructor(context: Context) {
         reminderEnabled.value = true
         reminderHour.value = 9
         darkMode.value = false
+        // 悬浮管家回到默认位置（贴右侧）。它不算「记录」，只是界面摆放，但清空也一并复位更符合直觉。
+        butlerFx = -1f; butlerFy = -1f
         startDate = LocalDate.now().toString()
         chat.add(ButlerChat(id(), false, "数据已清空，从今天开始记录吧。说「记一下：…」试试，或去「守护」页扫描本机自动续费。", ""))
         save()
@@ -1094,6 +1127,8 @@ class ButlerStore private constructor(context: Context) {
             o.put("remind", reminderEnabled.value)
             o.put("remindHour", reminderHour.value)
             o.put("dark", darkMode.value)
+            o.put("bfx", butlerFx.toDouble())
+            o.put("bfy", butlerFy.toDouble())
             val dis = JSONArray()
             dismissed.forEach { dis.put(it) }
             o.put("dismissed", dis)
@@ -1152,6 +1187,8 @@ class ButlerStore private constructor(context: Context) {
             reminderEnabled.value = o.optBoolean("remind", true)
             reminderHour.value = o.optInt("remindHour", 9)
             darkMode.value = o.optBoolean("dark", false)
+            butlerFx = o.optDouble("bfx", -1.0).toFloat()
+            butlerFy = o.optDouble("bfy", -1.0).toFloat()
             o.optJSONArray("dismissed")?.let { a ->
                 for (i in 0 until a.length()) dismissed.add(a.getString(i))
             }

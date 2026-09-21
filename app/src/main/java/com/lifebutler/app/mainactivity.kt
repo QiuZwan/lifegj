@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,8 +27,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.ReminderScheduler
+import com.lifebutler.app.ui.components.ButlerFloat
 import com.lifebutler.app.ui.components.LbBottomBar
 import com.lifebutler.app.ui.screens.ChatScreen
 import com.lifebutler.app.ui.screens.ExpenseScreen
@@ -143,73 +146,102 @@ fun LbApp(
 
     BackHandler(enabled = overlay != null) { overlay = null }
 
-    Column(
+    /**
+     * 管家给的 route 名字 → 真的翻页。两处调用(「智能管家」页内、悬浮小管家)共用这一份,
+     * 免得两个名字表走散——加一页只改这里。
+     */
+    fun openRoute(route: String) {
+        when (route) {
+            "today" -> { overlay = null; tab = "今日" }
+            "guard" -> { overlay = null; tab = "守护" }
+            "family" -> { overlay = null; tab = "家庭" }
+            "mine" -> { overlay = null; tab = "我的" }
+            "chat" -> Unit
+            else -> overlay = route
+        }
+    }
+
+    Box(
         Modifier
             .fillMaxSize()
-            .background(LbBg)
-            .statusBarsPadding()
-            .navigationBarsPadding(),
+            .background(LbBg),
     ) {
-        Box(Modifier.weight(1f)) {
-            AnimatedContent(
-                targetState = overlay ?: tab,
-                transitionSpec = {
-                    fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(120))
-                },
-                label = "screen",
-                modifier = Modifier.fillMaxSize(),
-            ) { key ->
-                when (key) {
-                    "detail" -> SubscriptionDetailScreen(subId = detailSubId, onBack = { overlay = null })
-                    "scan" -> ScanScreen(onBack = { overlay = null })
-                    "duties" -> ObligationsScreen(onBack = { overlay = null })
-                    "ledger" -> ExpenseScreen(onBack = { overlay = null })
-                    "memo" -> MemoScreen(onBack = { overlay = null })
-                    "report" -> MonthReportScreen(onBack = { overlay = null })
-                    "states" -> StatesScreen(onBack = { overlay = null }, onOpenScan = { overlay = "scan" })
-                    "vault" -> VaultScreen(onOpenStates = { overlay = "states" })
-                    "今日" -> TodayScreen(
-                        onOpenDuties = { overlay = "duties" },
-                        onOpenGuard = { tab = "守护" },
-                        onOpenLedger = { overlay = "ledger" },
-                        onOpenReport = { overlay = "report" },
-                    )
-                    "守护" -> GuardScreen(
-                        onOpenDetail = { id ->
-                            detailSubId = id
-                            overlay = "detail"
-                        },
-                        onOpenDuties = { overlay = "duties" },
-                        onOpenScan = { overlay = "scan" },
-                    )
-                    "智能管家" -> ChatScreen(
-                        // 管家说要带用户去哪一页时,由这里真的翻过去
-                        onOpen = { route ->
-                            when (route) {
-                                "today" -> { overlay = null; tab = "今日" }
-                                "guard" -> { overlay = null; tab = "守护" }
-                                "family" -> { overlay = null; tab = "家庭" }
-                                "mine" -> { overlay = null; tab = "我的" }
-                                "chat" -> Unit
-                                else -> overlay = route
-                            }
-                        },
-                        autoAsk = pendingAsk,
-                        onAskConsumed = { pendingAsk = null },
-                    )
-                    "家庭" -> FamilyScreen()
-                    "我的" -> MineScreen(
-                        onOpenVault = { overlay = "vault" },
-                        onOpenFamily = { tab = "家庭" },
-                        onOpenReport = { overlay = "report" },
-                        onOpenMemo = { overlay = "memo" },
-                    )
-                    else -> {}
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+        ) {
+            Box(Modifier.weight(1f)) {
+                AnimatedContent(
+                    targetState = overlay ?: tab,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(120))
+                    },
+                    label = "screen",
+                    modifier = Modifier.fillMaxSize(),
+                ) { key ->
+                    when (key) {
+                        "detail" -> SubscriptionDetailScreen(subId = detailSubId, onBack = { overlay = null })
+                        "scan" -> ScanScreen(onBack = { overlay = null })
+                        "duties" -> ObligationsScreen(onBack = { overlay = null })
+                        "ledger" -> ExpenseScreen(onBack = { overlay = null })
+                        "memo" -> MemoScreen(onBack = { overlay = null })
+                        "report" -> MonthReportScreen(onBack = { overlay = null })
+                        "states" -> StatesScreen(onBack = { overlay = null }, onOpenScan = { overlay = "scan" })
+                        "vault" -> VaultScreen(onOpenStates = { overlay = "states" })
+                        "今日" -> TodayScreen(
+                            onOpenDuties = { overlay = "duties" },
+                            onOpenGuard = { tab = "守护" },
+                            onOpenLedger = { overlay = "ledger" },
+                            onOpenReport = { overlay = "report" },
+                        )
+                        "守护" -> GuardScreen(
+                            onOpenDetail = { id ->
+                                detailSubId = id
+                                overlay = "detail"
+                            },
+                            onOpenDuties = { overlay = "duties" },
+                            onOpenScan = { overlay = "scan" },
+                        )
+                        "智能管家" -> ChatScreen(
+                            // 管家说要带用户去哪一页时,由这里真的翻过去
+                            onOpen = { route -> openRoute(route) },
+                            autoAsk = pendingAsk,
+                            onAskConsumed = { pendingAsk = null },
+                        )
+                        "家庭" -> FamilyScreen()
+                        "我的" -> MineScreen(
+                            onOpenVault = { overlay = "vault" },
+                            onOpenFamily = { tab = "家庭" },
+                            onOpenReport = { overlay = "report" },
+                            onOpenMemo = { overlay = "memo" },
+                        )
+                        else -> {}
+                    }
                 }
             }
+            if (overlay == null) {
+                LbBottomBar(current = tab, onSelect = { tab = it })
+            }
         }
-        if (overlay == null) {
-            LbBottomBar(current = tab, onSelect = { tab = it })
-        }
+
+        // 悬浮小管家:压在整套界面之上(App 内全局),默认贴右侧、拖到哪儿存哪儿、点一下就地说话。
+        // 「智能管家」页不给它出场——那一页有自己那一台大字号的机器人,两个一起出现会看花眼,
+        // 也分不清到底哪个能拖。
+        ButlerFloat(
+            visible = (overlay ?: tab) != "智能管家",
+            onOpenChat = {
+                overlay = null
+                tab = "智能管家"
+            },
+            onOpenRoute = { route -> openRoute(route) },
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                // 底栏还在的时候给它留出位置,机器人不会被拖到按钮底下
+                .padding(bottom = if (overlay == null) 60.dp else 0.dp),
+        )
     }
 }
