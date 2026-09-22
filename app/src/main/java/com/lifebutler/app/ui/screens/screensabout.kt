@@ -70,6 +70,7 @@ import com.lifebutler.app.ui.components.LbGhostButton
 import com.lifebutler.app.ui.components.LbListRow
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.SectionHeader
+import com.lifebutler.app.ui.components.lbDialogBody
 import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
@@ -277,9 +278,8 @@ fun AboutScreen(
         LbDialog(
             title = "发现新版本 v${n.version}",
             text = buildString {
-                val notes = prettyNotes(n.notes)
-                if (notes.isNotBlank()) append(notes.take(800))
-                if (notes.isNotBlank()) append("\n\n")
+                val notes = notesForDialog(n.notes)
+                if (notes.isNotBlank()) append(notes).append("\n\n")
                 append("当前版本 v$version。更新包会从发布页下载，装之前系统会再确认一次。")
             },
             primary = "去下载",
@@ -853,6 +853,24 @@ private fun RichText(
     Text(ann, fontSize = fontSize, color = color, lineHeight = lineHeight, modifier = modifier)
 }
 
+/** 更新说明在弹窗里最多显示这么多字。正文本身已可滚动,这个上限只是防超长。 */
+private const val NOTES_IN_DIALOG_MAX = 1800
+
+/**
+ * 更新说明的展示口径:超长时**按行截断**,并在末尾如实说"后面还有、去看发布页"。
+ *
+ * ⚠️ 两个坑都踩过:① 之前写 `take(800)` 硬切,会把「…不显示「共 N 条」这类假」这种半句留在屏幕上,
+ * 看着像乱码;② 800 字实测约 1064dp 高,超过整屏可用高度,把底下的「去下载」按钮顶出了屏幕
+ * —— 而弹窗不会滚,用户的表现就是「滑不动、找不到按钮」。
+ * 前者靠 `substringBeforeLast('\n')`(切在行边界,不会切进 `**加粗**` 中间),后者靠正文挂 `lbDialogBody()`。
+ */
+private fun notesForDialog(raw: String): String {
+    val notes = prettyNotes(raw)
+    if (notes.length <= NOTES_IN_DIALOG_MAX) return notes
+    val head = notes.take(NOTES_IN_DIALOG_MAX).substringBeforeLast('\n')
+    return head + "\n\n（更新说明较长,这里只显示到上面这一段;完整说明在发布页里。）"
+}
+
 /**
  * 把 GitHub Release 的说明（Markdown）收拾成能塞进小弹窗的纯文本。
  *
@@ -895,7 +913,8 @@ private fun LbDialog(
                     fontSize = 12.5.sp,
                     color = LbInk2,
                     lineHeight = 19.sp,
-                    modifier = Modifier.padding(top = 8.dp),
+                    // 正文必须能滚:更新说明的长度由发布页决定,不挂这个底下两个按钮会被顶出屏幕
+                    modifier = Modifier.padding(top = 8.dp).lbDialogBody(),
                 )
                 Row(
                     Modifier

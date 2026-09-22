@@ -3,6 +3,8 @@ package com.lifebutler.app.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -395,6 +398,25 @@ private fun DayCell(
     }
 }
 
+/**
+ * 弹窗正文的通用约束:**必须有高度上限、而且要能滚**。
+ *
+ * 为什么必须有这条 —— `Dialog` 自己不滚,正文多高就画多高,超出去的部分**直接被屏幕裁掉**,
+ * 而底部那排按钮是排在正文后面的,于是会被一起顶到屏幕外面。用户看到的就是
+ * 「弹窗里找不到按钮、也滑不动」(v2.12 真事:更新说明限定 800 字,实测约 1064dp,
+ * 而整屏可用高度只有 640~720dp,「去下载」按钮根本没进过可视区)。
+ *
+ * 所以凡是**正文长度不由我们决定**的地方(更新说明、协议、服务端回来的文案)都必须挂上它。
+ * 高度上限跟着屏幕走,不写死:矮屏(横屏/小屏)上固定 320dp 也可能装不下。
+ */
+@Composable
+fun Modifier.lbDialogBody(): Modifier {
+    val maxBody = (LocalConfiguration.current.screenHeightDp * 0.42f).dp.coerceAtMost(340.dp)
+    return this
+        .heightIn(max = maxBody)
+        .verticalScroll(rememberScrollState())
+}
+
 /** 双动作弹窗:编辑 / 删除 等两级选择 */
 @Composable
 fun LbTwoActionDialog(
@@ -413,7 +435,13 @@ fun LbTwoActionDialog(
         ) {
             Column(Modifier.padding(20.dp)) {
                 Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-                Text(text, fontSize = 13.sp, color = LbInk3, lineHeight = 19.sp, modifier = Modifier.padding(top = 6.dp))
+                Text(
+                    text,
+                    fontSize = 13.sp,
+                    color = LbInk3,
+                    lineHeight = 19.sp,
+                    modifier = Modifier.padding(top = 6.dp).lbDialogBody(),
+                )
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -447,7 +475,13 @@ fun LbPasteDialog(
         ) {
             Column(Modifier.padding(20.dp)) {
                 Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-                Text(hint, fontSize = 12.sp, color = LbInk3, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp))
+                Text(
+                    hint,
+                    fontSize = 12.sp,
+                    color = LbInk3,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(top = 6.dp).lbDialogBody(),
+                )
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -518,7 +552,7 @@ fun LbConfirmDialog(
                     fontSize = 13.sp,
                     color = LbInk3,
                     lineHeight = 19.sp,
-                    modifier = Modifier.padding(top = 6.dp),
+                    modifier = Modifier.padding(top = 6.dp).lbDialogBody(),
                 )
                 Row(
                     Modifier
