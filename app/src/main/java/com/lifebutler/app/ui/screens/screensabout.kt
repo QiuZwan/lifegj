@@ -1,5 +1,6 @@
 package com.lifebutler.app.ui.screens
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -64,6 +65,7 @@ import com.lifebutler.app.R
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.Diagnostics
 import com.lifebutler.app.data.UpdateCheck
+import com.lifebutler.app.data.UpdateDownload
 import com.lifebutler.app.ui.components.IconBadge
 import com.lifebutler.app.ui.components.LbCard
 import com.lifebutler.app.ui.components.LbGhostButton
@@ -80,8 +82,11 @@ import com.lifebutler.app.ui.theme.LbInk2
 import com.lifebutler.app.ui.theme.LbInk3
 import com.lifebutler.app.ui.theme.LbLine
 import com.lifebutler.app.ui.theme.LbOnDark
+import com.lifebutler.app.ui.theme.LbRust
 import com.lifebutler.app.ui.theme.LbSurface
+import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -117,8 +122,27 @@ fun AboutScreen(
     var failed by remember { mutableStateOf<String?>(null) }
     var askLog by remember { mutableStateOf(false) }
 
+    /*
+     * 应用内更新：下载 → 自检 → 拉起**系统安装界面**。
+     * 三个状态：没开始（progress 与 readyFile 都空）/ 下载中（progress 有值）/ 已下好（readyFile 有值）。
+     *
+     * ⚠️ 界面上从不说「自动更新完成」—— 系统那个「安装」按钮必须用户自己点，
+     * 我们能做的是把「下载 + 打开安装界面」这两步替他做完。
+     */
+    var progress by remember { mutableStateOf<Int?>(null) }   // null = 没在下载；>=0 百分比；-1 总大小未知
+    var readyFile by remember { mutableStateOf<File?>(null) }
+    var updateErr by remember { mutableStateOf<String?>(null) }
+    var job by remember { mutableStateOf<Job?>(null) }
+    var askInstallPerm by remember { mutableStateOf(false) }
+    val downloading = progress != null
+
     fun doCheck() {
         if (checking) return
+        // 已经知道有新版本、而且正在下或已经下好时，别再打一次接口 —— 把弹窗打开就行
+        if (newer != null && (downloading || readyFile != null)) {
+            updateErr = null
+            return
+        }
         checking = true
         hint = "正在检查…"
         scope.launch {
@@ -136,6 +160,95 @@ fun AboutScreen(
                 }
             }
         }
+    }
+
+    fun startDownload() {
+        val n = newer ?: return
+        val url = n.apkUrl
+        if (url.isNullOrBlank()) {
+            updateErr = "这一版的发布页上没有挂安装包，只能点「打开发布页」自己下。"
+            return
+        }
+        if (job?.isActive == true) return
+        updateErr = null
+        readyFile = null
+        progress = 0
+        hint = "正在下载 v${n.version}…"
+        job = scope.launch {
+            val r = withContext(Dispatchers.IO) {
+                UpdateDownload.download(ctx, url, n.version) { pct, _, _ -> progress = pct }
+            }
+            progress = null
+            when (r) {
+                is UpdateDownload.Result.Ok -> {
+                    readyFile = r.file
+                    hint = "已下载好 v${n.version}，等你点安装"
+                }
+                is UpdateDownload.Result.Failed -> {
+                    updateErr = r.reason
+                    hint = "下载没能完成"
+                }
+            }
+        }
+    }
+
+    fun launchInstaller(f: File) {
+        // 中途用户可能去系统里把「安装未知应用」又关掉了，所以这里再兜一次
+        if (!UpdateDownload.canInstall(ctx)) {
+            askInstallPerm = true
+            return
+        }
+        try {
+            // 不做「先查有没有安装器」那一步：Android 11 起的包可见性会让这种查询查不到东西，
+            // 反而把能装的设备误判成不能装。直接调用，失败就如实说。
+            ctx.startActivity(UpdateDownload.installIntent(ctx, f))
+        } catch (e: ActivityNotFoundException) {
+            updateErr = "这台设备上没有能打开安装包的界面（系统可能精简掉了）。请点「打开发布页」手动下载。"
+        } catch (e: Exception) {
+            updateErr = "没能打开系统安装界面（${e.javaClass.simpleName}）。请点「打开发布页」手动下载。"
+        }
+    }
+
+    /** 点「更新」：已经下好就直接装，否则先确认能装、再开始下 */
+    fun beginUpdate() {
+        readyFile?.let {
+            launchInstaller(it)
+            return
+        }
+        if (!UpdateDownload.canInstall(ctx)) {
+            askInstallPerm = true
+            return
+        }
+        startDownload()
+    }
+
+    fun cancelDownload() {
+        job?.cancel()
+        job = null
+        progress = null
+        hint = "已取消下载"
+    }
+
+    // 用户从「安装未知应用」设置页回来：允许了就接着干，不允许就如实说清为什么做不了
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (UpdateDownload.canInstall(ctx)) {
+            val f = readyFile
+            if (f != null) launchInstaller(f) else startDownload()
+        } else {
+            updateErr = "还是没有允许「安装未知应用」，所以这一步做不了。想更新的话，" +
+                "在系统设置里给「生活管家」打开这个开关，再回来点一次「更新」。"
+        }
+    }
+
+    /*
+     * 下完之后：
+     * · 更新弹窗还开着 —— 说明用户就在这条流程里等着，直接替他打开系统安装界面（这才是"点一下就开始更新"）；
+     * · 弹窗已经关了 —— 他多半在干别的事，**不能突然把系统界面弹到他脸上**，
+     *   只在「版本信息」那一行挂个「立即安装」等他点。
+     */
+    LaunchedEffect(readyFile) {
+        val f = readyFile
+        if (f != null && newer != null) launchInstaller(f)
     }
 
     Column(
@@ -202,12 +315,82 @@ fun AboutScreen(
                 leading = { IconBadge(LbIcons.refresh, LbAccentSoft, LbAccent, size = 34.dp) },
                 title = "版本信息",
                 sub = "当前 v$version" + if (hint.isNotBlank()) " · $hint" else "",
-                trailing = { CheckUpdatePill(checking, onCheck = { doCheck() }) },
+                trailing = { CheckUpdatePill(checking || downloading, onCheck = { doCheck() }) },
                 onClick = { doCheck() },
             )
         }
+        /*
+         * 下载的进度要落在**这一屏**上，不能只挂在弹窗里 ——
+         * 用户完全可以把这个弹窗关掉去干别的，关了之后还得能看见「它还在下」和「下好了」。
+         */
+        if (downloading || readyFile != null) {
+            val pct = progress
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, start = 2.dp, end = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (pct != null) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "正在下载 v${newer?.version.orEmpty()}" +
+                                if (pct >= 0) " · $pct%" else "…",
+                            fontSize = 11.5.sp,
+                            color = LbInk2,
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 5.dp)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(LbLine),
+                        ) {
+                            // 总大小未知时(pct<0)就画一小段,表示"在动",不假装知道进度
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(if (pct >= 0) (pct / 100f).coerceIn(0.02f, 1f) else 0.06f)
+                                    .height(4.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(LbAccent),
+                            )
+                        }
+                    }
+                    Text(
+                        "取消",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbInk3,
+                        modifier = Modifier
+                            .padding(start = 10.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { cancelDownload() }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                } else {
+                    Text(
+                        "安装包已经下好了",
+                        fontSize = 11.5.sp,
+                        color = LbInk2,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "立即安装",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbAccent,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { readyFile?.let { launchInstaller(it) } }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+        }
         Text(
-            "检查更新会访问 GitHub 的公开接口查最新版本号，只发这一个请求，不带你的任何数据。",
+            "检查更新只发一个请求查最新版本号（不带你的任何数据）；点「更新」会从发布页下载安装包，" +
+                "下完由你点一下系统弹出的「安装」——这一步系统不允许任何应用替你点。",
             fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 15.sp,
@@ -273,23 +456,100 @@ fun AboutScreen(
         )
     }
 
-    /* 发现新版本 */
+    /* 发现新版本：下载 → 安装在这一处走完 */
     newer?.let { n ->
+        val pct = progress
         LbDialog(
-            title = "发现新版本 v${n.version}",
+            title = if (readyFile != null) "v${n.version} 已下载好" else "发现新版本 v${n.version}",
             text = buildString {
                 val notes = notesForDialog(n.notes)
                 if (notes.isNotBlank()) append(notes).append("\n\n")
-                append("当前版本 v$version。更新包会从发布页下载，装之前系统会再确认一次。")
+                append("当前版本 v$version。点「更新」就在这里直接下载，下完自动打开系统的安装界面 —— ")
+                append("最后那下「安装」要你自己点，安卓不允许应用替你按。")
             },
-            primary = "去下载",
+            extra = {
+                // 进度与错误排在正文和按钮之间，按钮区始终在滚动区外面，不会被顶走
+                if (pct != null) {
+                    Column(Modifier.padding(top = 10.dp)) {
+                        Text(
+                            if (pct >= 0) "正在下载 · $pct%" else "正在下载…",
+                            fontSize = 12.sp,
+                            color = LbInk2,
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(LbLine),
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(if (pct >= 0) (pct / 100f).coerceIn(0.02f, 1f) else 0.06f)
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(LbAccent),
+                            )
+                        }
+                        Text(
+                            "下载中可以关掉这个窗口，它在后台接着下，进度会显示在「版本信息」那一行。",
+                            fontSize = 11.sp,
+                            color = LbInk3,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+                updateErr?.let {
+                    Text(
+                        it,
+                        fontSize = 11.5.sp,
+                        color = LbRust,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
+            },
+            primary = when {
+                pct != null -> "下载中" + if (pct >= 0) " $pct%" else "…"
+                readyFile != null -> "立即安装"
+                else -> "更新"
+            },
+            primaryEnabled = pct == null,
             onPrimary = {
-                openUrl(ctx, n.pageUrl)
-                newer = null
+                val f = readyFile
+                if (f != null) launchInstaller(f) else beginUpdate()
             },
-            secondary = "稍后",
-            onSecondary = { newer = null },
-            onDismiss = { newer = null },
+            secondary = if (pct != null) "取消下载" else "打开发布页",
+            onSecondary = {
+                if (pct != null) {
+                    cancelDownload()
+                } else {
+                    openUrl(ctx, n.pageUrl)
+                    newer = null
+                }
+            },
+            onDismiss = { newer = null },   // 只是关窗，下载继续
+        )
+    }
+
+    /* 「安装未知应用」授权引导。这一步是系统要求的，跳不过去，所以要说清楚为什么 */
+    if (askInstallPerm) {
+        LbDialog(
+            title = "需要你允许一次「安装应用」",
+            text = "安卓从 8.0 起有一条硬规矩：装一个安装包之前，必须由你**亲自**在系统设置里" +
+                "给这个应用打开「安装未知应用」。\n\n" +
+                "这不是偷懒 —— 系统故意不让应用自己给自己装东西，否则任何 App 都能偷偷塞一个上来。\n\n" +
+                "点「去设置」跳到那一页，打开开关再回来，更新会接着往下走。",
+            primary = "去设置",
+            onPrimary = {
+                askInstallPerm = false
+                permLauncher.launch(UpdateDownload.permissionIntent(ctx))
+            },
+            secondary = "先不了",
+            onSecondary = { askInstallPerm = false },
+            onDismiss = { askInstallPerm = false },
         )
     }
 
@@ -903,6 +1163,10 @@ private fun LbDialog(
     secondary: String,
     onSecondary: () -> Unit,
     onDismiss: () -> Unit,
+    /** 正文与按钮之间的额外内容（下载进度条、错误说明等）。它**不参与滚动**，永远看得见。 */
+    extra: (@Composable () -> Unit)? = null,
+    /** 主按钮置灰：用于"正在下载中，别重复点"这种状态 */
+    primaryEnabled: Boolean = true,
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
@@ -916,6 +1180,7 @@ private fun LbDialog(
                     // 正文必须能滚:更新说明的长度由发布页决定,不挂这个底下两个按钮会被顶出屏幕
                     modifier = Modifier.padding(top = 8.dp).lbDialogBody(),
                 )
+                extra?.invoke()
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -923,7 +1188,7 @@ private fun LbDialog(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     LbGhostButton(secondary, onSecondary, Modifier.weight(1f))
-                    LbPrimaryButton(primary, onPrimary, Modifier.weight(1f))
+                    LbPrimaryButton(primary, onPrimary, Modifier.weight(1f), enabled = primaryEnabled)
                 }
             }
         }
@@ -989,13 +1254,17 @@ private val PRIVACY = listOf(
         "关掉之后完全不联网。\n" +
         "② AI 智能管家：你点发送时，把你这一句 + 本机摘要（例如「现有 5 条守护、3 个任务」）发给" +
         "**你自己配置的**模型服务（若用内置额度，则发给对应的服务方）换回回答。不发照片，不发档案正文。\n" +
-        "③ 检查更新（关于管家页）：访问 GitHub 的公开接口查最新版本号，只发这一个请求，不带你的任何数据。",
+        "③ 检查更新（关于管家页）：访问 GitHub 的公开接口查最新版本号，不带你的任何数据。\n" +
+        "　 如果查到新版本、且**你点了「更新」**，才会再从发布页下载那个安装包（v2.13 起支持）；" +
+        "不点就不会下。下载用的还是同一个 GitHub 地址，不带你的任何数据。",
     "权限都用来干什么" to
         "通知：每日简报和备忘提醒。\n" +
         "读取短信：只在「一键扫描」里解析扣费短信，仅本机。\n" +
         "位置（粗略）：只用于查天气。\n" +
         "通知使用权：读取扣费通知，仅本机解析。\n" +
         "查询已安装应用白名单：判断你装了哪些常见订阅类 App，避免申请「读取全部应用」的权限。\n" +
+        "安装应用（「安装未知应用」）：只在**你点了「更新」**时用来调起系统的安装界面 —— " +
+        "这个权限是安卓要求的，而且打开后仍然**必须由你亲手点系统那个「安装」**，应用无法代点。\n" +
         "这些都可以不授权，应用会相应降级，而不是罢工。",
     "关于内置的 AI 额度" to
         "安装包里带了一份共享 Key（智谱 GLM-4-Flash），是明文倒序存放的，**不是加密** —— " +

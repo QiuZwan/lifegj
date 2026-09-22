@@ -9,6 +9,13 @@
     <!-- 桌面天气(可选):仅用于下载所在城市天气,不上传任何数据;关闭后完全不联网 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!--
+        「检查更新 → 更新」要在应用内直接下载并调起安装界面,这条路需要它。
+        注意:声明了它**不等于**就能装 —— Android 8.0 起每台设备还要用户在
+        「安装未知应用」里对这个 App 单独允许一次(由 UpdateDownload.canInstall 检查并引导)。
+        最后那个「安装」按钮也必须用户自己点,系统不允许程序代点。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="生活管家"
