@@ -80,6 +80,7 @@ import com.lifebutler.app.data.ButlerPhoto
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.Notifier
 import com.lifebutler.app.data.ReminderScheduler
+import com.lifebutler.app.data.UpdateCheck
 import com.lifebutler.app.data.Weather
 import com.lifebutler.app.ui.components.ButlerScene
 import com.lifebutler.app.ui.components.ChipTone
@@ -1130,9 +1131,17 @@ private fun AlbumViewerDialog(photo: ButlerPhoto, onDelete: () -> Unit, onDismis
 /* ── 07 我的(统计来自真实数据) ── */
 
 @Composable
-fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: () -> Unit, onOpenMemo: () -> Unit) {
+fun MineScreen(
+    onOpenVault: () -> Unit,
+    onOpenFamily: () -> Unit,
+    onOpenReport: () -> Unit,
+    onOpenMemo: () -> Unit,
+    onOpenAbout: () -> Unit,
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
+    // 版本号从包信息读,不再手写 —— 手写的那份漏改过一次,页脚就会一直停在旧版本上。
+    val appVersion = remember { UpdateCheck.versionName(ctx) }
     var showRename by remember { mutableStateOf(false) }
     var showData by remember { mutableStateOf(false) }
     var showDemo by remember { mutableStateOf(false) }
@@ -1358,6 +1367,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                     Triple(LbIcons.deviceFloppy, "备份与恢复", "换机不丢数据"),
                     Triple(LbIcons.eye, "载入演示数据", "用示例内容预览"),
                     Triple(LbIcons.trash, "清空全部数据", "从零开始记录"),
+                    Triple(LbIcons.settings, "关于管家", "版本 · 帮助 · 协议 · 反馈"),
                 )
                 rows.forEachIndexed { i, r ->
                     if (i > 0) {
@@ -1386,6 +1396,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
                                     "数据与隐私" -> showData = true
                                     "载入演示数据" -> showDemo = true
                                     "清空全部数据" -> showClear = true
+                                    "关于管家" -> onOpenAbout()
                                     "备份与恢复" -> showBackup = true
                                     "导出家庭档案" -> {
                                         val sendIntent = Intent(Intent.ACTION_SEND).apply {
@@ -1459,7 +1470,7 @@ fun MineScreen(onOpenVault: () -> Unit, onOpenFamily: () -> Unit, onOpenReport: 
         }
 
         Text(
-            "生活管家 · v2.10.1",
+            "生活管家 · v$appVersion",
             fontSize = 10.5.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
@@ -1724,7 +1735,7 @@ private fun decodeLocal(path: String, maxDim: Int): android.graphics.Bitmap? {
 
 /** 只渲染本机真实存在的图片;取不到就什么都不画,不拿占位图顶替 */
 @Composable
-private fun LocalImage(
+internal fun LocalImage(
     path: String,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,

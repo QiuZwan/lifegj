@@ -292,7 +292,13 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    private fun saveShrunk(uri: android.net.Uri, file: File, maxDim: Int = 512): Boolean = try {
+    /**
+     * 把相册里选中的图压到 [maxDim] 以内、按 JPEG(质量 85) 写进 [file]。
+     *
+     * 公开是给「意见反馈」附图片用的 —— 那边也走这一个压缩入口，
+     * 别在别处再抄一份解码/降采样(全项目就这一处做这件事)。
+     */
+    fun saveShrunk(uri: android.net.Uri, file: File, maxDim: Int = 512): Boolean = try {
         val bmp = decodeShrunk(uri, maxDim) ?: return false
         file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
         true

@@ -32,17 +32,22 @@ import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.ReminderScheduler
 import com.lifebutler.app.ui.components.ButlerFloat
 import com.lifebutler.app.ui.components.LbBottomBar
+import com.lifebutler.app.ui.screens.AboutScreen
 import com.lifebutler.app.ui.screens.ChatScreen
 import com.lifebutler.app.ui.screens.ExpenseScreen
 import com.lifebutler.app.ui.screens.FamilyScreen
+import com.lifebutler.app.ui.screens.FeedbackScreen
 import com.lifebutler.app.ui.screens.GuardScreen
+import com.lifebutler.app.ui.screens.HelpScreen
 import com.lifebutler.app.ui.screens.MemoScreen
 import com.lifebutler.app.ui.screens.MineScreen
 import com.lifebutler.app.ui.screens.MonthReportScreen
 import com.lifebutler.app.ui.screens.ObligationsScreen
+import com.lifebutler.app.ui.screens.PrivacyScreen
 import com.lifebutler.app.ui.screens.ScanScreen
 import com.lifebutler.app.ui.screens.StatesScreen
 import com.lifebutler.app.ui.screens.SubscriptionDetailScreen
+import com.lifebutler.app.ui.screens.TermsScreen
 import com.lifebutler.app.ui.screens.TodayScreen
 import com.lifebutler.app.ui.screens.VaultScreen
 import com.lifebutler.app.ui.theme.LbBg
@@ -144,7 +149,11 @@ fun LbApp(
         }
     }
 
-    BackHandler(enabled = overlay != null) { overlay = null }
+    BackHandler(enabled = overlay != null) {
+        // 「关于管家」下面那几个子页(帮助/协议/反馈),返回键退到「关于管家」这一层,
+        // 而不是一下子退到底栏 —— 从「我的」进来要按两下才回去,跟微信那边的层级感一致。
+        overlay = if (overlay?.startsWith("about_") == true) "about" else null
+    }
 
     /**
      * 管家给的 route 名字 → 真的翻页。两处调用(「智能管家」页内、悬浮小管家)共用这一份,
@@ -190,6 +199,19 @@ fun LbApp(
                         "report" -> MonthReportScreen(onBack = { overlay = null })
                         "states" -> StatesScreen(onBack = { overlay = null }, onOpenScan = { overlay = "scan" })
                         "vault" -> VaultScreen(onOpenStates = { overlay = "states" })
+                        // 「关于管家」及其子页(帮助 / 服务协议 / 隐私协议 / 意见反馈)。
+                        // 全走 overlay,底栏会自然收起,和别的浮层页一个待遇。
+                        "about" -> AboutScreen(
+                            onBack = { overlay = null },
+                            onOpenHelp = { overlay = "about_help" },
+                            onOpenTerms = { overlay = "about_terms" },
+                            onOpenPrivacy = { overlay = "about_privacy" },
+                            onOpenFeedback = { overlay = "about_feedback" },
+                        )
+                        "about_help" -> HelpScreen(onBack = { overlay = "about" })
+                        "about_terms" -> TermsScreen(onBack = { overlay = "about" })
+                        "about_privacy" -> PrivacyScreen(onBack = { overlay = "about" })
+                        "about_feedback" -> FeedbackScreen(onBack = { overlay = "about" })
                         "今日" -> TodayScreen(
                             onOpenDuties = { overlay = "duties" },
                             onOpenGuard = { tab = "守护" },
@@ -216,6 +238,7 @@ fun LbApp(
                             onOpenFamily = { tab = "家庭" },
                             onOpenReport = { overlay = "report" },
                             onOpenMemo = { overlay = "memo" },
+                            onOpenAbout = { overlay = "about" },
                         )
                         else -> {}
                     }

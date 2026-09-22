@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 只暴露 App 自己的私有 files 目录,其他位置一律不可见 -->
+<!-- 只暴露 App 自己的私有 files / cache 目录,其他位置一律不可见。
+     cache 那一条是给「上传日志」用的:诊断日志写在 cacheDir/diag 下,
+     由系统分享面板临时只读授权出去;它随时可被系统回收,也不属于「用户数据」。 -->
 <paths>
     <files-path name="lb_files" path="." />
+    <cache-path name="lb_cache" path="." />
 </paths>
