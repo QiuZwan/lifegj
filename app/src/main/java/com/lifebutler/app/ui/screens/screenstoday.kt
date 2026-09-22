@@ -68,6 +68,7 @@ import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
 import com.lifebutler.app.ui.components.SectionHeader
 import com.lifebutler.app.ui.components.TaskRow
+import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
 import com.lifebutler.app.ui.theme.LbAccentSoft
@@ -102,7 +103,13 @@ private fun Modifier.dashedBorder(): Modifier = this.drawWithContent {
 }
 
 @Composable
-fun TodayScreen(onOpenDuties: () -> Unit, onOpenGuard: () -> Unit, onOpenLedger: () -> Unit, onOpenReport: () -> Unit) {
+fun TodayScreen(
+    onOpenDuties: () -> Unit,
+    onOpenGuard: () -> Unit,
+    onOpenLedger: () -> Unit,
+    onOpenReport: () -> Unit,
+    onOpenSearch: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     var sheetSubId by remember { mutableStateOf<String?>(null) }
@@ -195,11 +202,12 @@ fun TodayScreen(onOpenDuties: () -> Unit, onOpenGuard: () -> Unit, onOpenLedger:
     }
 
     val expenseTodayList = store.expenses.filter { it.date == today.toString() }
-    val expenseTodayTotal = expenseTodayList.sumOf { it.amount }
+    // 首页那个数字只算**花掉的**：把收入加进来会得到一个没有意义的和
+    val expenseTodayTotal = store.spendOf(expenseTodayList)
     val expenseTodayCount = expenseTodayList.size
     val expenseCats = store.expenseCategoryTotals(expenseTodayList)
 
-    val monthExpense = store.expensesInMonth(today.year, today.monthValue).sumOf { it.amount }
+    val monthExpense = store.spendOf(store.expensesInMonth(today.year, today.monthValue))
     val monthSub = store.subs.filter { !it.closing }.sumOf { it.amount }
 
     Column(
@@ -221,6 +229,19 @@ fun TodayScreen(onOpenDuties: () -> Unit, onOpenGuard: () -> Unit, onOpenLedger:
                     style = MaterialTheme.typography.headlineLarge,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+            }
+            // 搜一搜：跨模块检索的入口放在最常打开的那一页的右上角，
+            // 因为「找东西」这件事总是从「我现在在首页」开始
+            Box(
+                Modifier
+                    .padding(end = 7.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(LbSurface)
+                    .border(1.dp, LbLine, RoundedCornerShape(999.dp))
+                    .lbPressable(onClick = onOpenSearch)
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+            ) {
+                Icon(LbIcons.search, contentDescription = "搜一搜", tint = LbInk2, modifier = Modifier.size(15.dp))
             }
             Row(
                 Modifier
@@ -516,8 +537,8 @@ fun TodayScreen(onOpenDuties: () -> Unit, onOpenGuard: () -> Unit, onOpenLedger:
 
     if (showQuickExpense) {
         ExpenseAddDialog(
-            onSave = { a, c, n ->
-                store.addExpense(a, c, n)
+            onSave = { a, c, n, income ->
+                store.addExpense(a, c, n, income)
                 showQuickExpense = false
             },
             onDismiss = { showQuickExpense = false },

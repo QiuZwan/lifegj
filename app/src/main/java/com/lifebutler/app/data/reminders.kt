@@ -90,26 +90,53 @@ object Notifier {
         return nm
     }
 
-    /** 生成今日简报文案;没有可提醒内容时返回 null。第三项指明点击后直达页面 */
+    /**
+     * 生成今日简报文案;没有可提醒内容时返回 null。第三项指明点击后直达页面。
+     *
+     * 提前量不再写死：每条可以有自己的 `remindAhead`（在详情里选「提前 1/3/7/30 天」），
+     * 没选的吃全局设置里的默认值。原来订阅固定 3 天、到期固定 7 天，
+     * 想提前两周知道车险该续了是做不到的。
+     */
     fun buildDailyDigest(context: Context): Triple<String, String, String>? {
         val store = ButlerStore.get(context)
         val items = mutableListOf<Pair<Long, String>>()
+        val subAhead = store.reminderSubDays.value
+        val dueAhead = store.reminderDueDays.value
+
         store.subs.filter { !it.closing }.forEach { s ->
+            // 试用截止单独说：这一天不是「开始收钱」，而是「免费到此为止」，措辞要分得清
+            val trial = store.trialDaysLeft(s)
+            if (trial != null && trial in 0L..1L) {
+                items += trial to "「${s.name}」试用${if (trial == 0L) "今天" else "明天"}到期，之后会自动续费 ¥${store.fmtMoney(s.amount)}"
+            }
+            val ahead = store.aheadDaysFor(s.remindAhead, subAhead)
             val d = store.daysUntil(s.nextDate)
-            if (d != null && d in 0L..3L) {
-                items += d to "「${s.name}」${if (d <= 1) "明天" else "$d 天后"}扣费 ¥${store.fmtMoney(s.amount)}"
+            if (d != null && d in 0L..ahead.toLong()) {
+                // 涨价：只在有**两笔真实扣费**可比时才说，不推算、不预测
+                val jump = store.priceJumpOf(s.name)
+                val extra = if (jump != null) "，比上次贵了 ¥${store.fmtMoney(jump)}" else ""
+                items += d to "「${s.name}」${if (d <= 1) "明天" else "$d 天后"}扣费 ¥${store.fmtMoney(s.amount)}$extra"
             }
         }
         store.obligations.filter { !it.done }.forEach { o ->
+            val ahead = store.aheadDaysFor(o.remindAhead, dueAhead)
             val d = store.daysUntil(o.date)
-            if (d != null && d in 0L..7L) {
+            if (d != null && d in 0L..ahead.toLong()) {
                 items += d to "「${o.title}」${if (d == 0L) "今天" else "$d 天后"}到期"
             }
         }
         store.keyDates.forEach { k ->
+            val ahead = store.aheadDaysFor(k.remindAhead, dueAhead)
             val d = store.daysUntil(k.date)
-            if (d != null && d in 0L..7L) {
+            if (d != null && d in 0L..ahead.toLong()) {
                 items += d to "「${k.title}」${if (d == 0L) "就是今天" else "$d 天后"}"
+            }
+        }
+        // 家人的日期（复诊 / 生日 / 疫苗）原来**完全没进简报** —— 家里的事漏掉是最不该的
+        store.members.forEach { m ->
+            val d = store.daysUntil(m.date)
+            if (d != null && d in 0L..dueAhead.toLong()) {
+                items += d to "「${m.name}」的${m.label.ifBlank { "重要日期" }}${if (d == 0L) "就是今天" else "$d 天后"}"
             }
         }
         val sorted = items.sortedBy { it.first }.map { it.second }

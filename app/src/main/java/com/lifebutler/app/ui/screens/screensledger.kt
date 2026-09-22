@@ -47,7 +47,9 @@ import com.lifebutler.app.ui.components.IconBadge
 import com.lifebutler.app.ui.components.LbCard
 import com.lifebutler.app.ui.components.LbChip
 import com.lifebutler.app.ui.components.LbConfirmDialog
+import com.lifebutler.app.ui.components.LbField
 import com.lifebutler.app.ui.components.LbGhostButton
+import com.lifebutler.app.ui.components.LbInputDialog
 import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
@@ -119,19 +121,27 @@ fun ExpenseScreen(onBack: () -> Unit) {
     var menuId by remember { mutableStateOf<String?>(null) }
     var editId by remember { mutableStateOf<String?>(null) }
     var deleteId by remember { mutableStateOf<String?>(null) }
+    var showBudget by remember { mutableStateOf(false) }
 
     val today = LocalDate.now()
     val todayStr = today.toString()
     val todayList = store.expenses.filter { it.date == todayStr }.sortedByDescending { it.at }
-    val todayTotal = todayList.sumOf { it.amount }
+    val todaySpend = store.spendOf(todayList)
+    val todayIncome = store.incomeOf(todayList)
     val catTotals = store.expenseCategoryTotals(todayList)
+    // 趋势条只看「花掉多少」：把收入画进同一根柱子里，看的人会以为那天花得特别多
     val week = (0..6).map { i ->
         val d = today.minusDays(i.toLong())
-        d to store.expenses.filter { it.date == d.toString() }.sumOf { it.amount }
+        d to store.spendOf(store.expenses.filter { it.date == d.toString() })
     }
     val weekTotal = week.sumOf { it.second }
     val maxWeek = week.maxOfOrNull { it.second } ?: 0.0
     val groups = store.expenses.groupBy { it.date }.entries.sortedByDescending { it.key }
+
+    val monthList = store.expensesInMonth(today.year, today.monthValue)
+    val monthSpend = store.spendOf(monthList)
+    val monthIncome = store.incomeOf(monthList)
+    val budget = store.budgetStatus()
 
     Column(
         Modifier
@@ -160,18 +170,31 @@ fun ExpenseScreen(onBack: () -> Unit) {
         }
 
         SectionHeader("今天") {
-            Text("¥${store.fmtMoney(todayTotal)}", fontSize = 12.5.sp, color = if (todayList.isEmpty()) LbInk3 else LbInk2)
+            Text(
+                if (todayIncome > 0) "花 ¥${store.fmtMoney(todaySpend)} · 进 ¥${store.fmtMoney(todayIncome)}"
+                else "¥${store.fmtMoney(todaySpend)}",
+                fontSize = 12.5.sp,
+                color = if (todayList.isEmpty()) LbInk3 else LbInk2,
+            )
         }
         LbCard(contentPadding = 14.dp) {
             Column {
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text("¥${store.fmtMoney(todayTotal)}", fontSize = 30.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                    Text("¥${store.fmtMoney(todaySpend)}", fontSize = 30.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
                         "${todayList.size} 笔",
                         fontSize = 12.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(start = 8.dp, bottom = 5.dp),
                     )
+                    if (todayIncome > 0) {
+                        Text(
+                            "另有收入 ¥${store.fmtMoney(todayIncome)}",
+                            fontSize = 11.5.sp,
+                            color = LbAccent,
+                            modifier = Modifier.padding(start = 8.dp, bottom = 5.dp),
+                        )
+                    }
                 }
                 if (catTotals.isNotEmpty()) {
                     Row(
@@ -197,6 +220,127 @@ fun ExpenseScreen(onBack: () -> Unit) {
                         .fillMaxWidth()
                         .padding(top = 12.dp),
                 )
+            }
+        }
+
+        SectionHeader("本月") {
+            Text("${today.monthValue} 月", fontSize = 12.5.sp, color = LbInk3)
+        }
+        LbCard(contentPadding = 14.dp) {
+            Column {
+                Row(Modifier.fillMaxWidth()) {
+                    MonthStat("支出", monthSpend, LbInk, Modifier.weight(1f))
+                    MonthStat("收入", monthIncome, LbAccent, Modifier.weight(1f))
+                    MonthStat(
+                        "结余",
+                        monthIncome - monthSpend,
+                        if (monthIncome - monthSpend < 0) LbRust else LbInk,
+                        Modifier.weight(1f),
+                    )
+                }
+                if (budget == null) {
+                    // 没设预算就不谈超支：凭空替用户定一个数再说他超了，是编造出来的焦虑
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "还没设月度预算",
+                            fontSize = 12.sp,
+                            color = LbInk3,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "设一个",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LbAccent,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { showBudget = true }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
+                } else {
+                    val (spent, cap, over) = budget
+                    Column(Modifier.padding(top = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "本月已花 ¥${store.fmtMoney(spent)} / 预算 ¥${store.fmtMoney(cap)}",
+                                fontSize = 12.sp,
+                                color = LbInk2,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (over) LbChip("超出 ¥${store.fmtMoney(spent - cap)}", ChipTone.Rust)
+                            Text(
+                                "改",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbAccent,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { showBudget = true }
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
+                        }
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 7.dp)
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(LbSurface2),
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((spent / cap).toFloat().coerceIn(0.03f, 1f))
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (over) LbRust else LbAccent),
+                            )
+                        }
+                    }
+                }
+                val dueSubs = store.subsDueInMonth(today.year, today.monthValue)
+                if (dueSubs.isNotEmpty()) {
+                    // 订阅与记账第一次联动,但口径必须写清楚:这是「预计、尚未发生」,
+                    // 不算进上面的支出/结余 —— 把预期的钱当成已花的钱,就是编造。
+                    val dueSum = dueSubs.sumOf { it.amount }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(LbSurface2)
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "订阅预计",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbInk2,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "¥${store.fmtMoney(dueSum)}",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbInk,
+                            )
+                        }
+                        Text(
+                            "本月还有 ${dueSubs.size} 笔订阅要扣（尚未发生，不计入上面的支出）" +
+                                "：${dueSubs.joinToString("、") { it.name }}",
+                            fontSize = 11.sp,
+                            color = LbInk3,
+                            lineHeight = 16.sp,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                }
             }
         }
 
@@ -270,9 +414,9 @@ fun ExpenseScreen(onBack: () -> Unit) {
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     IconBadge(
-                                        lbExpenseIcon(e.category),
-                                        if (e.category == "餐饮") LbAmberSoft else LbAccentSoft,
-                                        if (e.category == "餐饮") LbAmber else LbAccent,
+                                        if (e.income) LbIcons.arrowUpRight else lbExpenseIcon(e.category),
+                                        if (e.income) LbAccentSoft else if (e.category == "餐饮") LbAmberSoft else LbAccentSoft,
+                                        if (e.income) LbAccent else if (e.category == "餐饮") LbAmber else LbAccent,
                                         size = 32.dp,
                                     )
                                     Column(
@@ -288,16 +432,16 @@ fun ExpenseScreen(onBack: () -> Unit) {
                                         )
                                         Text(
                                             e.category + " · " + lbHm(e.at),
-                                            fontSize = 10.5.sp,
+                                            fontSize = 11.sp,
                                             color = LbInk3,
                                             modifier = Modifier.padding(top = 1.dp),
                                         )
                                     }
                                     Text(
-                                        "¥${store.fmtMoney(e.amount)}",
+                                        (if (e.income) "+¥" else "¥") + store.fmtMoney(e.amount),
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = LbInk,
+                                        color = if (e.income) LbAccent else LbInk,
                                     )
                                 }
                             }
@@ -311,8 +455,8 @@ fun ExpenseScreen(onBack: () -> Unit) {
 
     if (showAdd) {
         ExpenseAddDialog(
-            onSave = { a, c, n ->
-                store.addExpense(a, c, n)
+            onSave = { a, c, n, income ->
+                store.addExpense(a, c, n, income)
                 showAdd = false
             },
             onDismiss = { showAdd = false },
@@ -323,11 +467,37 @@ fun ExpenseScreen(onBack: () -> Unit) {
         val e = store.expenses.firstOrNull { it.id == id }
         ExpenseAddDialog(
             initial = e,
-            onSave = { a, c, n ->
-                store.updateExpense(id, a, c, n)
+            onSave = { a, c, n, income ->
+                store.updateExpense(id, a, c, n, income)
                 editId = null
             },
             onDismiss = { editId = null },
+        )
+    }
+
+    if (showBudget) {
+        LbInputDialog(
+            title = "月度预算",
+            fields = listOf(LbField("每月支出上限（元）", "如：3000 · 留空或填 0 表示不设", numeric = true)),
+            initial = listOf(if (store.monthlyBudget.value > 0) store.fmtMoney(store.monthlyBudget.value) else ""),
+            onDismiss = { showBudget = false },
+            onConfirm = { v ->
+                val raw = v.getOrElse(0) { "" }.trim()
+                if (raw.isEmpty()) {
+                    store.setMonthlyBudget(0.0)
+                    showBudget = false
+                    null
+                } else {
+                    val d = raw.toDoubleOrNull()
+                    if (d == null || d < 0) {
+                        "预算填数字，比如 3000"
+                    } else {
+                        store.setMonthlyBudget(d)
+                        showBudget = false
+                        null
+                    }
+                }
+            },
         )
     }
 
@@ -357,11 +527,11 @@ fun ExpenseScreen(onBack: () -> Unit) {
     }
 }
 
-/** 记账弹窗:金额 + 分类胶囊 + 备注;也用于编辑初始值 */
+/** 一笔账:金额 + 分类胶囊 + 备注;也用于编辑初始值。[onSave] 最后一项 true = 收入 */
 @Composable
 fun ExpenseAddDialog(
     initial: ButlerExpense? = null,
-    onSave: (Double, String, String) -> Unit,
+    onSave: (Double, String, String, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val initAmount = initial?.let {
@@ -370,6 +540,7 @@ fun ExpenseAddDialog(
     var amountText by remember { mutableStateOf(initAmount) }
     var cat by remember { mutableStateOf(initial?.category ?: "餐饮") }
     var note by remember { mutableStateOf(initial?.note ?: "") }
+    var income by remember { mutableStateOf(initial?.income ?: false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -381,6 +552,34 @@ fun ExpenseAddDialog(
                     fontWeight = FontWeight.SemiBold,
                     color = LbInk,
                 )
+                // 收支开关放在最上面：先决定「这是花出去还是收进来」，再填金额和分类
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(LbSurface2)
+                        .padding(3.dp),
+                ) {
+                    listOf(false to "支出", true to "收入").forEach { (v, label) ->
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (income == v) LbAccent else androidx.compose.ui.graphics.Color.Transparent)
+                                .clickable { income = v }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                label,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (income == v) LbOnAccent else LbInk2,
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = amountText,
                     onValueChange = { amountText = it; error = null },
@@ -401,40 +600,51 @@ fun ExpenseAddDialog(
                     ),
                     textStyle = TextStyle(fontSize = 15.sp, color = LbInk),
                 )
-                Text("分类", fontSize = 12.sp, color = LbInk3, modifier = Modifier.padding(top = 12.dp))
-                LB_EXPENSE_CATEGORIES.chunked(4).forEach { row ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        row.forEach { c ->
-                            Box(
-                                Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(if (cat == c) LbAccent else LbSurface2)
-                                    .clickable { cat = c }
-                                    .padding(vertical = 7.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    c,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (cat == c) LbOnAccent else LbInk2,
-                                )
+                if (income) {
+                    Text(
+                        "收入分类固定记为「收入」，不用再选。",
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                } else {
+                    Text("分类", fontSize = 12.sp, color = LbInk3, modifier = Modifier.padding(top = 12.dp))
+                    LB_EXPENSE_CATEGORIES.chunked(4).forEach { row ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            row.forEach { c ->
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(if (cat == c) LbAccent else LbSurface2)
+                                        .clickable { cat = c }
+                                        .padding(vertical = 7.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        c,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (cat == c) LbOnAccent else LbInk2,
+                                    )
+                                }
                             }
+                            repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                         }
-                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
                     label = { Text("备注（可选）", fontSize = 12.sp) },
-                    placeholder = { Text("如：午饭 / 打车回家", fontSize = 12.sp, color = LbInk3) },
+                    placeholder = {
+                        Text(if (income) "如：八月工资 / 报销到账" else "如：午饭 / 打车回家", fontSize = 12.sp, color = LbInk3)
+                    },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
@@ -466,7 +676,7 @@ fun ExpenseAddDialog(
                             if (a == null || a <= 0) {
                                 error = "金额填数字，比如 25"
                             } else {
-                                onSave(a, cat, note)
+                                onSave(a, if (income) "收入" else cat, note, income)
                             }
                         },
                         Modifier.weight(1f),
@@ -476,3 +686,22 @@ fun ExpenseAddDialog(
         }
     }
 }
+
+/** 本月三个数字（支出 / 收入 / 结余）里的一格 */
+@Composable
+private fun MonthStat(label: String, value: Double, color: androidx.compose.ui.graphics.Color, modifier: Modifier) {
+    Column(modifier) {
+        Text(label, fontSize = 11.sp, color = LbInk3)
+        Text(
+            (if (value < 0) "-¥" else "¥") + fmtPlain(kotlin.math.abs(value)),
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = color,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
+}
+
+/** 这里只要「两位小数、去掉多余的 0」，不引用 store（本文件的对话框层没有 store 实例） */
+private fun fmtPlain(v: Double): String =
+    if (v % 1.0 == 0.0) v.toLong().toString() else String.format(Locale.getDefault(), "%.2f", v).trimEnd('0').trimEnd('.')

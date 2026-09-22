@@ -319,7 +319,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                     )
                                     Text(
                                         c.snippet,
-                                        fontSize = 10.5.sp,
+                                        fontSize = 11.sp,
                                         color = LbInk3,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,

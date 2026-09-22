@@ -458,7 +458,7 @@ private fun MemoCard(
             }
             Text(
                 lbMemoTime(memo.updatedAt).let { if (it.isEmpty()) "" else "更新于 $it" },
-                fontSize = 10.5.sp,
+                fontSize = 11.sp,
                 color = LbInk3,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -752,7 +752,7 @@ private fun MemoRemindDialog(
                                 }
                                 .padding(horizontal = 10.dp, vertical = 5.dp),
                         ) {
-                            Text(label, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
+                            Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
                         }
                     }
                 }
@@ -880,7 +880,7 @@ private fun StepField(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(value, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-            Text(unit, fontSize = 9.5.sp, color = LbInk3)
+            Text(unit, fontSize = 11.sp, color = LbInk3)
         }
         StepButton("+", onPlus)
     }

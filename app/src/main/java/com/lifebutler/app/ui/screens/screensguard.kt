@@ -405,6 +405,7 @@ fun SubscriptionDetailScreen(subId: String?, onBack: () -> Unit) {
     var showEdit by remember { mutableStateOf(false) }
     var showAddCharge by remember { mutableStateOf(false) }
     var chargeDeleteId by remember { mutableStateOf<String?>(null) }
+    var showTrial by remember { mutableStateOf(false) }
 
     val hasDate = sub.nextDate.isNotBlank()
     val dayOfMonth = store.parseDate(sub.nextDate)?.dayOfMonth
@@ -498,6 +499,63 @@ fun SubscriptionDetailScreen(subId: String?, onBack: () -> Unit) {
                     color = LbAmber,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+            }
+        }
+
+        // 单条提醒设置。订阅之间金额差得远（6 元的 iCloud 和 200 多的会员），
+        // 统一阈值总有人不合适，所以每条都能自己定提前量。
+        LbCard(contentPadding = 16.dp, modifier = Modifier.padding(top = 10.dp)) {
+            Column {
+                Text("提醒", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text(
+                    "这一笔提前几天进每日简报。「默认」= 跟随「我的 → 提醒与免打扰」里的设置。",
+                    fontSize = 11.5.sp,
+                    color = LbInk3,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+                LbRemindAheadRow(
+                    label = "提前",
+                    value = sub.remindAhead,
+                    options = listOf(0, 1, 3, 7, 15),
+                    onPick = { store.setSubRemindAhead(sub.id, it) },
+                )
+                val trial = store.trialDaysLeft(sub)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("试用截止日", fontSize = 12.5.sp, color = LbInk)
+                        Text(
+                            when {
+                                sub.trialUntil.isBlank() ->
+                                    "没设。很多会员是「免费 7 天，之后自动续费」—— 记上到期日，我提前一天提醒你，免得忘了取消。"
+                                trial == null -> "${store.fmtCn(sub.trialUntil)}（已过）"
+                                else -> "还剩 $trial 天 · ${store.fmtCn(sub.trialUntil)}"
+                            },
+                            fontSize = 11.5.sp,
+                            color = if (trial != null && trial <= 1) LbAmber else LbInk3,
+                            lineHeight = 17.sp,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                    MiniGhost(if (sub.trialUntil.isBlank()) "设置" else "改") { showTrial = true }
+                }
+                // 涨价：只在**真的有两笔扣费可比**时才说。没有任何扣费记录时这里什么都不显示，
+                // 免得看起来像「它知道要涨价」—— 那是推算，不是记录。
+                val jump = store.priceJumpOf(sub.name)
+                if (jump != null) {
+                    Text(
+                        "最近一笔比上一笔贵了 ¥${store.fmtMoney(jump)}（都来自你记的扣费记录）。",
+                        fontSize = 11.5.sp,
+                        color = LbRust,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
             }
         }
 
@@ -656,6 +714,28 @@ fun SubscriptionDetailScreen(subId: String?, onBack: () -> Unit) {
                 onConfirm = {
                     store.removeCharge(id)
                     chargeDeleteId = null
+                },
+            )
+        }
+
+        if (showTrial) {
+            LbInputDialog(
+                title = "试用截止日",
+                fields = listOf(
+                    LbField(
+                        "到期日",
+                        "留空表示不是试用",
+                        isDate = true,
+                        dateClearable = true,
+                    ),
+                ),
+                initial = listOf(sub.trialUntil),
+                onDismiss = { showTrial = false },
+                onConfirm = { v ->
+                    // 清空 = 取消试用标记（不是「今天到期」）—— 这两个意思差很远，别混
+                    store.setSubTrial(sub.id, v.getOrElse(0) { "" })
+                    showTrial = false
+                    null
                 },
             )
         }
@@ -918,6 +998,16 @@ fun ObligationsScreen(onBack: () -> Unit) {
                 )
             }
         }
+
+        // 逐条提前量：默认吃全局设置，重要的（车险续保、体检预约）可以单条提前更久
+        LbRemindAheadSection(
+            title = "提前多久提醒我",
+            hint = "「默认」= 跟随「我的 → 提醒与免打扰」里的「到期提前」。" +
+                "像车险续保这种要留出比价时间的，可以单独调到 15 / 30 天。",
+            items = store.obligations.filter { !it.done }
+                .map { Triple(it.id, it.title, it.remindAhead) },
+            onPick = { id, days -> store.setObligationRemindAhead(id, days) },
+        )
         Spacer(Modifier.height(16.dp))
     }
 

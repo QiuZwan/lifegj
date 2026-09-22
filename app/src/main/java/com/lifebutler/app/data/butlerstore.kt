@@ -20,10 +20,42 @@ import java.util.UUID
 /* ───────────────────────── 数据模型 ───────────────────────── */
 
 data class ButlerTask(val id: String, val text: String, val meta: String, val done: Boolean)
-data class ButlerSub(val id: String, val name: String, val amount: Double, val nextDate: String, val closing: Boolean, val source: String, val closingAt: Long)
-data class ButlerObligation(val id: String, val title: String, val note: String, val date: String, val tag: String, val done: Boolean)
+
+/**
+ * 一笔订阅。
+ *
+ * [trialUntil] 试用截止日（空字符串 = 不是试用 / 没记）。
+ * 为什么单独立一个字段而不并进 [nextDate]：试用的「到期」和续费的「扣款日」是两件事，
+ * 混在一起用户就分不清「这一天是开始收钱，还是最后一次免费」。
+ *
+ * [remindAhead] 这一条**单独**提前几天进日报（0 = 跟随全局设置）。
+ * 订阅之间金额差得远（6 元的 iCloud 和 200 多的会员），一刀切的阈值总有人不合适。
+ */
+data class ButlerSub(
+    val id: String,
+    val name: String,
+    val amount: Double,
+    val nextDate: String,
+    val closing: Boolean,
+    val source: String,
+    val closingAt: Long,
+    val trialUntil: String = "",
+    val remindAhead: Int = 0,
+)
+
+/** [remindAhead] 含义同 [ButlerSub]：0 = 跟随全局，>0 = 这条单独提前这么多天 */
+data class ButlerObligation(
+    val id: String,
+    val title: String,
+    val note: String,
+    val date: String,
+    val tag: String,
+    val done: Boolean,
+    val remindAhead: Int = 0,
+)
+
 data class ButlerMember(val id: String, val name: String, val label: String, val date: String, val photo: String)
-data class ButlerKeyDate(val id: String, val title: String, val date: String, val note: String)
+data class ButlerKeyDate(val id: String, val title: String, val date: String, val note: String, val remindAhead: Int = 0)
 data class ButlerArchive(val id: String, val title: String, val count: Int, val note: String, val files: List<String>)
 data class ButlerChat(val id: String, val fromUser: Boolean, val text: String, val photoPath: String)
 
@@ -33,7 +65,24 @@ data class ButlerChat(val id: String, val fromUser: Boolean, val text: String, v
  * 相册 = 全家人的照片墙(独立成册,可以放很多张)。两者互不覆盖。
  */
 data class ButlerPhoto(val id: String, val path: String, val note: String, val at: Long)
-data class ButlerExpense(val id: String, val amount: Double, val category: String, val note: String, val date: String, val at: Long)
+
+/**
+ * 一笔账。
+ *
+ * [income] 为 true 表示**收入**（工资 / 报销 / 退款），否则是支出。
+ * 为什么加这个：原来金额恒等于支出，用户想记一笔报销只能记成负数或干脆不记，
+ * 月报也就永远只能回答「花了多少」，回答不了「这个月到底剩多少」。
+ * 存量数据没有这个字段 → 一律当支出（`false`），口径不变。
+ */
+data class ButlerExpense(
+    val id: String,
+    val amount: Double,
+    val category: String,
+    val note: String,
+    val date: String,
+    val at: Long,
+    val income: Boolean = false,
+)
 
 /** 真实扣费流水:只由用户手动记录,或扫描/通知真的命中时写入;不由程序推算。 */
 data class ButlerCharge(val id: String, val subName: String, val amount: Double, val date: String, val at: Long, val source: String)
@@ -61,6 +110,22 @@ data class ButlerMemo(
 enum class MemoSort { Updated, Created, Remind }
 
 /**
+ * 全局检索的一条结果。
+ *
+ * [kind] 是分组用的类型名（订阅 / 扣费 / 待办 …），[route] 是点进去要翻到哪一页
+ * （用 [ButlerStore.kt] 里那套 overlay 名字），[subId] 只在订阅结果里有值 ——
+ * 订阅要落到「哪一笔」的详情页，光给个页面名不够。
+ */
+data class SearchHit(
+    val kind: String,
+    val id: String,
+    val title: String,
+    val sub: String,
+    val route: String,
+    val subId: String? = null,
+)
+
+/**
  * 本机数据仓库:全部用户数据保存在本机 SharedPreferences(JSON),
  * 不联网、不上传;所有页面读写同一份数据,改动即时持久化。
  *
@@ -85,7 +150,44 @@ class ButlerStore private constructor(context: Context) {
     val avatarPath: MutableState<String> = mutableStateOf("")
     val reminderEnabled: MutableState<Boolean> = mutableStateOf(true)
     val reminderHour: MutableState<Int> = mutableStateOf(9)
+
+    /**
+     * 提前几天提醒「要扣费」。默认 3 天。
+     *
+     * 原来这两个阈值写死在代码里（订阅 3 天、到期/纪念日 7 天），用户想提前两周知道
+     * 车险该续了也做不到 —— 而「提前多久算合适」本来就因人因事而异，只能交给用户。
+     */
+    val reminderSubDays: MutableState<Int> = mutableStateOf(3)
+
+    /** 提前几天提醒「事项到期 / 纪念日」。默认 7 天。 */
+    val reminderDueDays: MutableState<Int> = mutableStateOf(7)
+
+    /**
+     * 每月支出预算（0 = 没设，不提示超支）。
+     *
+     * 特意**不**给一个默认值（比如 3000）：凭空替用户定一个预算，然后告诉他「你超支了」，
+     * 是编造出来的焦虑。只有用户自己填了数，超支提示才有意义。
+     */
+    val monthlyBudget: MutableState<Double> = mutableStateOf(0.0)
+
+    /**
+     * 是否已经走过首次引导。
+     *
+     * 界面上还要再叠一个「本机没有任何记录」才会真的弹出来 ——
+     * 否则老用户升级上来会莫名其妙被「三步上手」挡一次，那是在教已经会的人怎么用。
+     */
+    val onboarded: MutableState<Boolean> = mutableStateOf(false)
     val darkMode: MutableState<Boolean> = mutableStateOf(false)
+
+    /**
+     * 应用锁：进 App（以及从后台回来）先要过一遍系统锁屏凭据。
+     *
+     * 为什么用系统凭据而不是自己存密码：我们不想要任何"看起来加密了其实没有"的东西 ——
+     * 交给系统 Keyguard 校验，我们既不接触指纹也不存 PIN，本机设没设锁屏也能如实判断。
+     * 注意它**不参与 clearAll 的复位**：清空数据不该顺手把别人的门锁打开。
+     */
+    val appLockEnabled: MutableState<Boolean> = mutableStateOf(false)
+
     private var startDate: String = LocalDate.now().toString()
 
     /**
@@ -201,6 +303,14 @@ class ButlerStore private constructor(context: Context) {
         return "%d 月 %d 日".format(d.monthValue, d.dayOfMonth)
     }
 
+    /**
+     * 把毫秒时间戳格式化成「M 月 D 日」—— 相册/聊天这类只记 `at` 的地方用。
+     *
+     * 为什么不直接把 [dateOfMillis] 放开成 public:它是内部解析用的,让 UI 拿到 LocalDate
+     * 等于把「怎么显示」的决定权漏到 40 多个调用点上;这里只放一个格式化出口,口径统一。
+     */
+    fun fmtCnAt(ms: Long): String = fmtCn(dateOfMillis(ms).toString())
+
     fun dayCount(): Int {
         val s = parseDate(startDate) ?: LocalDate.now()
         return (ChronoUnit.DAYS.between(s, LocalDate.now()).toInt() + 1).coerceAtLeast(1)
@@ -225,7 +335,13 @@ class ButlerStore private constructor(context: Context) {
         if (i >= 0) { tasks[i] = tasks[i].copy(done = !tasks[i].done); save() }
     }
 
-    fun removeTask(id: String) { tasks.removeAll { it.id == id }; save() }
+    fun removeTask(id: String) {
+        val i = tasks.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = tasks.removeAt(i)
+        rememberUndo("已删除待办「${item.text}」") { tasks.add(i.coerceAtMost(tasks.size), item) }
+        save()
+    }
 
     fun updateTask(id: String, text: String, meta: String) {
         val i = tasks.indexOfFirst { it.id == id }
@@ -235,10 +351,21 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    fun updateSub(id: String, name: String, amount: Double, date: String) {
+    /**
+     * 改一笔订阅。[trialUntil] / [remindAhead] 传 null 表示「这次不改这一项」——
+     * 用可空而不是默认值，是因为调用方大多只改名称/金额/日期，
+     * 若给默认值会让每次改金额都**顺手把试用日和提前天数抹成默认**。
+     */
+    fun updateSub(id: String, name: String, amount: Double, date: String, trialUntil: String? = null, remindAhead: Int? = null) {
         val i = subs.indexOfFirst { it.id == id }
         if (i >= 0) {
-            subs[i] = subs[i].copy(name = name.trim(), amount = amount, nextDate = date)
+            subs[i] = subs[i].copy(
+                name = name.trim(),
+                amount = amount,
+                nextDate = date,
+                trialUntil = trialUntil ?: subs[i].trialUntil,
+                remindAhead = remindAhead ?: subs[i].remindAhead,
+            )
             save()
         }
     }
@@ -251,14 +378,37 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    fun setReminder(enabled: Boolean, hour: Int) {
+    fun setReminder(enabled: Boolean, hour: Int, subDays: Int? = null, dueDays: Int? = null) {
         reminderEnabled.value = enabled
         reminderHour.value = hour
+        // 可空 = 「这次不改这项」：老调用点只传开关和时间，不该被顺手抹掉提前量
+        subDays?.let { reminderSubDays.value = it.coerceIn(0, 90) }
+        dueDays?.let { reminderDueDays.value = it.coerceIn(1, 180) }
         save()
     }
 
     fun setDarkMode(on: Boolean) {
         darkMode.value = on
+        save()
+    }
+
+    /**
+     * 开关应用锁。只存这个布尔值，**不存任何凭据** —— 校验交给系统锁屏（见 ButlerLockGate）。
+     * 立刻生效时间点：下次进入应用 / 从后台回来。
+     */
+    fun setAppLock(on: Boolean) {
+        appLockEnabled.value = on
+        save()
+    }
+
+    /** 设月度支出预算。0 = 不设（那就不提示超支，见 [budgetStatus]） */
+    fun setMonthlyBudget(v: Double) {
+        monthlyBudget.value = if (v > 0) v else 0.0
+        save()
+    }
+
+    fun setOnboarded() {
+        onboarded.value = true
         save()
     }
 
@@ -368,14 +518,14 @@ class ButlerStore private constructor(context: Context) {
 
     fun removeAlbumPhoto(id: String) {
         val i = album.indexOfFirst { it.id == id }
-        if (i >= 0) {
-            try {
-                File(album[i].path).delete()
-            } catch (e: Exception) {
-            }
-            album.removeAt(i)
-            save()
+        if (i < 0) return
+        val item = album.removeAt(i)
+        val f = File(item.path)
+        // 图片文件不立刻删：万一是误删，撤销回来还要用原图
+        rememberUndo("已删除相册照片", onDiscard = { try { f.delete() } catch (e: Exception) {} }) {
+            album.add(i.coerceAtMost(album.size), item)
         }
+        save()
     }
 
     /** 对话图片:压缩后存本机,返回可直接渲染的绝对路径 */
@@ -392,25 +542,32 @@ class ButlerStore private constructor(context: Context) {
      * 把外部文件复制进应用私有目录,返回落盘后的文件名(basename,便于备份还原)。
      * 图片会压缩;其它类型(如 PDF)原样复制,单文件上限 4MB。
      */
-    fun importArchiveFile(uri: android.net.Uri, archiveId: String, name: String): String? {
+    fun importArchiveFile(uri: android.net.Uri, archiveId: String, name: String): Pair<String?, String?> {
         return try {
             val clean = name.replace(Regex("[^\\w.\\-\\u4e00-\\u9fa5]"), "_").takeLast(40).ifEmpty { "file" }
             val isImage = (appCtx.contentResolver.getType(uri) ?: "").startsWith("image/")
             if (isImage) {
+                // 图片一律先压到 1024 长边再入库：不压的话，一张 4000 万像素的手机照
+                // 轻松超过 4MB，用户只会看到「没能存入」而不知道该怎么办。
                 val f = fileOf("arch_${archiveId}_${System.currentTimeMillis()}_$clean.jpg")
-                if (saveShrunk(uri, f, 1024)) f.name else null
+                if (saveShrunk(uri, f, 1024)) f.name to null else null to "这张图读不出来（换一张或先导出成文件再试）"
             } else {
                 val f = fileOf("arch_${archiveId}_${System.currentTimeMillis()}_$clean")
-                appCtx.contentResolver.openInputStream(uri)?.use { input ->
+                val streamed = appCtx.contentResolver.openInputStream(uri)?.use { input ->
                     f.outputStream().use { out -> input.copyTo(out) }
-                } ?: return null
-                if (f.length() > 4L * 1024 * 1024) {
+                    true
+                } ?: false
+                if (!streamed) {
+                    null to "这个文件读不到（可能已被移动或没有读取权限）"
+                } else if (f.length() > ARCHIVE_MAX_BYTES) {
+                    // 空口拒绝不如给条路：把实际大小说出来，用户才知道该压到多少
+                    val mb = "%.1f".format(f.length() / 1024.0 / 1024.0)
                     f.delete()
-                    null
-                } else f.name
+                    null to "这个文件 $mb MB，超过 4 MB 上限 —— 先压缩，或拆成几份再存"
+                } else f.name to null
             }
         } catch (e: Exception) {
-            null
+            null to "存入失败（${e.javaClass.simpleName}）"
         }
     }
 
@@ -423,17 +580,45 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    fun removeArchiveFile(archiveId: String, name: String) {
+    /**
+     * 把相册里的某张照片**引用**进一个档案组（不复制文件）。
+     *
+     * 为什么是引用而不是复制：相册与档案本来就是两个孤岛，用户拍了一张保单照片想归到「保单」组里，
+     * 复制一份会让盘上多出一份完全相同的大图，删掉一边另一边还在 —— 越用越糊涂。
+     * 引用就一个副作用必须照顾：**盘上的文件是真共用的**，所以删档案时不能直接删文件，
+     * 见 [fileAlsoUsedByAlbum]。返回该档案组的标题；组不存在返回 null。
+     */
+    fun addPhotoToArchive(archiveId: String, photoPath: String): String? {
         val i = archive.indexOfFirst { it.id == archiveId }
-        if (i >= 0) {
-            try {
-                fileOf(name).delete()
-            } catch (e: Exception) {
-            }
-            val rest = archive[i].files.filter { it != name }
-            archive[i] = archive[i].copy(files = rest, count = rest.size)
+        if (i < 0) return null
+        val base = File(photoPath).name
+        if (base.isBlank()) return null
+        if (base !in archive[i].files) {
+            val merged = archive[i].files + base
+            archive[i] = archive[i].copy(files = merged, count = merged.size)
             save()
         }
+        return archive[i].title
+    }
+
+    /** 这个文件名是否同时挂在相册里 —— 决定删档案时能不能真把盘上的文件删掉 */
+    fun fileAlsoUsedByAlbum(fileName: String): Boolean =
+        album.any { File(it.path).name == fileName }
+
+    fun removeArchiveFile(archiveId: String, name: String) {
+        val i = archive.indexOfFirst { it.id == archiveId }
+        if (i < 0 || name !in archive[i].files) return
+        val before = archive[i]
+        val rest = before.files.filter { it != name }
+        archive[i] = before.copy(files = rest, count = rest.size)
+        val f = fileOf(name)
+        rememberUndo("已删除档案文件「$name」", onDiscard = {
+            // 相册里还引用着同一个文件时不能删 —— 否则相册那张图会变成裂图
+            if (!fileAlsoUsedByAlbum(name)) try { f.delete() } catch (e: Exception) {}
+        }) {
+            archive[i] = before
+        }
+        save()
     }
 
     /** 全机已归档的真实文件总数 */
@@ -447,7 +632,106 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    fun removeSub(id: String) { subs.removeAll { it.id == id }; save() }
+    /* ── 删除可撤销 ── */
+
+    /**
+     * 最近一次删除的「放回原位」动作。
+     *
+     * 为什么值得做：本机数据**没有云端可以回捞**，删掉就是真没了 —— 这既是这个 App 的卖点，
+     * 也意味着误删的代价比联网应用大得多（联网应用还能去后台翻回收站）。
+     * 所以每次删除都把还原动作记下来，界面给 5 秒撤销窗口。
+     *
+     * 只记最后一次：能同时撤销好几条反而让人搞不清到底撤掉了哪一条。
+     */
+    private var undoRestore: (() -> Unit)? = null
+
+    /**
+     * 撤销窗口关闭后才该做的事 —— 主要是**真正删掉磁盘上的文件**。
+     *
+     * 这里有个容易做错的地方：删相册照片/档案文件时若立刻 `File.delete()`，
+     * 撤销回来就只剩一个指向空文件的条目（缩略图裂掉、点开是 0 字节）。
+     * 所以图片文件的物理删除一律推迟到「确定不撤销」这一刻。
+     */
+    private var undoDiscard: (() -> Unit)? = null
+
+    /** 每次「可撤销的删除」+1；界面靠它驱动撤销条弹一次 */
+    val undoToken: MutableState<Int> = mutableStateOf(0)
+
+    /** 撤销条上显示的话，例如「已删除「燃气费」」 */
+    val undoLabel: MutableState<String> = mutableStateOf("")
+
+    val canUndo: Boolean get() = undoRestore != null
+
+    /** 关掉当前这个撤销窗口：还原动作丢掉、该落地的清理现在做 */
+    private fun closeUndoWindow() {
+        undoDiscard?.invoke()
+        undoDiscard = null
+        undoRestore = null
+    }
+
+    private fun rememberUndo(label: String, onDiscard: (() -> Unit)? = null, restore: () -> Unit) {
+        // 上一次的窗口已经过了，先让它把该删的文件删掉，再记新的
+        closeUndoWindow()
+        undoRestore = restore
+        undoDiscard = onDiscard
+        undoLabel.value = label
+        undoToken.value = undoToken.value + 1
+    }
+
+    /** 撤销最近一次删除。没有可撤销的返回 false */
+    fun undoLastDelete(): Boolean {
+        val f = undoRestore ?: return false
+        undoRestore = null
+        undoDiscard = null
+        f()
+        save()
+        return true
+    }
+
+    /** 撤销窗口过了：丢掉还原动作（并让推迟的物理删除落地），之后 undoLastDelete 不再生效 */
+    fun discardUndo() {
+        closeUndoWindow()
+    }
+
+    fun removeSub(id: String) {
+        val i = subs.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = subs.removeAt(i)
+        rememberUndo("已删除「${item.name}」") { subs.add(i.coerceAtMost(subs.size), item) }
+        save()
+    }
+
+    /* ── AI 提出来、等用户点头的「改 / 删」 ── */
+
+    /**
+     * 待确认的说明，例如「把订阅「网易云音乐」改成：金额 ¥15 → ¥20」。
+     * 非空时对话页会弹一张确认卡；用户点「确认」才真的落库。
+     *
+     * 为什么改删要单独走这一步：新增记错了最多多一条，自己删掉就行；而改 / 删是**动已有记录**，
+     * 一旦认错对象（把「网易云音乐」认成「网易严选」）就是直接毁掉正确数据，且本机没有云端可回捞。
+     * 所以模型只负责「提出要改什么」，落库这一步必须由用户点一下。
+     */
+    val pendingFix: MutableState<String> = mutableStateOf("")
+
+    private var pendingFixApply: (() -> String)? = null
+
+    fun proposeFix(desc: String, apply: () -> String) {
+        pendingFix.value = desc
+        pendingFixApply = apply
+    }
+
+    /** 确认执行，返回「做了什么」；没有待确认的返回 null */
+    fun confirmFix(): String? {
+        val f = pendingFixApply ?: return null
+        pendingFixApply = null
+        pendingFix.value = ""
+        return f()
+    }
+
+    fun cancelFix() {
+        pendingFixApply = null
+        pendingFix.value = ""
+    }
 
     /* ── 扫描/通知自动加入与「不再加回」记忆 ── */
 
@@ -475,9 +759,50 @@ class ButlerStore private constructor(context: Context) {
         save()
     }
 
-    fun addSub(name: String, amount: Double, date: String, source: String = "手动") {
-        subs.add(ButlerSub(id(), name.trim(), amount, date, false, source, 0L)); save()
+    fun addSub(name: String, amount: Double, date: String, source: String = "手动", trialUntil: String = "", remindAhead: Int = 0) {
+        subs.add(ButlerSub(id(), name.trim(), amount, date, false, source, 0L, trialUntil.trim(), remindAhead)); save()
     }
+
+    /** 单条订阅的「提前几天提醒」。0 = 跟随全局设置 */
+    fun setSubRemindAhead(id: String, days: Int) {
+        val i = subs.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            subs[i] = subs[i].copy(remindAhead = days.coerceAtLeast(0))
+            save()
+        }
+    }
+
+    /** 试用截止日（空 = 不是试用）。到期前一天会提醒一次，别等自动续费扣了才知道 */
+    fun setSubTrial(id: String, date: String) {
+        val i = subs.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            subs[i] = subs[i].copy(trialUntil = date.trim())
+            save()
+        }
+    }
+
+    fun setObligationRemindAhead(id: String, days: Int) {
+        val i = obligations.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            obligations[i] = obligations[i].copy(remindAhead = days.coerceAtLeast(0))
+            save()
+        }
+    }
+
+    fun setKeyDateRemindAhead(id: String, days: Int) {
+        val i = keyDates.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            keyDates[i] = keyDates[i].copy(remindAhead = days.coerceAtLeast(0))
+            save()
+        }
+    }
+
+    /**
+     * 这一条实际用几天做提前量：自己设了用自己的，没设就吃全局。
+     * 界面和日报都走这一个函数，免得两边算法走散。
+     */
+    fun aheadDaysFor(itemAhead: Int, globalDays: Int): Int =
+        if (itemAhead > 0) itemAhead else globalDays
 
     /** 标记为关闭中:写一条真实关闭历史,统计数字由历史复算 */
     fun markSubClosing(id: String, withReceipt: Boolean = true) {
@@ -501,7 +826,13 @@ class ButlerStore private constructor(context: Context) {
         save()
     }
 
-    fun removeCharge(id: String) { charges.removeAll { it.id == id }; save() }
+    fun removeCharge(id: String) {
+        val i = charges.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = charges.removeAt(i)
+        rememberUndo("已删除「${item.subName}」的扣费记录 ${item.amount} 元") { charges.add(i.coerceAtMost(charges.size), item) }
+        save()
+    }
 
     /** 某笔订阅的真实扣费记录,按时间倒序 */
     fun chargesOf(subName: String): List<ButlerCharge> =
@@ -511,8 +842,8 @@ class ButlerStore private constructor(context: Context) {
     fun hasChargeAfterClosing(sub: ButlerSub): Boolean =
         sub.closing && sub.closingAt > 0 && charges.any { it.subName == sub.name && it.at > sub.closingAt }
 
-    fun addObligation(title: String, date: String, note: String, tag: String = "证件") {
-        obligations.add(ButlerObligation(id(), title.trim(), note.trim(), date, tag, false)); save()
+    fun addObligation(title: String, date: String, note: String, tag: String = "证件", remindAhead: Int = 0) {
+        obligations.add(ButlerObligation(id(), title.trim(), note.trim(), date, tag, false, remindAhead)); save()
     }
 
     fun toggleObligation(id: String) {
@@ -520,37 +851,100 @@ class ButlerStore private constructor(context: Context) {
         if (i >= 0) { obligations[i] = obligations[i].copy(done = !obligations[i].done); save() }
     }
 
-    fun removeObligation(id: String) { obligations.removeAll { it.id == id }; save() }
+    fun removeObligation(id: String) {
+        val i = obligations.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = obligations.removeAt(i)
+        rememberUndo("已删除「${item.title}」") { obligations.add(i.coerceAtMost(obligations.size), item) }
+        save()
+    }
 
     fun addMember(name: String, label: String, date: String) {
         members.add(ButlerMember(id(), name.trim(), label.trim(), date, "")); save()
     }
 
-    fun removeMember(id: String) { members.removeAll { it.id == id }; save() }
-
-    fun addKeyDate(title: String, date: String, note: String) {
-        keyDates.add(ButlerKeyDate(id(), title.trim(), date, note.trim())); save()
+    fun removeMember(id: String) {
+        val i = members.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = members.removeAt(i)
+        // 头像文件跟着成员走：撤销窗口关了才真删，否则撤回来看不到人像
+        val avatar = File(appCtx.filesDir, "member_$id.jpg")
+        rememberUndo("已删除成员「${item.name}」", onDiscard = { if (avatar.isFile) try { avatar.delete() } catch (e: Exception) {} }) {
+            members.add(i.coerceAtMost(members.size), item)
+        }
+        save()
     }
 
-    fun removeKeyDate(id: String) { keyDates.removeAll { it.id == id }; save() }
+    fun addKeyDate(title: String, date: String, note: String, remindAhead: Int = 0) {
+        keyDates.add(ButlerKeyDate(id(), title.trim(), date, note.trim(), remindAhead)); save()
+    }
+
+    fun removeKeyDate(id: String) {
+        val i = keyDates.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = keyDates.removeAt(i)
+        rememberUndo("已删除「${item.title}」") { keyDates.add(i.coerceAtMost(keyDates.size), item) }
+        save()
+    }
 
     fun addArchive(title: String, note: String) {
         archive.add(ButlerArchive(id(), title.trim(), 0, note.trim(), emptyList())); save()
     }
 
     fun removeArchive(id: String) {
-        archive.firstOrNull { it.id == id }?.files?.forEach {
-            try {
-                fileOf(it).delete()
-            } catch (e: Exception) {
+        val i = archive.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = archive.removeAt(i)
+        // 组里的实体文件同样推迟到撤销窗口关闭才删；相册还在用的那些文件跳过
+        val files = item.files.map { fileOf(it) to it }
+        rememberUndo("已删除档案「${item.title}」，含 ${item.files.size} 个文件", onDiscard = {
+            files.forEach { (f, n) ->
+                if (!fileAlsoUsedByAlbum(n)) try { f.delete() } catch (e: Exception) {}
             }
+        }) {
+            archive.add(i.coerceAtMost(archive.size), item)
         }
-        archive.removeAll { it.id == id }
         save()
     }
 
+    /**
+     * 追加一条对话。
+     *
+     * 为什么要在这里裁剪：原来是无上限的 `chat.add(...)`，而 `save()` 每次都把**整份**状态
+     * 序列化进 SharedPreferences —— 聊几个月之后，每说一句话都要重写一整份越来越大的 JSON，
+     * 启动时还要把整份读回内存。表现是「越用越卡」，而用户完全不知道原因。
+     *
+     * 上限 [CHAT_MAX] 条：AI 提示词只用最近 8 条、诊断日志只用 40 条 —— 更旧的记录**存着也根本不用**。
+     * 被裁掉的对话如果带图，顺手把文件删掉，否则盘上会留下没人引用的孤儿图片。
+     */
     fun addChat(fromUser: Boolean, text: String, photoPath: String = "") {
-        chat.add(ButlerChat(id(), fromUser, text, photoPath)); save()
+        chat.add(ButlerChat(id(), fromUser, text, photoPath))
+        if (chat.size > CHAT_MAX) {
+            val drop = chat.size - CHAT_MAX
+            val removed = chat.take(drop).toList()
+            repeat(drop) { chat.removeAt(0) }
+            deleteChatPhotos(removed)
+        }
+        save()
+    }
+
+    /** 清空对话记录（连带删掉对话里的图片文件）。界面上给一个明确的入口，别让用户只能靠卸载 */
+    fun clearChat() {
+        val removed = chat.toList()
+        chat.clear()
+        deleteChatPhotos(removed)
+        save()
+    }
+
+    private fun deleteChatPhotos(items: List<ButlerChat>) {
+        items.forEach { c ->
+            if (c.photoPath.isNotBlank()) {
+                try {
+                    File(c.photoPath).delete()
+                } catch (e: Exception) {
+                }
+            }
+        }
     }
 
     /* ── 备忘录(新建 / 编辑 / 删除 / 分类 / 搜索 / 排序 / 提醒) ── */
@@ -606,8 +1000,14 @@ class ButlerStore private constructor(context: Context) {
     }
 
     fun removeMemo(id: String) {
-        if (memos.none { it.id == id }) return
-        memos.removeAll { it.id == id }
+        val i = memos.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = memos.removeAt(i)
+        // 撤销回来必须把闹钟重新排上，不然「撤销了但提醒没了」
+        rememberUndo("已删除备忘「${item.title}」") {
+            memos.add(i.coerceAtMost(memos.size), item)
+            syncMemoReminder(item)
+        }
         save()
         MemoReminders.cancel(appCtx, id)
     }
@@ -617,6 +1017,46 @@ class ButlerStore private constructor(context: Context) {
         val k = keyword.trim()
         if (k.isEmpty()) return memos.toList()
         return memos.filter { it.title.contains(k, true) || it.content.contains(k, true) }
+    }
+
+    /**
+     * 跨模块的一次性检索（订阅 / 扣费 / 待办 / 到期 / 家人 / 纪念日 / 备忘 / 记账 / 档案 / 相册 / 对话）。
+     *
+     * 为什么值得单开一个：原来只有备忘录能搜，用了半年之后「去年那笔 25 是哪一项」
+     * 只能一屏屏翻。订阅几十条、记账几百笔时尤其难受。
+     *
+     * 空查询返回空表（**不**返回全部）—— 搜索页一进去就铺出几百条，比什么都不显示更让人发懵。
+     */
+    fun searchAll(query: String): List<SearchHit> {
+        val q = query.trim()
+        if (q.isEmpty()) return emptyList()
+        fun hit(s: String?) = s != null && s.contains(q, true)
+        val out = mutableListOf<SearchHit>()
+
+        tasks.filter { hit(it.text) || hit(it.meta) }
+            .forEach { out += SearchHit("待办", it.id, it.text, if (it.done) "已完成" else "未完成", "today") }
+        subs.filter { hit(it.name) || hit(it.source) }
+            .forEach { out += SearchHit("订阅", it.id, it.name, "¥${fmtMoney(it.amount)} · ${it.nextDate}", "guard", it.id) }
+        charges.filter { hit(it.subName) }
+            .forEach { out += SearchHit("扣费流水", it.id, it.subName, "¥${fmtMoney(it.amount)} · ${it.date} · ${it.source}", "guard") }
+        obligations.filter { hit(it.title) || hit(it.note) || hit(it.tag) }
+            .forEach { out += SearchHit("到期事务", it.id, it.title, "${it.date} · ${it.tag}", "duties") }
+        members.filter { hit(it.name) || hit(it.label) }
+            .forEach { out += SearchHit("家人", it.id, it.name, "${it.label} · ${it.date}", "family") }
+        keyDates.filter { hit(it.title) || hit(it.note) }
+            .forEach { out += SearchHit("纪念日", it.id, it.title, it.date, "family") }
+        memos.filter { hit(it.title) || hit(it.content) }
+            .forEach { out += SearchHit("备忘录", it.id, it.title, it.content.lineSequence().firstOrNull { l -> l.isNotBlank() }.orEmpty().take(40), "memo") }
+        expenses.filter { hit(it.note) || hit(it.category) }
+            .forEach { out += SearchHit("记账", it.id, it.note.ifEmpty { it.category }, "${if (it.income) "+" else ""}¥${fmtMoney(it.amount)} · ${it.date}", "ledger") }
+        archive.filter { hit(it.title) || hit(it.note) || it.files.any { f -> hit(f) } }
+            .forEach { out += SearchHit("档案", it.id, it.title, "${it.files.size} 个文件 · ${it.note}", "vault") }
+        album.filter { hit(it.note) }
+            .forEach { out += SearchHit("相册", it.id, it.note.ifEmpty { "相册照片" }, fmtCn(dateOfMillis(it.at).toString()), "family") }
+        chat.filter { hit(it.text) }
+            .forEach { out += SearchHit("对话", it.id, it.text.lineSequence().first().take(40), if (it.fromUser) "你说" else "管家说", "chat") }
+
+        return out
     }
 
     /** 排序:置顶恒在前;其余按所选时间键。按提醒时间时,未设提醒的排在最后 */
@@ -648,9 +1088,19 @@ class ButlerStore private constructor(context: Context) {
     fun removeMemoCategory(name: String) {
         if (name == MEMO_UNCATEGORIZED) return
         if (!memoCategories.value.contains(name)) return
-        memoCategories.value = memoCategories.value.filter { it != name }
+        val catsBefore = memoCategories.value
+        // 记下被改挂的每一条，撤销时原样还回原分类
+        val moved = memos.filter { it.category == name }.map { it.id to it }
+        memoCategories.value = catsBefore.filter { it != name }
         for (i in memos.indices) {
             if (memos[i].category == name) memos[i] = memos[i].copy(category = MEMO_UNCATEGORIZED)
+        }
+        rememberUndo("已删除分类「$name」") {
+            memoCategories.value = catsBefore
+            moved.forEach { (id, m) ->
+                val j = memos.indexOfFirst { it.id == id }
+                if (j >= 0) memos[j] = m
+            }
         }
         save()
     }
@@ -664,27 +1114,45 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    /* ── 记账 ── */
+    /* ── 记账（支出 / 收入 + 月度预算） ── */
 
-    fun addExpense(amount: Double, category: String, note: String) {
+    fun addExpense(amount: Double, category: String, note: String, income: Boolean = false) {
         if (amount <= 0) return
-        expenses.add(ButlerExpense(id(), amount, category.ifEmpty { "其他" }, note.trim(), LocalDate.now().toString(), System.currentTimeMillis()))
+        expenses.add(
+            ButlerExpense(
+                id(), amount,
+                category.ifEmpty { if (income) "收入" else "其他" },
+                note.trim(), LocalDate.now().toString(), System.currentTimeMillis(), income,
+            ),
+        )
         save()
     }
 
-    fun updateExpense(id: String, amount: Double, category: String, note: String) {
+    fun updateExpense(id: String, amount: Double, category: String, note: String, income: Boolean = false) {
         val i = expenses.indexOfFirst { it.id == id }
         if (i >= 0 && amount > 0) {
-            expenses[i] = expenses[i].copy(amount = amount, category = category.ifEmpty { "其他" }, note = note.trim())
+            expenses[i] = expenses[i].copy(
+                amount = amount,
+                category = category.ifEmpty { if (income) "收入" else "其他" },
+                note = note.trim(),
+                income = income,
+            )
             save()
         }
     }
 
-    fun removeExpense(id: String) { expenses.removeAll { it.id == id }; save() }
+    fun removeExpense(id: String) {
+        val i = expenses.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val item = expenses.removeAt(i)
+        rememberUndo("已删除一笔 ${item.amount} 元${if (item.income) "收入" else "支出"}") { expenses.add(i.coerceAtMost(expenses.size), item) }
+        save()
+    }
 
+    /** 今日**支出**（不含收入）—— 首页那个数字的口径始终是「花掉多少」，不混进收入免得看不懂 */
     fun expenseTotalToday(): Double {
         val t = LocalDate.now().toString()
-        return expenses.filter { it.date == t }.sumOf { it.amount }
+        return expenses.filter { it.date == t && !it.income }.sumOf { it.amount }
     }
 
     fun expenseCountToday(): Int {
@@ -692,12 +1160,69 @@ class ButlerStore private constructor(context: Context) {
         return expenses.count { it.date == t }
     }
 
+    /** 分类小计只算支出：把「工资」混进「餐饮」那种分类榜里没有意义 */
     fun expenseCategoryTotals(list: List<ButlerExpense>): List<Pair<String, Double>> =
-        list.groupBy { it.category }.map { (k, v) -> k to v.sumOf { it.amount } }.sortedByDescending { it.second }
+        list.filter { !it.income }.groupBy { it.category }.map { (k, v) -> k to v.sumOf { it.amount } }.sortedByDescending { it.second }
+
+    /** 一段账目里的支出合计 */
+    fun spendOf(list: List<ButlerExpense>): Double = list.filter { !it.income }.sumOf { it.amount }
+
+    /** 一段账目里的收入合计 */
+    fun incomeOf(list: List<ButlerExpense>): Double = list.filter { it.income }.sumOf { it.amount }
+
+    /**
+     * 本月预算状态。
+     *
+     * @return null 表示**用户没设预算** —— 这种情况下一律不提示超支。
+     *         凭空替他定一个数然后说「你超支了」，是编造出来的焦虑，宁可不提。
+     *         非 null 时是 (已花, 预算, 是否超支)。
+     */
+    fun budgetStatus(): Triple<Double, Double, Boolean>? {
+        val b = monthlyBudget.value
+        if (b <= 0) return null
+        val now = LocalDate.now()
+        val spent = spendOf(expensesInMonth(now.year, now.monthValue))
+        return Triple(spent, b, spent > b)
+    }
+
+    /**
+     * 「涨价了吗」：同一商户最近两笔真实扣费里，后一笔比前一笔贵多少。
+     *
+     * @return null = 没有两笔可比（只有一笔、或最新一笔没更贵）。
+     *         这个数**只由真实扣费记录算出**，不推算、不预测 —— 与「不伪造已扣」的底线一致。
+     */
+    fun priceJumpOf(subName: String): Double? {
+        val list = charges.filter { it.subName == subName }.sortedByDescending { it.at }
+        if (list.size < 2) return null
+        val jump = list[0].amount - list[1].amount
+        return if (jump > 0.004) jump else null
+    }
+
+    /** 试用期还有几天到期（null = 没设试用日 / 已经过了很久）；只往前看，不补报旧的 */
+    fun trialDaysLeft(sub: ButlerSub): Long? {
+        if (sub.trialUntil.isBlank()) return null
+        val d = daysUntil(sub.trialUntil) ?: return null
+        return if (d >= 0) d else null
+    }
 
     fun expensesInMonth(year: Int, month: Int): List<ButlerExpense> =
         expenses.filter {
             val d = parseDate(it.date) ?: return@filter false
+            d.year == year && d.monthValue == month
+        }
+
+    /**
+     * 这个月「还会被扣、但还没发生」的订阅 —— 用来回答「这个月还有多少钱要扣」。
+     *
+     * 这一条与诚信约定里「不伪造已扣」并不冲突,区别在于**口径**:
+     * 这里是用户自己填的 `nextDate + amount`,明说成「预计·尚未发生」,
+     * 绝不混进 [spendOf] / 记账流水 / 结余里 —— 那些位置只认真实记过的账。
+     * 只算未关闭、且下次扣费日落在这个月内的订阅。
+     */
+    fun subsDueInMonth(year: Int, month: Int): List<ButlerSub> =
+        subs.filter {
+            if (it.closing) return@filter false
+            val d = parseDate(it.nextDate) ?: return@filter false
             d.year == year && d.monthValue == month
         }
 
@@ -924,6 +1449,18 @@ class ButlerStore private constructor(context: Context) {
     private val BLOB_BUDGET = 8_000_000
     private val BLOB_PER_FILE = 600_000
 
+    /**
+     * 对话记录上限。超出就丢最旧的。
+     *
+     * 为什么是 500 而不是更小：AI 提示词只用最近 8 条，但**用户自己会往回翻**
+     * （「上周你说过什么」）。500 条足够覆盖几个月的正常使用，同时把
+     * 「每次 save() 重写整份 JSON」的成本压在可控范围内。
+     */
+    private val CHAT_MAX = 500
+
+    /** 非图片档案的单文件上限。图片不走这里（入库前已压到 1024 长边） */
+    private val ARCHIVE_MAX_BYTES = 4L * 1024 * 1024
+
     /** 备份:状态 JSON + 头像/家人照片/对话图片/档案文件(base64),换机可还原 */
     fun exportState(): String {
         val base = try {
@@ -1132,25 +1669,30 @@ class ButlerStore private constructor(context: Context) {
             o.put("avatar", avatarPath.value)
             o.put("remind", reminderEnabled.value)
             o.put("remindHour", reminderHour.value)
+            o.put("remindSubDays", reminderSubDays.value)
+            o.put("remindDueDays", reminderDueDays.value)
+            o.put("budget", monthlyBudget.value)
+            o.put("onboarded", onboarded.value)
             o.put("dark", darkMode.value)
+            o.put("lock", appLockEnabled.value)
             o.put("bfx", butlerFx.toDouble())
             o.put("bfy", butlerFy.toDouble())
             val dis = JSONArray()
             dismissed.forEach { dis.put(it) }
             o.put("dismissed", dis)
             o.put("tasks", arr(tasks) { JSONObject().put("id", it.id).put("text", it.text).put("meta", it.meta).put("done", it.done) })
-            o.put("subs", arr(subs) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("date", it.nextDate).put("closing", it.closing).put("source", it.source).put("closingAt", it.closingAt) })
-            o.put("obligations", arr(obligations) { JSONObject().put("id", it.id).put("title", it.title).put("note", it.note).put("date", it.date).put("tag", it.tag).put("done", it.done) })
+            o.put("subs", arr(subs) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("date", it.nextDate).put("closing", it.closing).put("source", it.source).put("closingAt", it.closingAt).put("trial", it.trialUntil).put("ahead", it.remindAhead) })
+            o.put("obligations", arr(obligations) { JSONObject().put("id", it.id).put("title", it.title).put("note", it.note).put("date", it.date).put("tag", it.tag).put("done", it.done).put("ahead", it.remindAhead) })
             o.put("members", arr(members) { JSONObject().put("id", it.id).put("name", it.name).put("label", it.label).put("date", it.date).put("photo", it.photo) })
             o.put("album", arr(album) { JSONObject().put("id", it.id).put("path", it.path).put("note", it.note).put("at", it.at) })
-            o.put("keyDates", arr(keyDates) { JSONObject().put("id", it.id).put("title", it.title).put("date", it.date).put("note", it.note) })
+            o.put("keyDates", arr(keyDates) { JSONObject().put("id", it.id).put("title", it.title).put("date", it.date).put("note", it.note).put("ahead", it.remindAhead) })
             o.put("archive", arr(archive) {
                 JSONObject()
                     .put("id", it.id).put("title", it.title).put("count", it.files.size).put("note", it.note)
                     .put("files", JSONArray(it.files))
             })
             o.put("chat", arr(chat) { JSONObject().put("id", it.id).put("user", it.fromUser).put("text", it.text).put("photoPath", it.photoPath) })
-            o.put("expenses", arr(expenses) { JSONObject().put("id", it.id).put("amount", it.amount).put("category", it.category).put("note", it.note).put("date", it.date).put("at", it.at) })
+            o.put("expenses", arr(expenses) { JSONObject().put("id", it.id).put("amount", it.amount).put("category", it.category).put("note", it.note).put("date", it.date).put("at", it.at).put("income", it.income) })
             o.put("charges", arr(charges) { JSONObject().put("id", it.id).put("name", it.subName).put("amount", it.amount).put("date", it.date).put("at", it.at).put("source", it.source) })
             o.put("closedSubs", arr(closedHistory) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("closedAt", it.closedAt) })
             o.put("memos", arr(memos) {
@@ -1192,7 +1734,12 @@ class ButlerStore private constructor(context: Context) {
             avatarPath.value = o.optString("avatar", "")
             reminderEnabled.value = o.optBoolean("remind", true)
             reminderHour.value = o.optInt("remindHour", 9)
+            reminderSubDays.value = o.optInt("remindSubDays", 3)
+            reminderDueDays.value = o.optInt("remindDueDays", 7)
+            monthlyBudget.value = o.optDouble("budget", 0.0)
+            onboarded.value = o.optBoolean("onboarded", false)
             darkMode.value = o.optBoolean("dark", false)
+            appLockEnabled.value = o.optBoolean("lock", false)
             butlerFx = o.optDouble("bfx", -1.0).toFloat()
             butlerFy = o.optDouble("bfy", -1.0).toFloat()
             o.optJSONArray("dismissed")?.let { a ->
@@ -1208,13 +1755,13 @@ class ButlerStore private constructor(context: Context) {
             o.optJSONArray("subs")?.let { a ->
                 for (i in 0 until a.length()) {
                     val j = a.getJSONObject(i)
-                    subs.add(ButlerSub(j.getString("id"), j.getString("name"), j.optDouble("amount", 0.0), j.optString("date"), j.optBoolean("closing"), j.optString("source", "手动"), j.optLong("closingAt", 0L)))
+                    subs.add(ButlerSub(j.getString("id"), j.getString("name"), j.optDouble("amount", 0.0), j.optString("date"), j.optBoolean("closing"), j.optString("source", "手动"), j.optLong("closingAt", 0L), j.optString("trial", ""), j.optInt("ahead", 0)))
                 }
             }
             o.optJSONArray("obligations")?.let { a ->
                 for (i in 0 until a.length()) {
                     val j = a.getJSONObject(i)
-                    obligations.add(ButlerObligation(j.getString("id"), j.getString("title"), j.optString("note"), j.getString("date"), j.optString("tag", "证件"), j.optBoolean("done")))
+                    obligations.add(ButlerObligation(j.getString("id"), j.getString("title"), j.optString("note"), j.getString("date"), j.optString("tag", "证件"), j.optBoolean("done"), j.optInt("ahead", 0)))
                 }
             }
             o.optJSONArray("members")?.let { a ->
@@ -1232,7 +1779,7 @@ class ButlerStore private constructor(context: Context) {
             o.optJSONArray("keyDates")?.let { a ->
                 for (i in 0 until a.length()) {
                     val j = a.getJSONObject(i)
-                    keyDates.add(ButlerKeyDate(j.getString("id"), j.getString("title"), j.optString("date"), j.optString("note")))
+                    keyDates.add(ButlerKeyDate(j.getString("id"), j.getString("title"), j.optString("date"), j.optString("note"), j.optInt("ahead", 0)))
                 }
             }
             o.optJSONArray("archive")?.let { a ->
@@ -1254,7 +1801,7 @@ class ButlerStore private constructor(context: Context) {
             o.optJSONArray("expenses")?.let { a ->
                 for (i in 0 until a.length()) {
                     val j = a.getJSONObject(i)
-                    expenses.add(ButlerExpense(j.getString("id"), j.optDouble("amount", 0.0), j.optString("category", "其他"), j.optString("note"), j.optString("date"), j.optLong("at", 0L)))
+                    expenses.add(ButlerExpense(j.getString("id"), j.optDouble("amount", 0.0), j.optString("category", "其他"), j.optString("note"), j.optString("date"), j.optLong("at", 0L), j.optBoolean("income", false)))
                 }
             }
             o.optJSONArray("charges")?.let { a ->

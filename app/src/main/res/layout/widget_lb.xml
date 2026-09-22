@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面小组件（4×2）的版式。
+  只用 RemoteViews 支持的那几种控件与属性：LinearLayout / TextView 与 android:padding 这类，
+  像 background 用 shape drawable、圆角、选择器都没问题；但不能用 Compose、不能用自定义 View。
+  行数刻意保留余量（body 允许 3 行），因为系统字体放大到「大」时，同一句话会占更多行。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/lb_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_lb_bg"
+    android:orientation="vertical"
+    android:padding="15dp">
+
+    <TextView
+        android:id="@+id/lb_widget_kicker"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:textColor="#7C837A"
+        android:textSize="11sp"
+        android:text="@string/lb_widget_name" />
+
+    <TextView
+        android:id="@+id/lb_widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="#EFEDE6"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/lb_widget_body"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:ellipsize="end"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="3"
+        android:textColor="#AEB5AC"
+        android:textSize="12sp" />
+
+</LinearLayout>

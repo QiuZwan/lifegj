@@ -339,6 +339,9 @@ object AiButler {
 {"type":"add_archive","title":"保单","note":"续保可提前比价"}
 {"type":"add_memo","title":"体检报告","content":"周五前把报告取回来","category":"生活","remind_at":"2026-09-25 09:00"}
 {"type":"complete_task","text":"交物业费"}
+{"type":"update_record","target":"订阅","name":"网易云音乐","amount":20}
+{"type":"update_record","target":"待办","name":"交物业费","text":"明天下午去物业交费"}
+{"type":"delete_record","target":"备忘","name":"体检报告"}
 {"type":"toggle_dark","on":true}
 {"type":"open_screen","screen":"vault"}
 """.trim()
@@ -381,7 +384,9 @@ object AiButler {
             // 它嘴上说「已经加好了」,actions 却是空的 —— 本机什么都没写。
             // 提示词里已经专门警告过这一条,但 glm-4-flash / glm-4.5-flash 都还会偶尔犯(实测约 1/16),
             // 光靠提示词收不干净。这里带着它自己刚才那段 JSON 再追一次,只要它把 actions 补上。
-            if (done.isEmpty() && looksLikeClaim(rawReply)) {
+            // 注意：如果这一轮已经提出了一条「待确认的改 / 删」，就不追补 —— 那不是漏了动作，
+            // 是刻意等用户点头；再追一次反而可能补出一条会把同一件事重复做的动作。
+            if (done.isEmpty() && looksLikeClaim(rawReply) && store.pendingFix.value.isBlank()) {
                 logDebug(ctx, "追补", "说了做却没给动作，追问一次：$rawReply")
                 val fixed = repairActions(ctx, base, key, model, sys, history, userText, content)
                 if (fixed != null) {
@@ -395,9 +400,13 @@ object AiButler {
             }
 
             // 补过一次还是没落库,就不能再让用户以为已经写进去了 —— 如实说没做到。
-            val reply = if (done.isEmpty() && looksLikeClaim(rawReply)) {
-                "$rawReply（这句我没能写进本机，补上金额或时间再说一次）"
-            } else rawReply
+            val reply = when {
+                // 提出了一条待确认的改 / 删：本机确实还没动，明说
+                store.pendingFix.value.isNotBlank() -> "$rawReply（等你确认后我才动本机）"
+                done.isEmpty() && looksLikeClaim(rawReply) ->
+                    "$rawReply（这句我没能写进本机，补上金额或时间再说一次）"
+                else -> rawReply
+            }
             Reply(reply, done, nav)
         } catch (e: Exception) {
             Reply(offlineText(store, userText, e.message), failed = true)
@@ -476,8 +485,10 @@ object AiButler {
                     "用户刚才说的是：「$userText」。现在只输出一个 JSON，" +
                     "把该做的 action 按下面的格式补进 actions 里，**不要留空**：\n" +
                     ACTION_CHEATSHEET +
-                    "\n只有「删改已有记录 / 往相册加照片 / 往档案组加文件 / 打电话发短信 / 改系统设置 / 查外部信息」" +
-                    "这几种才允许给空数组。上面这类记一笔、加一条的事，你都能做，没有理由不做。" +
+                    "\n只有「往相册加照片 / 往档案组加文件 / 打电话发短信 / 改系统设置 / 查外部信息」" +
+                    "这几种才允许给空数组。记一笔、加一条的事你都能做，没有理由不做；" +
+                    "改 / 删已有记录要给出 update_record / delete_record 动作" +
+                    "（本机会弹一次确认，用户点了才真的改），这两类也**必须**给动作，不要只写一句话。" +
                     "不要写解释，不要用代码块。",
             ),
         )
@@ -688,6 +699,17 @@ object AiButler {
             }
         }
 
+        "update_record" -> proposeUpdate(store, a)?.let { (desc, apply) ->
+            // 只提出、不落库：改「已有记录」必须由用户点头（认错对象就是直接毁掉正确数据）
+            store.proposeFix(desc, apply)
+            "$desc。等你确认，未改动"
+        }
+
+        "delete_record" -> proposeDelete(store, a)?.let { (desc, apply) ->
+            store.proposeFix(desc, apply)
+            "$desc。等你确认，未改动"
+        }
+
         "toggle_dark" -> {
             val on = a.optBoolean("on", !store.darkMode.value)
             store.setDarkMode(on)
@@ -717,6 +739,198 @@ object AiButler {
             }
         }
         return best
+    }
+
+    /**
+     * 「改一条已有记录」→ (给用户看的一句话, 确认后才执行的闭包)。
+     *
+     * 返回 null = 没找到对象，或没给出任何可改的字段 —— 这两种情况都不该弹确认卡，
+     * 更不该猜着改。可改的字段与目标各自有明确的落点：
+     * 订阅（金额 / 扣费日 / 名称）、待办（文字 / 备注）、到期事务、备忘、记账。
+     */
+    private fun proposeUpdate(store: ButlerStore, a: JSONObject): Pair<String, () -> String>? {
+        val target = a.optString("target").trim()
+        val name = a.optString("name").trim()
+        if (name.isEmpty()) return null
+        val amount = a.optDouble("amount", Double.NaN)
+        val newDate = a.optString("next_date").trim().ifBlank { a.optString("date").trim() }
+        val newText = a.optString("text").trim()
+        val newNote = a.optString("note").trim()
+        val newCat = a.optString("category").trim()
+
+        fun hasAmount() = !amount.isNaN() && amount > 0
+
+        // 1) 订阅
+        if (target.isEmpty() || target.contains("订阅") || target.contains("会员") || target.contains("续费")) {
+            val s = store.subs.filter { !it.closing }
+                .maxByOrNull { overlap(it.name, name) }?.takeIf { overlap(it.name, name) >= 2 }
+            if (s != null) {
+                val bits = mutableListOf<String>()
+                if (hasAmount()) bits += "金额 ¥${store.fmtMoney(s.amount)} → ¥${store.fmtMoney(amount)}"
+                if (newDate.isNotEmpty()) bits += "扣费日 ${s.nextDate.ifBlank { "未填" }} → $newDate"
+                if (newText.isNotEmpty()) bits += "名称「${s.name}」→「$newText」"
+                if (bits.isEmpty()) return null
+                val line = bits.joinToString("，")
+                return "把订阅「${s.name}」改成：$line" to {
+                    store.updateSub(
+                        s.id,
+                        newText.ifEmpty { s.name },
+                        if (hasAmount()) amount else s.amount,
+                        newDate.ifEmpty { s.nextDate },
+                    )
+                    "订阅「${s.name}」已更新：$line"
+                }
+            }
+        }
+
+        // 2) 待办
+        if (target.isEmpty() || target.contains("待办") || target.contains("任务")) {
+            val t = store.tasks.maxByOrNull { overlap(it.text, name) }?.takeIf { overlap(it.text, name) >= 2 }
+            if (t != null) {
+                if (newText.isEmpty() && newNote.isEmpty()) return null
+                val bits = mutableListOf<String>()
+                if (newText.isNotEmpty()) bits += "「${t.text}」→「$newText」"
+                if (newNote.isNotEmpty()) bits += "备注改成「$newNote」"
+                val line = bits.joinToString("，")
+                return "把待办改成：$line" to {
+                    store.updateTask(t.id, newText.ifEmpty { t.text }, newNote.ifEmpty { t.meta })
+                    "待办「${t.text}」已更新：$line"
+                }
+            }
+        }
+
+        // 3) 到期事务
+        if (target.isEmpty() || target.contains("义务") || target.contains("到期") || target.contains("证件")) {
+            val o = store.obligations.maxByOrNull { overlap(it.title, name) }?.takeIf { overlap(it.title, name) >= 2 }
+            if (o != null) {
+                if (newDate.isEmpty() && newNote.isEmpty() && newText.isEmpty()) return null
+                val bits = mutableListOf<String>()
+                if (newDate.isNotEmpty()) bits += "到期日 ${o.date} → $newDate"
+                if (newText.isNotEmpty()) bits += "事项「${o.title}」→「$newText」"
+                if (newNote.isNotEmpty()) bits += "备注改成「$newNote」"
+                val line = bits.joinToString("，")
+                return "把「${o.title}」改成：$line" to {
+                    store.updateObligation(
+                        o.id,
+                        newText.ifEmpty { o.title },
+                        newDate.ifEmpty { o.date },
+                        newNote.ifEmpty { o.note },
+                        o.tag,
+                    )
+                    "「${o.title}」已更新：$line"
+                }
+            }
+        }
+
+        // 4) 备忘
+        if (target.isEmpty() || target.contains("备忘") || target.contains("笔记")) {
+            val m = store.memos.maxByOrNull { overlap(it.title, name) }?.takeIf { overlap(it.title, name) >= 2 }
+            if (m != null) {
+                if (newText.isEmpty() && newNote.isEmpty()) return null
+                val line = buildString {
+                    if (newText.isNotEmpty()) append("标题「${m.title}」→「$newText」")
+                    if (newNote.isNotEmpty()) {
+                        if (isNotEmpty()) append("，")
+                        append("正文改成「$newNote」")
+                    }
+                }
+                return "把备忘改成：$line" to {
+                    store.updateMemo(
+                        m.id,
+                        newText.ifEmpty { m.title },
+                        newNote.ifEmpty { m.content },
+                        m.category,
+                        m.remindAt,
+                    )
+                    "备忘「${m.title}」已更新：$line"
+                }
+            }
+        }
+
+        // 5) 记账：只改最近一笔能对上的，且只改金额 / 分类 / 备注
+        if (target.isEmpty() || target.contains("账") || target.contains("花销") || target.contains("支出")) {
+            val e = store.expenses.sortedByDescending { it.at }
+                .firstOrNull { overlap(it.note.ifEmpty { it.category }, name) >= 2 }
+            if (e != null) {
+                if (!hasAmount() && newCat.isEmpty() && newNote.isEmpty()) return null
+                val bits = mutableListOf<String>()
+                if (hasAmount()) bits += "金额 ¥${store.fmtMoney(e.amount)} → ¥${store.fmtMoney(amount)}"
+                if (newCat.isNotEmpty()) bits += "分类 ${e.category} → $newCat"
+                if (newNote.isNotEmpty()) bits += "备注改成「$newNote」"
+                val line = bits.joinToString("，")
+                return "把「${e.note.ifEmpty { e.category }}」这笔账改成：$line" to {
+                    store.updateExpense(
+                        e.id,
+                        if (hasAmount()) amount else e.amount,
+                        newCat.ifEmpty { e.category },
+                        newNote.ifEmpty { e.note },
+                        e.income,
+                    )
+                    "这笔账已更新：$line"
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 「删一条已有记录」→ (给用户看的一句话, 确认后才执行的闭包)。
+     *
+     * 删除**只会删一条**（名字对得最上的那一条）。名字对不上就返回 null，
+     * 宁可回一句「没找到，未改动」，也不拿模糊匹配去猜着删。
+     */
+    private fun proposeDelete(store: ButlerStore, a: JSONObject): Pair<String, () -> String>? {
+        val target = a.optString("target").trim()
+        val name = a.optString("name").trim()
+        if (name.isEmpty()) return null
+
+        if (target.isEmpty() || target.contains("订阅") || target.contains("会员") || target.contains("续费")) {
+            val s = store.subs.maxByOrNull { overlap(it.name, name) }?.takeIf { overlap(it.name, name) >= 2 }
+            if (s != null) {
+                return "删掉订阅「${s.name}」（¥${store.fmtMoney(s.amount)}/月）" to {
+                    store.removeSub(s.id)
+                    "订阅「${s.name}」已删除"
+                }
+            }
+        }
+        if (target.isEmpty() || target.contains("待办") || target.contains("任务")) {
+            val t = store.tasks.maxByOrNull { overlap(it.text, name) }?.takeIf { overlap(it.text, name) >= 2 }
+            if (t != null) {
+                return "删掉待办「${t.text}」" to {
+                    store.removeTask(t.id)
+                    "待办「${t.text}」已删除"
+                }
+            }
+        }
+        if (target.isEmpty() || target.contains("义务") || target.contains("到期") || target.contains("证件")) {
+            val o = store.obligations.maxByOrNull { overlap(it.title, name) }?.takeIf { overlap(it.title, name) >= 2 }
+            if (o != null) {
+                return "删掉「${o.title}」（到期 ${o.date}）" to {
+                    store.removeObligation(o.id)
+                    "「${o.title}」已删除"
+                }
+            }
+        }
+        if (target.isEmpty() || target.contains("备忘") || target.contains("笔记")) {
+            val m = store.memos.maxByOrNull { overlap(it.title, name) }?.takeIf { overlap(it.title, name) >= 2 }
+            if (m != null) {
+                return "删掉备忘「${m.title}」" to {
+                    store.removeMemo(m.id)
+                    "备忘「${m.title}」已删除"
+                }
+            }
+        }
+        if (target.isEmpty() || target.contains("账") || target.contains("花销") || target.contains("支出")) {
+            val e = store.expenses.sortedByDescending { it.at }
+                .firstOrNull { overlap(it.note.ifEmpty { it.category }, name) >= 2 }
+            if (e != null) {
+                return "删掉「${e.note.ifEmpty { e.category }}」这笔账（¥${store.fmtMoney(e.amount)}）" to {
+                    store.removeExpense(e.id)
+                    "这笔账已删除"
+                }
+            }
+        }
+        return null
     }
 
     /**
@@ -777,7 +991,10 @@ ${snapshot(store)}
 5. 金额一律用 ¥。
 
 【你做不到的事，必须如实说，不要假装能做到】
-- 你不能替用户往相册加照片、往档案组加文件（那要他本人去选文件），也**不能修改或删除已有记录**（只能新增，或把待办标成已完成）。想改金额、改日期、改内容，就如实说做不到，并建议他在对应页面长按编辑。
+- 你**不能**替用户往相册加照片、往档案组加文件（那要他本人去选文件）。
+- 改 / 删已有记录可以，但**必须走确认**：给出 update_record / delete_record 动作，本机会把它变成一句
+  「要把 X 从 A 改成 B，对吗？」让用户点确认后才落库。所以 reply 里**不要**说「已经改好了」——
+  应该说「要把……改成……，确认一下」，把判断交给用户。名字对不上时本机不会改，会如实回一句「未改动」。
 - 你不能替用户打电话、发短信、联系客服，也不能真的取消第三方订阅。
 - 你不能改系统设置（通知权限、位置权限、通知使用权）。
 - 你查不到外面的信息（天气、汇率、新闻、别人的电话）。只能依据本机快照回答。

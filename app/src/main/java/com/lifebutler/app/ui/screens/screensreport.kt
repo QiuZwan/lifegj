@@ -69,8 +69,10 @@ fun MonthReportScreen(onBack: () -> Unit) {
     val prev: YearMonth = month.minusMonths(1)
 
     val monthExpenses = store.expensesInMonth(month.year, month.monthValue)
-    val monthTotal = monthExpenses.sumOf { it.amount }
-    val prevTotal = store.expensesInMonth(prev.year, prev.monthValue).sumOf { it.amount }
+    // 月报的三行口径：支出 / 收入 / 结余。都只由列表复算，不做任何推算
+    val monthTotal = store.spendOf(monthExpenses)
+    val monthIncome = store.incomeOf(monthExpenses)
+    val prevTotal = store.spendOf(store.expensesInMonth(prev.year, prev.monthValue))
     val cats = store.expenseCategoryTotals(monthExpenses)
     val maxCat = cats.maxOfOrNull { it.second } ?: 0.0
 
@@ -173,6 +175,38 @@ fun MonthReportScreen(onBack: () -> Unit) {
                         color = LbInk3,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                }
+                // 有收入才显示这两行：一笔收入都没记的时候，
+                // 「收入 ¥0 / 结余 -¥820」只会让人以为算错了
+                if (monthIncome > 0) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        Column {
+                            Text("收入", fontSize = 11.sp, color = LbInk3)
+                            Text(
+                                "¥${store.fmtMoney(monthIncome)}",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbAccent,
+                                modifier = Modifier.padding(top = 1.dp),
+                            )
+                        }
+                        Column {
+                            Text("结余", fontSize = 11.sp, color = LbInk3)
+                            val bal = monthIncome - monthTotal
+                            Text(
+                                (if (bal < 0) "-¥" else "¥") + store.fmtMoney(kotlin.math.abs(bal)),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (bal < 0) LbRust else LbInk,
+                                modifier = Modifier.padding(top = 1.dp),
+                            )
+                        }
+                    }
                 }
                 if (cats.isEmpty()) {
                     Text(

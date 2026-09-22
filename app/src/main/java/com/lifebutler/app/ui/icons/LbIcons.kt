@@ -51,6 +51,8 @@ object LbIcons {
     val cake: ImageVector by lazy { lb("cake", "M3 20h18v-8a3 3 0 0 0 -3 -3h-12a3 3 0 0 0 -3 3v8 M3 14.803c.312 .135 .654 .204 1 .197a2.4 2.4 0 0 0 2 -1a2.4 2.4 0 0 1 2 -1a2.4 2.4 0 0 1 2 1a2.4 2.4 0 0 0 2 1a2.4 2.4 0 0 0 2 -1a2.4 2.4 0 0 1 2 -1a2.4 2.4 0 0 1 2 1a2.4 2.4 0 0 0 2 1c.35 .007 .692 -.062 1 -.197 M12 4l1.465 1.638a2 2 0 1 1 -3.015 .099l1.55 -1.737") }
     val heart: ImageVector by lazy { lb("heart", "M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572") }
     val shieldLock: ImageVector by lazy { lb("shieldLock", "M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3 M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0 M12 12l0 2.5") }
+    val lock: ImageVector by lazy { lb("lock", "M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2l0 -6 M8 11v-4a4 4 0 0 1 8 0v4") }
+    val lockOpen: ImageVector by lazy { lb("lockOpen", "M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2l0 -6 M8 11v-4a4 4 0 0 1 8 -1") }
     val cat: ImageVector by lazy { lb("cat", "M20 3v10a8 8 0 1 1 -16 0v-10l3.432 3.432a7.963 7.963 0 0 1 4.568 -1.432c1.769 0 3.403 .574 4.728 1.546l3.272 -3.546 M2 16h5l-4 4 M22 16h-5l4 4 M11 16a1 1 0 1 0 2 0a1 1 0 1 0 -2 0 M9 11v.01 M15 11v.01") }
     val search: ImageVector by lazy { lb("search", "M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0 M21 21l-6 -6") }
     val plus: ImageVector by lazy { lb("plus", "M12 5l0 14 M5 12l14 0") }

@@ -207,7 +207,7 @@ fun AboutScreen(
         }
         Text(
             "检查更新会访问 GitHub 的公开接口查最新版本号，只发这一个请求，不带你的任何数据。",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 15.sp,
             modifier = Modifier.padding(top = 6.dp, start = 2.dp),
@@ -262,7 +262,7 @@ fun AboutScreen(
 
         Text(
             "生活管家 v$version\n数据全部保存在这台手机上 · 不注册、不登录、不采集设备标识",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 16.sp,
             textAlign = TextAlign.Center,
@@ -476,7 +476,7 @@ private fun LegalScreen(title: String, blocks: List<Pair<String, String>>, onBac
         BackHeader(title, onBack)
         Text(
             "最近更新：随当前版本发布",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
         )
@@ -498,7 +498,7 @@ private fun LegalScreen(title: String, blocks: List<Pair<String, String>>, onBac
         }
         Text(
             "本页文字是照着这个版本的实际行为写的。将来行为变了，这里会跟着改。",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 15.sp,
             modifier = Modifier.padding(top = 20.dp, bottom = 14.dp),
@@ -691,7 +691,7 @@ fun FeedbackScreen(onBack: () -> Unit) {
                 Text("附上诊断日志", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = LbInk)
                 Text(
                     "版本、机型、权限状态、各类记录的条数、本 App 的日志；不含聊天和照片",
-                    fontSize = 10.5.sp,
+                    fontSize = 11.sp,
                     color = LbInk3,
                     lineHeight = 15.sp,
                     modifier = Modifier.padding(top = 2.dp),
@@ -707,7 +707,7 @@ fun FeedbackScreen(onBack: () -> Unit) {
         Text(
             "点「发送」会弹出系统的分享面板，发给谁由你决定 —— 微信、QQ、邮箱都行；" +
                 "图和日志会作为附件一起带上。这个应用没有服务器，不会自动上传，也收不到你没发出去的东西。",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 15.sp,
             modifier = Modifier.padding(top = 10.dp),
@@ -737,7 +737,7 @@ fun FeedbackScreen(onBack: () -> Unit) {
 
         Text(
             "邮件那条只带文字 —— mailto 协议本身不支持附件。要连图和日志一起发，用上面的「发送」。",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 15.sp,
             modifier = Modifier.padding(top = 8.dp),
@@ -745,7 +745,7 @@ fun FeedbackScreen(onBack: () -> Unit) {
         Text(
             "顺带一句：管家听懂整句话这件事，是接在你自己的接口上的。" +
                 "如果它答非所问，多半是接口或模型的问题，不一定是应用的问题。",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 15.sp,
             modifier = Modifier.padding(top = 10.dp, bottom = 14.dp),

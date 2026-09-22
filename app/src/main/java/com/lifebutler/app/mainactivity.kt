@@ -1,23 +1,36 @@
 package com.lifebutler.app
 
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -26,12 +39,23 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.ReminderScheduler
 import com.lifebutler.app.ui.components.ButlerFloat
+import com.lifebutler.app.ui.components.ButlerLockGate
 import com.lifebutler.app.ui.components.LbBottomBar
+import com.lifebutler.app.ui.components.LbGhostButton
+import com.lifebutler.app.ui.components.LbPrimaryButton
+import com.lifebutler.app.ui.components.lbPressable
+import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.screens.AboutScreen
 import com.lifebutler.app.ui.screens.ChatScreen
 import com.lifebutler.app.ui.screens.ExpenseScreen
@@ -45,17 +69,70 @@ import com.lifebutler.app.ui.screens.MonthReportScreen
 import com.lifebutler.app.ui.screens.ObligationsScreen
 import com.lifebutler.app.ui.screens.PrivacyScreen
 import com.lifebutler.app.ui.screens.ScanScreen
+import com.lifebutler.app.ui.screens.SearchScreen
 import com.lifebutler.app.ui.screens.StatesScreen
 import com.lifebutler.app.ui.screens.SubscriptionDetailScreen
 import com.lifebutler.app.ui.screens.TermsScreen
 import com.lifebutler.app.ui.screens.TodayScreen
 import com.lifebutler.app.ui.screens.VaultScreen
+import com.lifebutler.app.ui.theme.LbAccent
+import com.lifebutler.app.ui.theme.LbAccentSoft
 import com.lifebutler.app.ui.theme.LbBg
+import com.lifebutler.app.ui.theme.LbDark
+import com.lifebutler.app.ui.theme.LbInk
+import com.lifebutler.app.ui.theme.LbInk2
+import com.lifebutler.app.ui.theme.LbInk3
+import com.lifebutler.app.ui.theme.LbLine
+import com.lifebutler.app.ui.theme.LbOnAccent
+import com.lifebutler.app.ui.theme.LbOnDark
+import com.lifebutler.app.ui.theme.LbSurface
 import com.lifebutler.app.ui.theme.LifeButlerTheme
+import com.lifebutler.app.widget.LbWidgetProvider
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private val tabRequest = mutableStateOf<String?>(null)
     private val askRequest = mutableStateOf<String?>(null)
+
+    /**
+     * 「回到前台」的计数，应用锁靠它重新锁上。
+     *
+     * 为什么不能只看 onResume 就锁：发起解锁会跳到系统的锁屏校验界面，回来时**也是**一次 onResume，
+     * 于是会解锁 → 立刻又锁上，反复弹。所以发起前先让出一段宽限窗口（[allowUnlockFlow]），
+     * 窗口内那次 onResume 不算「用户从后台回来」。
+     */
+    private val foregroundTick = mutableStateOf(0)
+    private var graceUntilMs = 0L
+
+    private fun allowUnlockFlow() {
+        graceUntilMs = SystemClock.elapsedRealtime() + 5000
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (SystemClock.elapsedRealtime() >= graceUntilMs) {
+            foregroundTick.value = foregroundTick.value + 1
+        }
+        // 回到前台顺手把桌面小组件重画一次：App 里刚记完一笔，回桌面不该还看到半小时前的旧数字。
+        // （系统规定 updatePeriodMillis 最快 30 分钟，光靠它跟不上一句话就记一笔的节奏。）
+        LbWidgetProvider.refresh(this)
+    }
+
+    /**
+     * 从 intent 里取「打开后应该落在哪里」。
+     *
+     * 三个来源：桌面小组件的 `open_tab` extra、通知的 `open_tab` extra、
+     * 以及长按图标的快捷方式 —— 后者是静态 XML，**不支持 extras**，只能用一个自定义 action 名区分
+     * （见 res/xml/lb_shortcuts.xml，改那边要同步这里）。
+     */
+    private fun routeFromIntent(i: android.content.Intent?): String? {
+        if (i == null) return null
+        return when (i.action) {
+            ACTION_SHORTCUT_LEDGER -> "ledger"
+            ACTION_SHORTCUT_ASK -> "智能管家"
+            else -> null
+        } ?: i.getStringExtra("open_tab")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,10 +148,21 @@ class MainActivity : ComponentActivity() {
         // (不用 BuildConfig:AGP 8 默认不生成那个类,为一行测试代码去开 buildConfig 不划算)
         val debugAsk = if (isDebuggable(this)) intent?.getStringExtra("ask") else null
         askRequest.value = debugAsk
-        val initialTab = if (debugAsk != null) "智能管家" else intent?.getStringExtra("open_tab")
+        val initialTab = if (debugAsk != null) "智能管家" else routeFromIntent(intent)
         setContent {
             LifeButlerTheme(dark = store.darkMode.value) {
-                LbApp(tabRequest = tabRequest, askRequest = askRequest, initialTab = initialTab)
+                ButlerLockGate(
+                    enabled = store.appLockEnabled.value,
+                    foregroundTick = foregroundTick.value,
+                    onBeforeUnlock = { allowUnlockFlow() },
+                ) {
+                    LbApp(
+                        tabRequest = tabRequest,
+                        askRequest = askRequest,
+                        initialTab = initialTab,
+                        store = store,
+                    )
+                }
             }
         }
     }
@@ -83,7 +171,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // 让 this.intent 跟上,否则 onCreate 之外的路径(setContent 之后触发的重组)读不到这次带的 extra
         setIntent(intent)
-        intent.getStringExtra("open_tab")?.let { tabRequest.value = it }
+        // 快捷方式走 action（静态 XML 带不了 extras），小组件 / 通知走 open_tab extra —— 两条都认
+        routeFromIntent(intent)?.let { tabRequest.value = it }
         if (isDebuggable(this)) intent.getStringExtra("ask")?.let { askRequest.value = it }
         dumpIfAsked(ButlerStore.get(applicationContext))
     }
@@ -118,6 +207,12 @@ class MainActivity : ComponentActivity() {
 
     private fun isDebuggable(ctx: android.content.Context): Boolean =
         (ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    companion object {
+        /** 与 res/xml/lb_shortcuts.xml 里那两个 action 必须一字不差 —— 改一边就要改另一边 */
+        private const val ACTION_SHORTCUT_LEDGER = "com.lifebutler.app.SHORTCUT_LEDGER"
+        private const val ACTION_SHORTCUT_ASK = "com.lifebutler.app.SHORTCUT_ASK"
+    }
 }
 
 @Composable
@@ -125,12 +220,25 @@ fun LbApp(
     tabRequest: MutableState<String?> = mutableStateOf(null),
     askRequest: MutableState<String?> = mutableStateOf(null),
     initialTab: String? = null,
+    store: ButlerStore? = null,
 ) {
-    var tab by rememberSaveable { mutableStateOf(initialTab ?: "今日") }
-    var overlay by rememberSaveable { mutableStateOf<String?>(null) }
+    val ctx = LocalContext.current
+    val st = store ?: remember { ButlerStore.get(ctx) }
+    // 深链 / 快捷方式给出的目标既可能是一个底部 tab，也可能是一个浮层页
+    // （小组件点进「记一笔」就是直接落在记账本这个浮层），所以两边都认。
+    val overlayStart = if (initialTab != null && initialTab in OVERLAY_ROUTES) initialTab else null
+    var tab by rememberSaveable { mutableStateOf(if (overlayStart != null) "今日" else (initialTab ?: "今日")) }
+    var overlay by rememberSaveable { mutableStateOf(overlayStart) }
     var detailSubId by rememberSaveable { mutableStateOf<String?>(null) }
     // 待发送的一句(深链带进来的),发完就清掉;再由新的深链带下一句进来
     var pendingAsk by remember { mutableStateOf(askRequest.value) }
+    var showGuide by remember { mutableStateOf(false) }
+
+    // 首启三步引导：只在「没走过引导」且「本机真的一条记录都没有」时才弹。
+    // 后一个条件是为了别挡老用户 —— 升级上来的人已经会用了，突然被教程拦一下只会烦。
+    LaunchedEffect(st.onboarded.value) {
+        if (!st.onboarded.value && !st.hasAnyRecord()) showGuide = true
+    }
 
     LaunchedEffect(askRequest.value) {
         askRequest.value?.let {
@@ -143,8 +251,9 @@ fun LbApp(
         tabRequest.value?.let { want ->
             overlay = null
             detailSubId = null
-            // 备忘录是浮层页(不是底部 tab),通知点进来也走这里
-            if (want == "memo") overlay = "memo" else tab = want
+            // 浮层页(备忘录 / 记账本 / 档案库 / 义务 / 月报 / 扫描 / 系统状态)不是底部 tab，
+            // 小组件和通知点进来都走这里
+            if (want in OVERLAY_ROUTES) overlay = want else tab = want
             tabRequest.value = null
         }
     }
@@ -196,6 +305,20 @@ fun LbApp(
                         "duties" -> ObligationsScreen(onBack = { overlay = null })
                         "ledger" -> ExpenseScreen(onBack = { overlay = null })
                         "memo" -> MemoScreen(onBack = { overlay = null })
+                        "search" -> SearchScreen(
+                            onBack = { overlay = null },
+                            // 点结果就真的翻过去：订阅带 subId 的要落到「哪一笔」的详情，
+                            // 光给一个页面名会跳到列表顶部，等于没跳
+                            onOpen = { route, subId ->
+                                if (subId != null) {
+                                    detailSubId = subId
+                                    overlay = "detail"
+                                } else {
+                                    if (route == "chat") tab = "智能管家" else openRoute(route)
+                                    if (route == "chat") overlay = null
+                                }
+                            },
+                        )
                         "report" -> MonthReportScreen(onBack = { overlay = null })
                         "states" -> StatesScreen(onBack = { overlay = null }, onOpenScan = { overlay = "scan" })
                         "vault" -> VaultScreen(onOpenStates = { overlay = "states" })
@@ -217,6 +340,7 @@ fun LbApp(
                             onOpenGuard = { tab = "守护" },
                             onOpenLedger = { overlay = "ledger" },
                             onOpenReport = { overlay = "report" },
+                            onOpenSearch = { overlay = "search" },
                         )
                         "守护" -> GuardScreen(
                             onOpenDetail = { id ->
@@ -266,5 +390,189 @@ fun LbApp(
                 // 底栏还在的时候给它留出位置,机器人不会被拖到按钮底下
                 .padding(bottom = if (overlay == null) 60.dp else 0.dp),
         )
+
+        /*
+         * 删除撤销条：任何模块删了东西都在这**一处**弹，5 秒后自己收回。
+         *
+         * 为什么不放在各页自己管：删除入口散在待办 / 守护 / 订阅 / 扣费 / 证件 / 成员 / 相册 /
+         * 档案 / 备忘 / 记账十来个界面里，每处都写一遍计时和收回，迟早有的一直挂着、有的忘了
+         * 通知数据层丢弃还原动作（那就会「窗口早就过了但撤销还能生效」，比没有撤销更让人困惑）。
+         */
+        var undoVisible by remember { mutableStateOf(false) }
+        LaunchedEffect(st.undoToken.value) {
+            if (st.undoToken.value <= 0) return@LaunchedEffect
+            undoVisible = true
+            delay(UNDO_WINDOW_MS)
+            undoVisible = false
+            st.discardUndo()
+        }
+        AnimatedVisibility(
+            visible = undoVisible,
+            enter = slideInVertically { h -> h } + fadeIn(),
+            exit = slideOutVertically { h -> h } + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp, vertical = if (overlay == null) 78.dp else 20.dp),
+        ) {
+            UndoBar(
+                label = st.undoLabel.value,
+                onUndo = {
+                    st.undoLastDelete()
+                    undoVisible = false
+                },
+            )
+        }
+
+        if (showGuide) {
+            OnboardingGuide(
+                onOpen = { want ->
+                    showGuide = false
+                    st.setOnboarded()
+                    if (want in OVERLAY_ROUTES) overlay = want else tab = want
+                },
+                onDismiss = {
+                    showGuide = false
+                    st.setOnboarded()
+                },
+            )
+        }
+    }
+}
+
+/** 撤销窗口：5 秒。够看清删了什么，又不至于一直杵在屏幕上 */
+private const val UNDO_WINDOW_MS = 5_000L
+
+/**
+ * 那些「不是底部 tab、而是浮层」的页面名。
+ * 深链 / 小组件 / 通知带过来的目标只要落在这里面，就当成浮层打开。
+ */
+private val OVERLAY_ROUTES = setOf(
+    "memo", "ledger", "report", "vault", "duties", "scan", "states", "about", "search", "detail",
+)
+
+/**
+ * 首启三步引导。
+ *
+ * 三条规矩：
+ * 1. **不塞任何演示数据** —— 守住「首次安装是干净的」这个约定，引导只告诉用户去哪儿做，不替他做；
+ * 2. **每步都能跳** —— 用户想自己摸，就让他摸；
+ * 3. 走完（或跳过）就写一个标记，不会第二次挡路。
+ */
+@Composable
+private fun OnboardingGuide(onOpen: (String) -> Unit, onDismiss: () -> Unit) {
+    val steps = listOf(
+        Triple(
+            "① 加一个订阅",
+            "把每月的会员费记下来：多少钱、哪天扣。扣费日前我会在每日简报里提醒你，不用自己记。",
+            "去守护页加一个" to "guard",
+        ),
+        Triple(
+            "② 记一笔",
+            "午饭、打车随手记一笔。月底的月报会告诉你钱花在哪、比上月多了还是少了，还能设一个月度预算。",
+            "打开记账本" to "ledger",
+        ),
+        Triple(
+            "③ 跟管家说一句话",
+            "比如「记一下：明天交房租」或「记账：午饭 25」。它会真的写进本机；改和删会先问你一次。",
+            "去跟它说一句" to "智能管家",
+        ),
+    )
+    var step by remember { mutableStateOf(0) }
+    val (title, body, action) = steps[step]
+    val last = step == steps.lastIndex
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        androidx.compose.material3.Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = LbSurface,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text("三步就能用起来", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
+                Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk, modifier = Modifier.padding(top = 5.dp))
+                Text(
+                    body,
+                    fontSize = 12.5.sp,
+                    color = LbInk2,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Text(
+                    "所有记录只存在这台手机上；这里不会自动填任何示例内容。",
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    LbGhostButton(if (last) "先自己看看" else "跳过", onDismiss, Modifier.weight(1f))
+                    LbPrimaryButton(
+                        if (last) "去说一句" else "下一步",
+                        {
+                            if (last) {
+                                onOpen(action.second)
+                            } else {
+                                step++
+                            }
+                        },
+                        Modifier.weight(1f),
+                    )
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    steps.indices.forEach { i ->
+                        Box(
+                            Modifier
+                                .padding(horizontal = 3.dp)
+                                .size(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (i == step) LbAccent else LbLine),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UndoBar(label: String, onUndo: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(LbDark)
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(LbIcons.trash, contentDescription = null, tint = LbOnDark, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(9.dp))
+        Text(
+            label,
+            fontSize = 13.sp,
+            color = LbOnDark,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(LbAccent)
+                .lbPressable(onClick = onUndo)
+                .padding(horizontal = 13.dp, vertical = 6.dp),
+        ) {
+            Text("撤销", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbOnAccent)
+        }
     }
 }

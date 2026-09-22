@@ -56,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -75,6 +76,8 @@ import com.lifebutler.app.data.BUILTIN_BASE
 import com.lifebutler.app.data.BUILTIN_KEY
 import com.lifebutler.app.data.BUILTIN_LABEL
 import com.lifebutler.app.data.BUILTIN_MODEL
+import com.lifebutler.app.data.BackupIO
+import com.lifebutler.app.data.ButlerArchive
 import com.lifebutler.app.data.ButlerMember
 import com.lifebutler.app.data.ButlerPhoto
 import com.lifebutler.app.data.ButlerStore
@@ -149,6 +152,7 @@ fun ChatScreen(
     val aiReady = aiSource != AiConfig.Source.NONE
     var lastActions by remember { mutableStateOf<List<String>>(emptyList()) }
     var lastNav by remember { mutableStateOf<String?>(null) }
+    var showClearChat by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -166,6 +170,9 @@ fun ChatScreen(
     val send: (String) -> Unit = { raw ->
         val t2 = raw.trim()
         if (t2.isNotEmpty() && !typing) {
+            // 上一条「要我改吗」还没确认就又说了新的一句：那张卡已经过期了，收掉。
+            // 留着它比收掉更危险 —— 过几轮之后用户再点「确认」，自己都不记得确认的是哪件事。
+            store.cancelFix()
             store.addChat(true, t2)
             draft = ""
             typing = true
@@ -214,13 +221,33 @@ fun ChatScreen(
             .fillMaxSize()
             .padding(horizontal = 20.dp),
     ) {
-        Column(Modifier.padding(top = 10.dp)) {
-            Text("智能管家", style = MaterialTheme.typography.labelSmall)
-            Text(
-                if (aiReady) "说一句，它替你办好" else "说出来，就有人接住",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("智能管家", style = MaterialTheme.typography.labelSmall)
+                Text(
+                    if (aiReady) "说一句，它替你办好" else "说出来，就有人接住",
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            // 对话是唯一会「一直长」的一块数据，得给一个明确的清理入口。
+            // 在此之前只能靠卸载重装，用户根本没这个选项（对话上限见 ButlerStore.addChat）。
+            if (store.chat.isNotEmpty()) {
+                Text(
+                    "清空对话",
+                    fontSize = 12.sp,
+                    color = LbInk3,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { showClearChat = true }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
         }
 
         LbCard(modifier = Modifier.padding(top = 12.dp), contentPadding = 12.dp) {
@@ -319,7 +346,7 @@ fun ChatScreen(
                             .background(LbAccentSoft)
                             .padding(horizontal = 12.dp, vertical = 9.dp),
                     ) {
-                        Text("已写进本机", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
+                        Text("已写进本机", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
                         lastActions.forEach { a ->
                             Text(
                                 "· $a",
@@ -349,6 +376,62 @@ fun ChatScreen(
                             fontWeight = FontWeight.SemiBold,
                             color = LbOnDark,
                         )
+                    }
+                }
+            }
+
+            // AI 提出来、但**还没落库**的改 / 删：这里给一张确认卡。
+            // 这一步不能省 —— 改删动的是已有记录，模型认错对象（「网易云」看成「网易严选」）
+            // 就直接毁掉正确数据，而本机没有云端可以回捞。
+            val pendingFix = store.pendingFix.value
+            if (pendingFix.isNotBlank()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                    Column(
+                        Modifier
+                            .clip(RoundedCornerShape(14.dp, 14.dp, 14.dp, 5.dp))
+                            .background(LbAmberSoft)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    ) {
+                        Text("要我这么做吗？", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = LbAmber)
+                        Text(
+                            pendingFix,
+                            fontSize = 12.sp,
+                            color = LbInk,
+                            lineHeight = 18.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        Row(
+                            Modifier.padding(top = 9.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(LbAccent)
+                                    .clickable {
+                                        val what = store.confirmFix()
+                                        // 落库结果如实回写进对话；没做成也不替模型圆场
+                                        store.addChat(false, if (what != null) "好了：$what" else "这一步没做成，本机没动。")
+                                        lastActions = if (what != null) listOf(what) else emptyList()
+                                    }
+                                    .padding(horizontal = 13.dp, vertical = 7.dp),
+                            ) {
+                                Text("确认", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = LbOnAccent)
+                            }
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .border(1.dp, LbLineStrong, RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        store.cancelFix()
+                                        store.addChat(false, "好，那我不动它。")
+                                        lastActions = emptyList()
+                                    }
+                                    .padding(horizontal = 13.dp, vertical = 7.dp),
+                            ) {
+                                Text("取消", fontSize = 12.sp, color = LbInk)
+                            }
+                        }
                     }
                 }
             }
@@ -462,6 +545,19 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    if (showClearChat) {
+        LbConfirmDialog(
+            title = "清空对话记录？",
+            text = "对话里的图片也会一起删掉。别的记录（订阅、记账、备忘等）不受影响，这一步不能撤销。",
+            onDismiss = { showClearChat = false },
+            onConfirm = {
+                store.clearChat()
+                showClearChat = false
+                Toast.makeText(ctx, "对话已清空", Toast.LENGTH_SHORT).show()
+            },
+        )
     }
 }
 
@@ -690,7 +786,7 @@ fun FamilyScreen() {
 
         SectionHeader("关键日期") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("提前一周提醒", fontSize = 12.sp, color = LbInk3)
+                Text("可逐条调提前量", fontSize = 12.sp, color = LbInk3)
                 Spacer(Modifier.width(9.dp))
                 LbPlusButton(onClick = { showAddDate = true }, contentDescription = "添加日期")
             }
@@ -714,6 +810,16 @@ fun FamilyScreen() {
                     }
             }
         }
+
+        // 家人的日期同样进每日简报（原来完全没进），逐条提前量也在这里调
+        LbRemindAheadSection(
+            title = "提前多久提醒我",
+            hint = "家人的复诊、生日、疫苗也会进每日简报，和到期事务用同一套提前量；" +
+                "重要的（复诊、手术）可以单独提前久一点。",
+            items = store.keyDates.map { Triple(it.id, it.title, it.remindAhead) },
+            emptyText = "还没有关键日期。生日、纪念日、复诊都可以放这里。",
+            onPick = { id, days -> store.setKeyDateRemindAhead(id, days) },
+        )
 
         Surface(
             Modifier
@@ -887,10 +993,20 @@ fun FamilyScreen() {
     albumViewer?.let { p ->
         AlbumViewerDialog(
             photo = p,
+            archives = store.archive,
+            photoName = store.fileOf(p.path).name,
             onDelete = {
                 store.removeAlbumPhoto(p.id)
                 albumViewer = null
                 Toast.makeText(ctx, "已从相册删除", Toast.LENGTH_SHORT).show()
+            },
+            onAddToArchive = { aid ->
+                val t = store.addPhotoToArchive(aid, p.path)
+                Toast.makeText(
+                    ctx,
+                    if (t == null) "没能归入，这个档案组可能已经被删掉了" else "已归入「$t」",
+                    Toast.LENGTH_SHORT,
+                ).show()
             },
             onDismiss = { albumViewer = null },
         )
@@ -994,7 +1110,7 @@ private fun MemberCard(
                 }
             }
             Text(name, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk, modifier = Modifier.padding(top = 7.dp))
-            Text(sub, fontSize = 10.5.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
+            Text(sub, fontSize = 11.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
         }
     }
 }
@@ -1078,9 +1194,22 @@ private fun AlbumThumb(photo: ButlerPhoto, modifier: Modifier = Modifier, onClic
     }
 }
 
-/** 看大图:点任意处关闭,底部可以删掉这一张 */
+/**
+ * 看大图:点任意处关闭。底部可以删掉这一张,也可以把它**归进一个档案组**。
+ *
+ * 归入走的是引用而不是复制(见 [ButlerStore.addPhotoToArchive]):两边共用本机同一份文件,
+ * 所以这句话必须写在按钮下面 —— 用户以为复制了、结果删一边另一边也没了,是最容易吓到人的那种误会。
+ */
 @Composable
-private fun AlbumViewerDialog(photo: ButlerPhoto, onDelete: () -> Unit, onDismiss: () -> Unit) {
+private fun AlbumViewerDialog(
+    photo: ButlerPhoto,
+    archives: List<ButlerArchive>,
+    photoName: String,
+    onDelete: () -> Unit,
+    onAddToArchive: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var pickArchive by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbDark) {
             Column(Modifier.padding(12.dp)) {
@@ -1105,25 +1234,97 @@ private fun AlbumViewerDialog(photo: ButlerPhoto, onDelete: () -> Unit, onDismis
                         color = Color(0x99F6F5F0),
                         modifier = Modifier.weight(1f),
                     )
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0x1FF6F5F0))
-                            .clickable(onClick = onDelete)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(LbIcons.trash, contentDescription = null, tint = LbOnDark, modifier = Modifier.size(14.dp))
-                            Text(
-                                "删除这张",
-                                fontSize = 12.sp,
-                                color = LbOnDark,
-                                modifier = Modifier.padding(start = 5.dp),
-                            )
+                    SmallDarkChip(
+                        icon = LbIcons.folders,
+                        label = if (pickArchive) "收起" else "归入档案",
+                        onClick = { pickArchive = !pickArchive },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    SmallDarkChip(icon = LbIcons.trash, label = "删除这张", onClick = onDelete)
+                }
+                if (pickArchive) {
+                    Text(
+                        "归入的是引用,不会多复制一份文件;以后从档案里移除,相册这张还在。",
+                        fontSize = 11.sp,
+                        color = Color(0x99F6F5F0),
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 10.dp, start = 4.dp, end = 4.dp),
+                    )
+                    if (archives.isEmpty()) {
+                        Text(
+                            "还没有档案组。先去「我的 → 家庭档案」建一个,再回来归入。",
+                            fontSize = 11.5.sp,
+                            color = Color(0x99F6F5F0),
+                            lineHeight = 17.sp,
+                            modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp),
+                        )
+                    } else {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            Column(Modifier.padding(top = 6.dp)) {
+                                archives.forEach { a ->
+                                    val already = a.files.contains(photoName)
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable(enabled = !already) { onAddToArchive(a.id) }
+                                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(
+                                            LbIcons.folders,
+                                            contentDescription = null,
+                                            tint = if (already) Color(0x66F6F5F0) else Color(0xFF8FB8A8),
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                        Text(
+                                            a.title,
+                                            fontSize = 12.5.sp,
+                                            color = if (already) Color(0x66F6F5F0) else LbOnDark,
+                                            maxLines = 1,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(start = 8.dp),
+                                        )
+                                        Text(
+                                            if (already) "已在组里" else "归入 →",
+                                            fontSize = 11.sp,
+                                            color = if (already) Color(0x66F6F5F0) else Color(0xFF8FB8A8),
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/** 深色底上的小圆角按钮 —— 看大图/相册这类暗色弹窗专用 */
+@Composable
+private fun SmallDarkChip(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0x1FF6F5F0))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = LbOnDark, modifier = Modifier.size(14.dp))
+            Text(
+                label,
+                fontSize = 12.sp,
+                color = LbOnDark,
+                modifier = Modifier.padding(start = 5.dp),
+            )
         }
     }
 }
@@ -1158,6 +1359,30 @@ fun MineScreen(
     var showRestore by remember { mutableStateOf(false) }
     var restoreInitial by remember { mutableStateOf("") }
     var restorePending by remember { mutableStateOf<String?>(null) }
+    // 备份文件的进出通道（P0）：含照片的备份能到好几 MB，剪贴板跨进程装不下这么多，
+    // 所以「存成文件 / 从文件恢复」才是主路径，剪贴板只留作小数据的快捷方式。
+    val backupSaveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(BackupIO.MIME),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val err = BackupIO.write(ctx, uri, store.exportState())
+        Toast.makeText(
+            ctx,
+            if (err == null) "备份已存成文件，换机时用「从文件恢复」选回来" else "没能存成文件：$err",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+    val backupOpenLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val raw = BackupIO.read(ctx, uri)
+        when {
+            raw.isNullOrBlank() -> Toast.makeText(ctx, "这个文件读不出来，换个文件试试", Toast.LENGTH_SHORT).show()
+            !store.isValidBackup(raw) -> Toast.makeText(ctx, "这个文件不像生活管家的备份", Toast.LENGTH_SHORT).show()
+            else -> restorePending = raw
+        }
+    }
     val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         Toast.makeText(ctx, if (granted) "通知权限已开启" else "未授权通知，提醒将无法显示", Toast.LENGTH_SHORT).show()
     }
@@ -1362,6 +1587,7 @@ fun MineScreen(
                         },
                     ),
                     Triple(LbIcons.fileText, "本月月报", "花销 · 订阅 · 省下"),
+                    Triple(LbIcons.lock, "应用锁", if (store.appLockEnabled.value) "已开启 · 系统锁屏校验" else "已关闭"),
                     Triple(LbIcons.shieldLock, "数据与隐私", "全部保存在本机"),
                     Triple(LbIcons.download, "导出家庭档案", "一键整理成文本"),
                     Triple(LbIcons.deviceFloppy, "备份与恢复", "换机不丢数据"),
@@ -1393,6 +1619,21 @@ fun MineScreen(
                                     "桌面天气" -> showWeather = true
                                     "AI 智能管家" -> showAi = true
                                     "本月月报" -> onOpenReport()
+                                    "应用锁" -> {
+                                        val want = !store.appLockEnabled.value
+                                        store.setAppLock(want)
+                                        if (want) {
+                                            val km = ctx.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                                            Toast.makeText(
+                                                ctx,
+                                                if (km?.isDeviceSecure == true) "已开启，下次进入应用时会用系统锁屏校验"
+                                                else "已开启，但本机还没设锁屏密码／指纹，这个锁暂时保护不了 —— 去系统设置设一个才真正生效",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        } else {
+                                            Toast.makeText(ctx, "应用锁已关闭", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                     "数据与隐私" -> showData = true
                                     "载入演示数据" -> showDemo = true
                                     "清空全部数据" -> showClear = true
@@ -1471,7 +1712,7 @@ fun MineScreen(
 
         Text(
             "生活管家 · v$appVersion",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             color = LbInk3,
             textAlign = TextAlign.Center,
             modifier = Modifier
@@ -1586,9 +1827,11 @@ fun MineScreen(
         ReminderDialog(
             enabled = store.reminderEnabled.value,
             hour = store.reminderHour.value,
+            subDays = store.reminderSubDays.value,
+            dueDays = store.reminderDueDays.value,
             notifGranted = notifGranted,
-            onSave = { en, h ->
-                store.setReminder(en, h)
+            onSave = { en, h, subD, dueD ->
+                store.setReminder(en, h, subD, dueD)
                 if (en) {
                     ensureNotifPermission()
                     ReminderScheduler.ensureScheduled(ctx)
@@ -1642,10 +1885,34 @@ fun MineScreen(
 
     if (showBackup) {
         BackupDialog(
+            onSaveFile = {
+                showBackup = false
+                backupSaveLauncher.launch(BackupIO.suggestedName())
+            },
+            onRestoreFile = {
+                showBackup = false
+                backupOpenLauncher.launch(BackupIO.PICK_MIMES)
+            },
             onCopy = {
-                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("生活管家备份", store.exportState()))
-                Toast.makeText(ctx, "备份已复制，保存到安全的地方即可", Toast.LENGTH_SHORT).show()
+                // 剪贴板要经 Binder 跨进程送到 system_server，几 MB 的文本塞不进去。
+                // 这里如实报「装不下 / 偏大」，绝不让用户以为备份成功了 —— 那是丢数据的开始。
+                val text = store.exportState()
+                val kb = (text.length + 1023) / 1024
+                try {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("生活管家备份", text))
+                    Toast.makeText(
+                        ctx,
+                        if (kb > 900) "已复制（约 ${kb}KB）。内容偏大，建议改用「存成文件」" else "备份已复制（约 ${kb}KB），存到安全的地方即可",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        ctx,
+                        "内容太大，剪贴板放不下（约 ${kb}KB）—— 请改用「存成文件」",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             },
             onRestore = {
                 restoreInitial = try {
@@ -1860,7 +2127,7 @@ private fun AiManagerDialog(
                             } else {
                                 "已关闭。没填自己的 Key 的话，对话页就是离线规则模式。"
                             },
-                            fontSize = 10.5.sp,
+                            fontSize = 11.sp,
                             color = LbInk3,
                             lineHeight = 15.sp,
                             modifier = Modifier.padding(top = 2.dp),
@@ -2011,7 +2278,7 @@ private fun AiManagerDialog(
 
                 Text(
                     "免费额度、模型名都会变，以各家控制台为准。填了报错的话，在「模型名」那一栏改成控制台里写的名字就行。",
-                    fontSize = 10.5.sp,
+                    fontSize = 11.sp,
                     color = LbInk3,
                     lineHeight = 15.sp,
                     modifier = Modifier.padding(top = 12.dp),
@@ -2147,19 +2414,19 @@ private fun AiPresetSection(
                                 .background(tagBg)
                                 .padding(horizontal = 6.dp, vertical = 1.5.dp),
                         ) {
-                            Text(p.tag, fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = tagFg)
+                            Text(p.tag, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = tagFg)
                         }
                     }
                     Text(
                         p.model,
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         color = LbInk3,
                         maxLines = 1,
                         modifier = Modifier.padding(top = 3.dp),
                     )
                     Text(
                         p.note,
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         color = LbInk3,
                         lineHeight = 15.sp,
                         modifier = Modifier.padding(top = 1.dp),
@@ -2173,7 +2440,7 @@ private fun AiPresetSection(
                         .clickable { onApply(p) }
                         .padding(horizontal = 9.dp, vertical = 7.dp),
                 ) {
-                    Text("去拿 Key", fontSize = 10.5.sp, fontWeight = FontWeight.Medium, color = LbInk2)
+                    Text("去拿 Key", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = LbInk2)
                 }
             }
         }
@@ -2275,14 +2542,18 @@ private fun lbFmtTime(ts: Long): String {
 private fun ReminderDialog(
     enabled: Boolean,
     hour: Int,
+    subDays: Int,
+    dueDays: Int,
     notifGranted: Boolean,
-    onSave: (Boolean, Int) -> Unit,
+    onSave: (Boolean, Int, Int, Int) -> Unit,
     onTest: () -> Unit,
     onFixPermission: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var en by remember { mutableStateOf(enabled) }
     var h by remember { mutableStateOf(hour) }
+    var subD by remember { mutableStateOf(subDays) }
+    var dueD by remember { mutableStateOf(dueDays) }
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
             Column(Modifier.padding(20.dp)) {
@@ -2349,6 +2620,22 @@ private fun ReminderDialog(
                     color = LbInk3,
                     modifier = Modifier.padding(top = 10.dp),
                 )
+                // 提前量原来写死在代码里（扣费 3 天、到期 7 天），用户想提前两周知道车险该续了做不到。
+                // 这里给两档可调；单条还想更早，可以在那一条的详情里单独设「提前 N 天」。
+                LbRemindAheadRow(
+                    label = "扣费提前",
+                    value = subD,
+                    options = listOf(0, 1, 3, 7, 15),
+                    suffix = "天",
+                    onPick = { subD = it },
+                )
+                LbRemindAheadRow(
+                    label = "到期提前",
+                    value = dueD,
+                    options = listOf(1, 3, 7, 15, 30),
+                    suffix = "天",
+                    onPick = { dueD = it },
+                )
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -2383,7 +2670,101 @@ private fun ReminderDialog(
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
                     LbGhostButton("发送测试", onTest, Modifier.weight(1f))
-                    LbPrimaryButton("保存", { onSave(en, h) }, Modifier.weight(1f))
+                    LbPrimaryButton("保存", { onSave(en, h, subD, dueD) }, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 一行「提前几天」的胶囊选择器。
+ *
+ * 做成公共组件是因为三个地方要用同一套：全局提醒设置、订阅详情、到期事务详情。
+ * 三处各写一遍的话，改天有人把某处的「0 天」文案改了、另外两处没改，用户就会看到两套说法。
+ *
+ * [value] 0 表示「跟随上面的全局设置」（订阅那条才有 0 这个选项）。
+ */
+@Composable
+fun LbRemindAheadRow(
+    label: String,
+    value: Int,
+    options: List<Int>,
+    suffix: String = "天",
+    onPick: (Int) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 13.sp, color = LbInk, modifier = Modifier.width(66.dp))
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            options.forEach { v ->
+                val on = value == v
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (on) LbAccent else LbSurface2)
+                        .clickable { onPick(v) }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (v == 0) "默认" else "$v$suffix",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (on) LbOnAccent else LbInk2,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 「逐条设提前量」的整块卡片：一行一件事，各自一排胶囊。
+ *
+ * 为什么不塞进「添加」弹窗里：添加时是一次性填表，而提前量是**回头想起来才调**的东西
+ * （车险要提前两周、快递取件当天就行）。放在列表下面一眼能看全、随手能改。
+ *
+ * [items] 每项是 (id, 显示名, 当前提前天数)。
+ */
+@Composable
+fun LbRemindAheadSection(
+    title: String,
+    hint: String,
+    items: List<Triple<String, String, Int>>,
+    options: List<Int> = listOf(0, 1, 3, 7, 15, 30),
+    emptyText: String = "现在没有待办，添加之后可以在这里逐条调提前量。",
+    onPick: (String, Int) -> Unit,
+) {
+    LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 14.dp) {
+        Column {
+            Text(title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+            Text(hint, fontSize = 11.5.sp, color = LbInk3, lineHeight = 17.sp, modifier = Modifier.padding(top = 3.dp))
+            if (items.isEmpty()) {
+                Text(emptyText, fontSize = 12.sp, color = LbInk3, modifier = Modifier.padding(top = 8.dp))
+            } else {
+                items.forEach { (id, label, ahead) ->
+                    Text(
+                        label,
+                        fontSize = 12.5.sp,
+                        color = LbInk,
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                    LbRemindAheadRow(
+                        label = "",
+                        value = ahead,
+                        options = options,
+                        onPick = { onPick(id, it) },
+                    )
                 }
             }
         }
@@ -2391,13 +2772,21 @@ private fun ReminderDialog(
 }
 
 @Composable
-private fun BackupDialog(onCopy: () -> Unit, onRestore: () -> Unit, onDismiss: () -> Unit) {
+private fun BackupDialog(
+    onSaveFile: () -> Unit,
+    onRestoreFile: () -> Unit,
+    onCopy: () -> Unit,
+    onRestore: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
             Column(Modifier.padding(20.dp)) {
                 Text("备份与恢复", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    "备份会复制一段本机数据文本（含头像、家庭相册与家人照片），保存到聊天记录或文件即可；换机后粘贴即可恢复（覆盖当前数据）。",
+                    "备份里含头像、家庭相册与家人照片，可能有好几 MB，所以推荐走「存成文件」——" +
+                        "存到网盘或发给自己都行；换机后用「从文件恢复」选回来。" +
+                        "剪贴板那条只适合数据很少的情况（它装不下几 MB）。",
                     fontSize = 12.sp,
                     color = LbInk3,
                     lineHeight = 18.sp,
@@ -2409,8 +2798,17 @@ private fun BackupDialog(onCopy: () -> Unit, onRestore: () -> Unit, onDismiss: (
                         .padding(top = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    LbGhostButton("复制备份", onCopy, Modifier.weight(1f))
-                    LbPrimaryButton("粘贴恢复", onRestore, Modifier.weight(1f))
+                    LbPrimaryButton("存成文件", onSaveFile, Modifier.weight(1f))
+                    LbGhostButton("从文件恢复", onRestoreFile, Modifier.weight(1f))
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    LbGhostButton("复制到剪贴板", onCopy, Modifier.weight(1f))
+                    LbGhostButton("从剪贴板恢复", onRestore, Modifier.weight(1f))
                 }
                 Box(
                     Modifier
@@ -2469,7 +2867,7 @@ private fun StatTile(v: String, k: String, modifier: Modifier = Modifier) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(v, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-            Text(k, fontSize = 10.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
+            Text(k, fontSize = 11.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
         }
     }
 }
@@ -2556,26 +2954,30 @@ fun VaultScreen(onOpenStates: () -> Unit) {
     var openId by remember { mutableStateOf<String?>(null) }
     var deleteFile by remember { mutableStateOf<Pair<String, String>?>(null) }
     var uploadTarget by remember { mutableStateOf("") }
+    var albumPickTarget by remember { mutableStateOf<String?>(null) }
 
     fun importUris(uris: List<android.net.Uri>) {
         val id = uploadTarget
         if (id.isEmpty() || uris.isEmpty()) return
         val ok = ArrayList<String>()
         var bad = 0
+        var reason: String? = null
         uris.forEach { u ->
-            val n = store.importArchiveFile(u, id, displayNameOf(ctx, u))
-            if (n != null) ok.add(n) else bad++
+            val (n, why) = store.importArchiveFile(u, id, displayNameOf(ctx, u))
+            if (n != null) ok.add(n) else {
+                bad++
+                // 只报第一个原因就够了：多选一次性失败时，原因基本是同一个
+                if (reason == null) reason = why
+            }
         }
         if (ok.isNotEmpty()) store.addArchiveFiles(id, ok)
-        Toast.makeText(
-            ctx,
-            when {
-                ok.isEmpty() -> "没能存入：单份可能超过 4 MB，或文件读不到"
-                bad > 0 -> "已存入 ${ok.size} 个，另有 $bad 个读不到或过大"
-                else -> "已存入 ${ok.size} 个文件"
-            },
-            Toast.LENGTH_SHORT,
-        ).show()
+        val msg = when {
+            // 「没能存入」这四个字对用户毫无用处 —— 把具体原因（多大、读不到、什么权限）说出来
+            ok.isEmpty() -> reason ?: "没能存入：文件读不到"
+            bad > 0 -> "已存入 ${ok.size} 个；另有 $bad 个没进来：${reason ?: "读不到"}"
+            else -> "已存入 ${ok.size} 个文件"
+        }
+        Toast.makeText(ctx, msg, if (ok.isEmpty() || bad > 0) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
     }
 
     // 照片走系统相册选择器;文件走文档选择器(可多选)
@@ -2612,7 +3014,7 @@ fun VaultScreen(onOpenStates: () -> Unit) {
             Surface(
                 Modifier
                     .weight(1f)
-                    .height(42.dp),
+                    .heightIn(min = 42.dp),
                 shape = RoundedCornerShape(14.dp),
                 color = LbSurface,
                 border = androidx.compose.foundation.BorderStroke(1.dp, LbLine),
@@ -2738,14 +3140,14 @@ fun VaultScreen(onOpenStates: () -> Unit) {
                                 }
                                 Text(
                                     if (v.files.isEmpty()) "还没有文件" else "${v.files.size} 个文件 · 点开可管理",
-                                    fontSize = 10.5.sp,
+                                    fontSize = 11.sp,
                                     color = LbInk3,
                                     modifier = Modifier.padding(top = 6.dp),
                                 )
                                 if (v.note.isNotEmpty()) {
                                     Text(
                                         v.note,
-                                        fontSize = 10.sp,
+                                        fontSize = 11.sp,
                                         color = LbInk3,
                                         maxLines = 1,
                                         modifier = Modifier.padding(top = 2.dp),
@@ -2840,16 +3242,108 @@ fun VaultScreen(onOpenStates: () -> Unit) {
                 uploadTarget = id
                 filePicker.launch("*/*")
             },
+            onAddFromAlbum = { albumPickTarget = id },
             onOpenFile = { name -> openLocalFile(ctx, name) },
             onDeleteFile = { name -> deleteFile = id to name },
             onDismiss = { openId = null },
         )
     }
 
+    albumPickTarget?.let { aid ->
+        val title = store.archive.firstOrNull { it.id == aid }?.title ?: "档案组"
+        Dialog(onDismissRequest = { albumPickTarget = null }) {
+            Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
+                Column(
+                    Modifier
+                        .padding(18.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text("从相册选照片", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                    Text(
+                        "选中的照片会归到「$title」。两边共用同一份本机文件，不会多复制一份；" +
+                            "以后从档案里移除这张，相册那份也不会被删掉。",
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (store.album.isEmpty()) {
+                        Text("相册还是空的，先去「家庭」页加几张照片吧。", fontSize = 12.sp, color = LbInk3)
+                    } else {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            Column {
+                                store.album.sortedByDescending { it.at }.forEach { p ->
+                                    val already = store.archive.firstOrNull { it.id == aid }
+                                        ?.files?.contains(store.fileOf(p.path).name) == true
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .clickable(enabled = !already) {
+                                                store.addPhotoToArchive(aid, p.path)
+                                                Toast.makeText(ctx, "已归入「$title」", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        LocalImage(
+                                            p.path,
+                                            Modifier
+                                                .size(46.dp)
+                                                .clip(RoundedCornerShape(10.dp)),
+                                        )
+                                        Column(
+                                            Modifier
+                                                .weight(1f)
+                                                .padding(start = 10.dp),
+                                        ) {
+                                            Text(
+                                                p.note.ifEmpty { "相册照片" },
+                                                fontSize = 12.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = LbInk,
+                                                maxLines = 1,
+                                            )
+                                            Text(
+                                                store.fmtCnAt(p.at),
+                                                fontSize = 11.sp,
+                                                color = LbInk3,
+                                                modifier = Modifier.padding(top = 2.dp),
+                                            )
+                                        }
+                                        if (already) LbChip("已在组里", ChipTone.Green)
+                                        else Icon(
+                                            LbIcons.plus,
+                                            contentDescription = "归入",
+                                            tint = LbAccent,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    LbGhostButton("关闭", { albumPickTarget = null }, Modifier.fillMaxWidth().padding(top = 12.dp))
+                }
+            }
+        }
+    }
+
     deleteFile?.let { (aid, name) ->
+        val shared = store.fileAlsoUsedByAlbum(name)
         LbConfirmDialog(
             title = "从这组档案里移除？",
-            text = "会同时删掉本机保存的「${niceFileName(aid, name)}」，无法恢复。",
+            text = if (shared) {
+                "相册里还有同一张照片，所以本机文件会保留 —— 只是从这个档案组里移开。"
+            } else {
+                "会同时删掉本机保存的「${niceFileName(aid, name)}」。5 秒内可以在下方点「撤销」找回来。"
+            },
             confirmText = "移除",
             onDismiss = { deleteFile = null },
             onConfirm = {
@@ -2881,6 +3375,7 @@ private fun ArchiveDetailDialog(
     archiveId: String,
     onAddPhotos: () -> Unit,
     onAddFiles: () -> Unit,
+    onAddFromAlbum: () -> Unit,
     onOpenFile: (String) -> Unit,
     onDeleteFile: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -2935,11 +3430,26 @@ private fun ArchiveDetailDialog(
                 }
                 Text(
                     "照片选完自动压缩后保存;其他文件单份上限 4 MB。全部只存在本机。",
-                    fontSize = 10.5.sp,
+                    fontSize = 11.sp,
                     color = LbInk3,
                     lineHeight = 15.sp,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+                // 相册与档案原来是两个孤岛：拍了一张保单照片进了相册，想归到「保单」这组里，
+                // 只能重新拍 / 重新选一次。这里直接引用相册里已有的那张，**不复制文件**。
+                if (store.album.isNotEmpty()) {
+                    Text(
+                        "或者从相册里挑一张已有的照片（只做引用，不会多复制一份）",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbAccent,
+                        modifier = Modifier
+                            .padding(top = 8.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onAddFromAlbum)
+                            .padding(vertical = 3.dp),
+                    )
+                }
 
                 Spacer(Modifier.height(12.dp))
 
@@ -3002,7 +3512,7 @@ private fun ArchiveDetailDialog(
                                     )
                                     Text(
                                         "点开查看 · 长按移除",
-                                        fontSize = 10.sp,
+                                        fontSize = 11.sp,
                                         color = LbInk3,
                                         modifier = Modifier.padding(top = 2.dp),
                                     )
@@ -3037,7 +3547,7 @@ private fun StatusRow(
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, fontSize = 13.sp, color = LbInk)
-            Text(desc, fontSize = 10.5.sp, color = LbInk3, lineHeight = 15.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(desc, fontSize = 11.sp, color = LbInk3, lineHeight = 15.sp, modifier = Modifier.padding(top = 2.dp))
         }
         Box(
             Modifier
@@ -3222,7 +3732,7 @@ fun StatesScreen(onBack: () -> Unit, onOpenScan: () -> Unit) {
                 ) {
                     Text(
                         if (weatherOn) "已开启" else "未开启",
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         color = if (weatherOn) LbAccent else LbInk3,
                     )
                 }

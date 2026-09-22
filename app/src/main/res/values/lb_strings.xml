@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面小组件与长按快捷方式用到的文字，统一放这里。
+  单独开一个文件而不是塞进 themes.xml：字符串资源和主题混在一起，改主题的人容易误删。
+  （widget / shortcut 的 label 必须是字符串资源，XML 里不认字面量，所以必须有这一个文件。）
+-->
+<resources>
+    <string name="lb_widget_name">生活管家 · 今日留意</string>
+    <string name="lb_widget_desc">在桌面上看「今天有什么要留意」：最近的扣费、到期的事，以及待办条数</string>
+
+    <string name="lb_sc_ledger_short">记一笔</string>
+    <string name="lb_sc_ledger_long">打开记账本，记一笔</string>
+    <string name="lb_sc_ask_short">问管家</string>
+    <string name="lb_sc_ask_long">跟智能管家说一句</string>
+</resources>

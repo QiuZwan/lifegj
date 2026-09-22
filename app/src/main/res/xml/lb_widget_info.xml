@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  4×2 小组件。minWidth/minHeight 按官方那套公式算：
+  4 格 ≈ 250dp，2 格 ≈ 110dp（每格 ≈ 70dp 减 30dp 内边距）。
+
+  updatePeriodMillis 设 30 分钟（系统允许的最小值）：
+  它只是兜底 —— 真正让内容跟得上的是「每次回到 App 时顺手刷新一次」（见 LbWidgetProvider.refresh），
+  因为 App 里刚记完一笔，用户回到桌面时不该还看到半小时前的旧数字。
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/lb_widget_desc"
+    android:initialLayout="@layout/widget_lb"
+    android:minHeight="110dp"
+    android:minWidth="250dp"
+    android:previewImage="@mipmap/ic_launcher"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />

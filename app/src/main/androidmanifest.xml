@@ -27,7 +27,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 长按图标弹出的「记一笔 / 问管家」两个快捷方式（见 res/xml/lb_shortcuts.xml） -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/lb_shortcuts" />
         </activity>
+        <!-- 桌面小组件：显示「今天有什么要留意」，点击直达对应页面 -->
+        <receiver
+            android:name=".widget.LbWidgetProvider"
+            android:exported="false"
+            android:label="@string/lb_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/lb_widget_info" />
+        </receiver>
         <service
             android:name=".data.NotifListenerService"
             android:exported="true"

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -174,7 +175,7 @@ fun HeroCard(
                 .align(Alignment.BottomStart)
                 .padding(16.dp),
         ) {
-            Text(kicker, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color(0xBCF6F5F0))
+            Text(kicker, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xBCF6F5F0))
             Text(
                 title,
                 fontSize = 16.5.sp,
@@ -201,7 +202,9 @@ fun LbPrimaryButton(
     val scale by animateFloatAsState(if (pressed && enabled) 0.97f else 1f, tween(90), label = "btnPress")
     Box(
         modifier
-            .height(48.dp)
+            // heightIn(min=) 而不是写死 height：系统字体放大到「大」时，
+            // 按钮文字会占两行，写死高度会把它裁掉（长辈最容易撞上这个）。
+            .heightIn(min = 48.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -213,7 +216,8 @@ fun LbPrimaryButton(
                 indication = LocalIndication.current,
                 enabled = enabled,
                 onClick = onClick,
-            ),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -232,7 +236,8 @@ fun LbGhostButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
     val scale by animateFloatAsState(if (pressed) 0.97f else 1f, tween(90), label = "ghostPress")
     Box(
         modifier
-            .height(48.dp)
+            // 同 LbPrimaryButton：不写死高度，字放大也不会被裁
+            .heightIn(min = 48.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -243,7 +248,8 @@ fun LbGhostButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
                 interactionSource = interaction,
                 indication = LocalIndication.current,
                 onClick = onClick,
-            ),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = LbInk)
@@ -478,7 +484,7 @@ fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
                     }
                     Text(
                         item.label,
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         color = tint,
                         modifier = Modifier.padding(top = 3.dp),
                     )

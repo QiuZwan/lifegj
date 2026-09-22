@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  长按应用图标弹出的两个快捷方式。
+
+  为什么用自定义 action 而不是 extras：静态快捷方式（这个 XML）**不支持**带 extras，
+  所以「打开记账本」「打开智能管家」只能靠一个只有自己听的 action 名来区分，
+  由 MainActivity 在 onCreate / onNewIntent 里读 intent.action 决定翻到哪一页。
+  改动这里时记得同步 MainActivity 里那两个常量，否则点了没反应。
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="lb_ledger"
+        android:shortcutLongLabel="@string/lb_sc_ledger_long"
+        android:shortcutShortLabel="@string/lb_sc_ledger_short">
+        <intent
+            android:action="com.lifebutler.app.SHORTCUT_LEDGER"
+            android:targetClass="com.lifebutler.app.MainActivity"
+            android:targetPackage="com.lifebutler.app" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="lb_ask"
+        android:shortcutLongLabel="@string/lb_sc_ask_long"
+        android:shortcutShortLabel="@string/lb_sc_ask_short">
+        <intent
+            android:action="com.lifebutler.app.SHORTCUT_ASK"
+            android:targetClass="com.lifebutler.app.MainActivity"
+            android:targetPackage="com.lifebutler.app" />
+    </shortcut>
+
+</shortcuts>

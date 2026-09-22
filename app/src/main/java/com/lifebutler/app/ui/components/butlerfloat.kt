@@ -449,14 +449,14 @@ fun ButlerFloat(
                         } else {
                             "现在没接 AI，只能记事记账 · 去「我的 → AI 智能管家」打开"
                         },
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         color = LbInk3,
                         lineHeight = 14.sp,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
                         "完整对话",
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = LbAccent,
                         modifier = Modifier
