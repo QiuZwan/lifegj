@@ -31,6 +31,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,8 +90,9 @@ private const val MIN_LAYER_PX = 320
  *  2. **拖到哪儿就是哪儿**:自由二维拖动,松手把位置按**归一化坐标**存进 [ButlerStore] 下次还在那;
  *  3. **点一下就地说话**:旁边弹出一个小面板,直接打字发给管家,回复显示在机器人上方,
  *     不用先跳到「智能管家」页再打。写进本机的东西也会在这里如实列出来。
- *     v2.10 起**点一下它还会原地停转**,再点一下(收起面板)才继续转 —— 少帅要的是
- *     「点一下在原地但是不转了,再点一下才转」。停转只是不推进帧,位置和大小都不许动。
+ *     v2.10.1 起**默认静止不转**,点一下(打开面板)它才转起来,再点一下(收起)停回静止 ——
+ *     少帅要的是"平时别自己转"。停/转只决定推不推进帧,位置和大小一律不动;
+ *     待机那点"呼吸"缩放一直留着,免得它看着像一张死图。
  *
  * 位置为什么存归一化分数而不存像素:可拖动范围会随设备/系统栏变化,存像素下次就可能跑到屏幕外。
  *
@@ -168,6 +170,12 @@ fun ButlerFloat(
         } else {
             (by + hPx + gapPx).coerceAtMost((area.height - panelHPx).coerceAtLeast(0f))
         }
+
+    // ⚠️ `bx`/`by` 是普通的 val,**不是 State**。手势 lambda 里直接读它们只会拿到"这个 lambda
+    // 创建那一拍"的值 —— `pointerInput(Unit)` 不会因为重组而重启,于是它会一直用第一次组合的位置。
+    // 第一版就是把 bx/by 直接打进日志,结果"点开面板前后"打出来一模一样,害我以为位置一点没动
+    // (其实是键盘弹起后它真的让了位,只是日志在撒谎)。要打"点中那一刻"的真实位置,得过这层。
+    val posNow by rememberUpdatedState(bx.roundToInt() to by.roundToInt())
 
     // 打开面板时把焦点给输入框,键盘自己弹出来,少点一下
     LaunchedEffect(panelOpen) {
@@ -274,7 +282,7 @@ fun ButlerFloat(
                         // 点一下:面板开合(**同时**让机器人原地停转 / 继续转,见下面的 spinning)。
                         store.debugFloat(
                             "点中机器人 panelOpen $panelOpen -> ${!panelOpen} " +
-                                "pos=(${bx.roundToInt()},${by.roundToInt()}) " +
+                                "pos=(${posNow.first},${posNow.second}) " +
                                 "area=${area.width}x${area.height} base=${baseArea.width}x${baseArea.height}",
                         )
                         panelOpen = !panelOpen
@@ -282,8 +290,9 @@ fun ButlerFloat(
                 },
         ) {
             // interactive = false:拖动已经被外层用来搬位置了,这里只负责「转 / 停」。
-            // 面板开着 = 停下来(原地),收起 = 接着转 —— 少帅要的就是这个。
-            ButlerSpin(Modifier.fillMaxSize(), interactive = false, spinning = !panelOpen)
+            // v2.10.1:**默认就是静止不转**。点一下(打开面板)它才转起来,再点一下(收起)停回静止 ——
+            // 少帅要的是"平时别自己转"(v2.10 及以前它一进 App 就一直在转,每一页都看得见)。
+            ButlerSpin(Modifier.fillMaxSize(), interactive = false, spinning = panelOpen)
         }
 
         /* ② 就地弹出的对话面板(画在机器人之后,保证它压在上面) */
