@@ -439,7 +439,12 @@ object SubScanner {
         }
     }
 
-    /** 合并短信与通知线索(按商户去重,保留较新一条;来源合并标注;扣费日取非空的那个) */
+    /**
+     * 合并多条来源的线索：按商户去重，保留较新一条；来源合并标注；扣费日与金额都取"读得到的那个"。
+     *
+     * 现在有三条来源（短信 / 通知 / 代扣页），要能两两合并不丢信息 ——
+     * 所以来源用 `+` 累加（`短信 + 代扣页·支付宝`），而不是只认固定的两个。
+     */
     fun mergeCandidates(a: List<Candidate>, b: List<Candidate>): List<Candidate> {
         val map = LinkedHashMap<String, Candidate>()
         (a + b).forEach { c ->
@@ -448,11 +453,11 @@ object SubScanner {
                 map[c.name] = c
             } else {
                 val newer = if (c.dateMs > old.dateMs) c else old
-                val src = if (old.source != c.source) "短信·通知" else old.source
+                val src = if (old.source == c.source) old.source else old.source + " + " + c.source
                 val due = if (newer.nextDate.isNotEmpty()) newer.nextDate
                 else if (c.nextDate.isNotEmpty()) c.nextDate
                 else old.nextDate
-                // 金额取**读得到的那个**：短信说「25 元」、通知只说「已签约」，合并后不该丢掉那 25。
+                // 金额取**读得到的那个**：短信说「25 元」、代扣页只说「已签约」，合并后不该丢掉那 25。
                 // 于是「签约（没金额）」只有在两边都没金额时才成立 —— 有一条读到过真金额，它就不是纯签约。
                 val amt = newer.amount ?: old.amount
                 map[c.name] = newer.copy(

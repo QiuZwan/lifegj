@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import com.lifebutler.app.data.A11yScanner
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.NotifListenerService
 import com.lifebutler.app.data.SubScanner
@@ -91,6 +92,9 @@ fun ScanScreen(onBack: () -> Unit) {
     // 所以把两件事都拿出来，界面才能如实说清是"没开"还是"开了但没在工作"。
     var notifGranted by remember { mutableStateOf(SubScanner.notificationAccessGranted(ctx)) }
     var notifAlive by remember { mutableStateOf(SubScanner.notificationListenerConnected()) }
+    // 「代扣协议读取」（无障碍）。同样要分"授权在不在"与"服务真的在跑"两件事。
+    var a11yGranted by remember { mutableStateOf(A11yScanner.enabled(ctx)) }
+    var a11yOn by remember { mutableStateOf(A11yScanner.active(ctx)) }
     var showWatchList by remember { mutableStateOf(false) }
     var showAddPkg by remember { mutableStateOf(false) }
 
@@ -98,6 +102,11 @@ fun ScanScreen(onBack: () -> Unit) {
         notifGranted = SubScanner.notificationAccessGranted(ctx)
         notifAlive = SubScanner.notificationListenerConnected()
         notifEnabled = SubScanner.notificationsEnabled(ctx)
+    }
+
+    fun refreshA11y() {
+        a11yGranted = A11yScanner.enabled(ctx)
+        a11yOn = A11yScanner.active(ctx)
     }
 
     fun addAsSub(name: String, amount: Double, nextDate: String = "") {
@@ -112,21 +121,37 @@ fun ScanScreen(onBack: () -> Unit) {
             scannedWithSms = smsGranted
             delay(350)
             val a = withContext(Dispatchers.IO) { SubScanner.installedSubApps(ctx) }
-            val merged = withContext(Dispatchers.IO) { SubScanner.mergeCandidates(sms, SubScanner.notificationFindings(ctx)) }
+            val notif = withContext(Dispatchers.IO) { SubScanner.notificationFindings(ctx) }
+            val a11y = withContext(Dispatchers.IO) { A11yScanner.findings(ctx) }
+            val merged = withContext(Dispatchers.IO) {
+                SubScanner.mergeCandidates(SubScanner.mergeCandidates(sms, notif), a11y)
+            }
             var added = 0
             merged.forEach { c ->
                 // ⚠️ 签约类（原文里读不出金额）**不自动落库**。
                 // 它只说明"你和这个商户签了自动扣款协议"，不代表这笔已经在扣钱；替用户
                 // 把一条"还没花出去的钱"塞进守护清单，他只会觉得"我没让你加啊"。
                 // 界面照样把它列出来，由他自己点「加入」。读得到金额的（真扣过钱）才自动加。
+                //
+                // ⚠️ **代扣页来的也一律不自动落库**，理由同上：那张清单证明的是"协议签了"，
+                // 不是"这笔钱已经扣了"。而且它是**用户自己翻进去**才被读到的 —— 我们更该
+                // 把判断权还给他，而不是替他往守护清单里塞东西。
                 val pureSignup = c.signup && c.amount == null
-                if (!pureSignup && store.subs.none { it.name == c.name } && !store.isDismissed(c.name)) {
-                    val src = if (c.source.contains("通知")) "通知" else "扫描"
+                val fromAgreementPage = c.source.contains("代扣页")
+                if (!pureSignup && !fromAgreementPage &&
+                    store.subs.none { it.name == c.name } && !store.isDismissed(c.name)
+                ) {
+                    val src = when {
+                        c.source.contains("代扣页") -> "代扣页"
+                        c.source.contains("通知") -> "通知"
+                        else -> "扫描"
+                    }
                     store.addScannedSub(c.name, c.amount ?: 0.0, src, c.nextDate)
                     added++
                 }
                 // 短信本身就是一条真实的扣费凭证 → 写进真实扣费流水。
                 // 条件里的 `amount > 0` 一并挡住签约类：签约没扣钱，不许凭空造出一笔流水。
+                // ⚠️ 代扣页**只证明"签了协议"，不证明"扣过钱"**，所以这里也不给它写流水。
                 if (c.source.contains("短信") && (c.amount ?: 0.0) > 0) {
                     val iso = SubScanner.fmtIso(c.dateMs)
                     if (store.charges.none { it.subName == c.name && it.date == iso }) {
@@ -169,10 +194,11 @@ fun ScanScreen(onBack: () -> Unit) {
                 LbCard(modifier = Modifier.padding(top = 10.dp)) {
                     Text("一键扫描本机自动续费", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
-                        "扫描会查看三处：\n" +
-                            "① 扣费短信（需短信读取权限，只在本机分析、不上传）：可回看近一年的收件箱 —— 这是唯一能「翻历史」的来源；「您已与 XX 签订自动扣款协议」这类没写金额的签约短信也认\n" +
-                            "② 微信/支付宝的扣费与签约通知（需开启「通知读取」：开启后开始记录；开启那一刻还留在通知栏里的也会读一遍）\n" +
-                            "③ 已安装应用列表（对照常见订阅类 App，告诉你装了哪些、该去哪个入口自己查）",
+                        "扫描会查看四处：\n" +
+                            "① 扣费短信（需「读取短信」）：可回看近一年的收件箱 —— 唯一能「翻历史」的来源；没写金额的签约短信也认\n" +
+                            "② 扣费与签约通知（需「通知读取」：只从开启那一刻开始记录；开启时还留在通知栏里的也会读一遍）\n" +
+                            "③ 代扣协议清单（需「代扣协议读取」：你打开支付宝/微信那两页时把它读下来 —— 这一条最接近「我到底在续什么」）\n" +
+                            "④ 已安装应用列表（只告诉你装了哪些，不代表开了会员）",
                         fontSize = 12.5.sp,
                         color = LbInk2,
                         lineHeight = 20.sp,
@@ -180,7 +206,8 @@ fun ScanScreen(onBack: () -> Unit) {
                     )
                     Text(
                         "短信里读到的「扣费」会作为凭证直接记账；「签约」类不会自动加进守护清单 —— 签约当下不扣钱，原文里本来就没有金额，所以留空、不猜，要你自己点「加入」。" +
-                            "通知里的线索一律先进「待确认」，你在守护页点「认得」之后才落库：关键词判不出「这笔是不是订阅」，不该替你做主。结果仅供参考，核对以平台账单为准。",
+                            "通知里的线索一律先进「待确认」，你在守护页点「认得」之后才落库：关键词判不出「这笔是不是订阅」，不该替你做主。" +
+                            "代扣页读到的只说明「协议签了」，**永远不写扣费流水**（签约不等于扣过钱）。结果仅供参考，核对以平台账单为准。",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(top = 6.dp),
@@ -295,6 +322,93 @@ fun ScanScreen(onBack: () -> Unit) {
                         }
                         Icon(LbIcons.chevronRight, contentDescription = null, tint = LbInk3, modifier = Modifier.size(14.dp))
                     }
+
+                    // ── 「代扣协议读取」（无障碍）──
+                    // 为什么值得单开一块：短信和通知都只能等"发生过的事"（通知还只在开启后才记录），
+                    // 而支付宝/微信那两页是**订阅到底签在哪里的权威清单** —— 读它才叫"不局限通知"。
+                    // 范围锁死在两个包上，见 res/xml/lb_a11y_config.xml 的 packageNames：那是系统级过滤。
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 14.dp)
+                            .height(1.dp)
+                            .background(LbLine),
+                    )
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("代扣协议读取（支付宝/微信的签约清单）", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                            Text(
+                                when {
+                                    a11yOn -> "已开启：你打开那两页时，清单会被读下来、记进「待确认」"
+                                    a11yGranted -> "授权还在，但服务被系统断开了 —— 现在什么都读不到。点「重新开启」再授权一次。"
+                                    else -> "未开启：读不到「协议签在支付宝 / 微信里」的那些订阅"
+                                },
+                                fontSize = 11.5.sp,
+                                color = if (a11yGranted && !a11yOn) LbRust else LbInk3,
+                                lineHeight = 17.sp,
+                                modifier = Modifier.padding(top = 1.dp),
+                            )
+                        }
+                        when {
+                            a11yOn -> LbChip("已开启", ChipTone.Green)
+                            else -> MiniAction(if (a11yGranted) "重新开启" else "去开启") { A11yScanner.openSettings(ctx) }
+                        }
+                    }
+                    Text(
+                        "开启后回到本页，点这里刷新状态",
+                        fontSize = 11.sp,
+                        color = LbAccent,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { refreshA11y() }
+                            .padding(top = 6.dp, bottom = 2.dp),
+                    )
+                    Text(
+                        "为什么这两页就够：国内 App 没有支付牌照，它想每月自动扣你的钱，" +
+                            "就必须在支付宝或微信签一份代扣协议 —— 所以「别的 App 的续费」不用逐个进去看，那两页里就有。" +
+                            "剩下几家（苹果 App Store、手机厂商应用商店、运营商话费代扣）本机读不到，得你自己去看，入口见「关于管家 → 帮助」。",
+                        fontSize = 11.sp,
+                        color = LbInk3,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    A11yScanner.PAYERS.forEach { p ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(LbSurface2)
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("${p.title} · ${p.pageName}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                                Text(
+                                    "路径：" + p.manualPath,
+                                    fontSize = 11.sp,
+                                    color = LbInk3,
+                                    lineHeight = 16.sp,
+                                    modifier = Modifier.padding(top = 1.dp),
+                                )
+                            }
+                            Text(
+                                "打开",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbAccent,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { SubScanner.launchPackage(ctx, p.pkg) }
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -305,7 +419,8 @@ fun ScanScreen(onBack: () -> Unit) {
                         Column(Modifier.padding(start = 11.dp)) {
                             Text("正在扫描…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                             Text(
-                                if (smsGranted) "正在分析本机扣费短信、通知线索与已安装应用" else "正在检查通知线索与已安装应用",
+                                if (smsGranted) "正在分析本机扣费短信、通知线索、代扣协议清单与已安装应用"
+                                else "正在检查通知线索、代扣协议清单与已安装应用",
                                 fontSize = 12.sp,
                                 color = LbInk3,
                                 modifier = Modifier.padding(top = 2.dp),
@@ -381,7 +496,12 @@ fun ScanScreen(onBack: () -> Unit) {
                                         (if (c.signup) "签约 · " else "") +
                                             (c.amount?.let { "¥" + store.fmtMoney(it) }
                                                 ?: if (c.signup) "金额未知（签约当下没扣钱）" else "金额待补充") +
-                                            " · " + SubScanner.fmtDate(c.dateMs) + " · 来源:" + c.source,
+                                            " · " +
+                                            // 代扣页那条时间戳是「读到的时间」，不是扣费时间；
+                                            // 直接摆一个日期紧跟在金额后面，会被读成"这天扣了这笔钱"。
+                                            (if (c.source.contains("代扣页")) "读到于 " + SubScanner.fmtDate(c.dateMs)
+                                            else SubScanner.fmtDate(c.dateMs)) +
+                                            " · 来源:" + c.source,
                                         fontSize = 11.5.sp,
                                         color = LbInk2,
                                         modifier = Modifier.padding(top = 2.dp),
@@ -403,7 +523,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                     )
                                 }
                                 when {
-                                    existing != null && (existing.source == "扫描" || existing.source == "通知") -> MiniAction("移除") {
+                                    existing != null && (existing.source == "扫描" || existing.source == "通知" || existing.source == "代扣页") -> MiniAction("移除") {
                                         store.removeSub(existing.id)
                                         store.dismissName(existing.name)
                                     }
@@ -453,6 +573,7 @@ fun ScanScreen(onBack: () -> Unit) {
                             "没有发现线索。可以这样想：\n" +
                                 "· 没给短信权限的话，App 就没有任何历史可翻 —— 短信是唯一能回头看一年的来源；\n" +
                                 "· 「通知读取」只在开启之后才开始积累，装 App 之前的历史通知系统不会补发；\n" +
+                                "· 「代扣协议读取」要**你打开支付宝/微信那两张清单页**才会读到 —— 本应用没法替你翻进去；\n" +
                                 "· 也可以稍后再试，或在「守护」页手动添加。",
                             fontSize = 12.5.sp,
                             color = LbInk3,

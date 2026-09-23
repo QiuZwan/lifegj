@@ -454,7 +454,7 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             onDismiss = { deleteSubId = null },
             onConfirm = {
                 store.removeSub(id)
-                if (sub != null && (sub.source == "扫描" || sub.source == "通知")) {
+                if (sub != null && (sub.source == "扫描" || sub.source == "通知" || sub.source == "代扣页")) {
                     store.dismissName(sub.name)
                 }
                 deleteSubId = null

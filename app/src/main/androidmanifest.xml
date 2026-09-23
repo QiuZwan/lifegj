@@ -60,6 +60,24 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+        <!--
+            「代扣协议读取」：用无障碍读屏把你打开的「支付宝 · 免密支付/自动扣款」、
+            「微信 · 自动续费」两张清单读下来。范围被 lb_a11y_config.xml 的 packageNames
+            锁死在支付宝/微信两个包上 —— 系统层面就不会把别的 App 的界面递过来。
+            不开也能用，短信与通知两条来源照旧工作。
+        -->
+        <service
+            android:name=".data.A11yScannerService"
+            android:exported="true"
+            android:label="生活管家 · 代扣协议读取"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/lb_a11y_config" />
+        </service>
         <receiver
             android:name=".data.ReminderReceiver"
             android:exported="false">

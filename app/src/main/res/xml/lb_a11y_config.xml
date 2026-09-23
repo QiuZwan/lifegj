@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  「代扣协议读取」无障碍服务的配置。
+
+  ⚠️ packageNames 是这条功能的**隐私底线**，不是随手写的名单：
+  它由**系统**在派发事件之前过滤，所以本服务**根本收不到**这两个包之外的任何界面内容。
+  不是"我们保证不读"，是读不到。少帅要在意隐私的话，看这一行就够了。
+
+  加一家收单方（比如以后想读华为应用市场的订阅管理页），要**两处一起改**：
+    ① 这里补包名；
+    ② data/a11yscanner.kt 的 PAYERS 补一条 Payer。
+  只改一处会导致"服务收不到事件"或"收到了但认不出是哪一家"，都不报错、很难查。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/lb_a11y_desc"
+    android:summary="@string/lb_a11y_summary"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds"
+    android:notificationTimeout="400"
+    android:canRetrieveWindowContent="true"
+    android:packageNames="com.eg.android.AlipayGphone,com.tencent.mm" />

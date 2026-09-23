@@ -140,6 +140,7 @@ class MainActivity : ComponentActivity() {
         val store = ButlerStore.get(applicationContext)
         dumpIfAsked(store)
         probeNotifIfAsked()
+        probeA11yIfAsked()
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { _ -> store.darkMode.value },
             navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { _ -> store.darkMode.value },
@@ -178,6 +179,7 @@ class MainActivity : ComponentActivity() {
         if (isDebuggable(this)) intent.getStringExtra("ask")?.let { askRequest.value = it }
         dumpIfAsked(ButlerStore.get(applicationContext))
         probeNotifIfAsked()
+        probeA11yIfAsked()
     }
 
     /**
@@ -204,6 +206,36 @@ class MainActivity : ComponentActivity() {
         // 不然脚本读到的是 logcat 里**最后**一段 dump,可能是上一轮或上一次调用的残留,
         // 表现是「基线里混进了上一次的数据」(实测:清空数据后基线里还留着上轮的订阅和深色开关)。
         android.util.Log.d("LbState", "BEGIN ${parts.size} ${s.length} $nonce")
+        parts.forEachIndexed { i, p -> android.util.Log.d("LbState", "$i|$p") }
+        android.util.Log.d("LbState", "END")
+    }
+
+    /**
+     * 自动化测试用的第四个深链:把「代扣协议读取」拿到的线索原样打进 logcat。
+     *
+     *   adb shell am start -n com.lifebutler.app/.MainActivity --es a11yprobe <nonce>
+     *
+     * 为什么不直接 `run-as cat shared_prefs/lifebutler_scan.xml`:那份 prefs 走 apply(),
+     * 落盘是异步的(和 butler.xml 一个毛病,实测等几十秒都还是空的)——脚本按文件读会拿到空,
+     * 看着像"无障碍服务根本没读到",是假阴性。
+     * 这里调的就是**扫描页用的同一个函数** `A11yScanner.findings()`,所以验到的就是用户会看到的东西。
+     * 只在 debug 包生效。
+     */
+    private fun probeA11yIfAsked() {
+        if (!isDebuggable(this)) return
+        val nonce = intent?.getStringExtra("a11yprobe") ?: return
+        val ctx = applicationContext
+        val enabled = com.lifebutler.app.data.A11yScanner.enabled(ctx)
+        val conn = com.lifebutler.app.data.A11yScanner.connected
+        val rows = com.lifebutler.app.data.A11yScanner.findings(ctx)
+        val s = rows.joinToString(" || ") {
+            "${it.name}|amt=${it.amount}|signup=${it.signup}|next=${it.nextDate}|src=${it.source}|snip=${it.snippet}"
+        }
+        val parts = s.chunked(900)
+        android.util.Log.d(
+            "LbState",
+            "BEGIN ${parts.size} ${s.length} $nonce enabled=$enabled connected=$conn n=${rows.size}",
+        )
         parts.forEachIndexed { i, p -> android.util.Log.d("LbState", "$i|$p") }
         android.util.Log.d("LbState", "END")
     }
