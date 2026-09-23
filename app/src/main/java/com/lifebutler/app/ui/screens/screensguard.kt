@@ -125,13 +125,13 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                 .weight(1f),
                         ) {
                             Text(
-                                "收到 ${claims.size} 条扣费线索",
+                                "收到 ${claims.size} 条扣费 / 签约线索",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = LbInk,
                             )
                             Text(
-                                "是订阅吗？你认了我才记账、才放进守护清单。",
+                                "是订阅吗？你认了我才记账、才放进守护清单。签约的还没扣钱，金额留空不猜。",
                                 fontSize = 11.5.sp,
                                 color = LbInk3,
                                 modifier = Modifier.padding(top = 1.dp),
@@ -155,8 +155,8 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    (if (c.amount > 0) "¥" + store.fmtMoney(c.amount) + " · " else "") +
-                                        SubScanner.fmtDate(c.at) + " · 来自通知",
+                                    (if (c.amount > 0) "¥" + store.fmtMoney(c.amount) else "金额未知") +
+                                        " · " + SubScanner.fmtDate(c.at) + " · 来自通知",
                                     fontSize = 11.sp,
                                     color = LbInk3,
                                     modifier = Modifier.padding(top = 1.dp),

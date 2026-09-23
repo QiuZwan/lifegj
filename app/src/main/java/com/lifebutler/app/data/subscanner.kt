@@ -10,7 +10,7 @@ import java.util.Locale
 /**
  * 一键扫描:在本机寻找「自动续费」线索。
  * 1) 扣费短信分析(需 READ_SMS 权限,本机处理、不上传)
- * 2) 通知使用权捕获的扣费通知(本机线索池)
+ * 2) 通知使用权捕获的扣费 / 签约通知(本机线索池)
  * 3) 已安装的常见订阅类应用检查(通过 <queries> 白名单,无需全量应用权限)
  *
  * 只搬运本机真实存在的信息:解析不到扣费日就留空,不做任何推测。
@@ -25,6 +25,13 @@ object SubScanner {
         val source: String = "短信",
         /** 从原文里解析出的真实下次扣费日(M-d);解析不到为空串 */
         val nextDate: String = "",
+        /**
+         * 「签约 / 开通」类线索 —— 用户刚和商户签了自动扣款协议，**当下并没有扣钱**。
+         *
+         * 这类通知常常一个金额都没有（签约不等于扣款），所以 [amount] 允许为空。
+         * 界面据此显示「金额未知」而不是 ¥0.00；认领时也不会凭空写一笔扣费流水。
+         */
+        val signup: Boolean = false,
     )
 
     /** 常见订阅/支付类应用(包名 -> 展示名) */
@@ -114,6 +121,38 @@ object SubScanner {
     /** 文本里有没有明确的"商户"标记 —— 弱信号要不要采信，看它 */
     private val MERCHANT_MARK = Regex("(商户|收款方|商家|【)")
 
+    /**
+     * 通知里的「签约 / 开通」信号：用户刚和商户签了自动扣款协议。
+     *
+     * 为什么必须单独一类：**这类通知通常没有金额** —— 签约当下并不扣钱。
+     * 而原来「必须有金额才留档」是硬门槛，于是「支付宝 · 签约成功通知」这种最该抓的一条
+     * 被直接丢掉（实测：用户刚开通网易云音乐自动续费，扫描里一个字都没有）。
+     *
+     * 签约其实是"这是自动续费订阅"最强的证据：一次扣款可能只是付款，签约一定是长期授权。
+     * 抓到之后仍然只进「待确认」，由用户点一下才落库。
+     */
+    private val SIGNUP_N =
+        Regex("(签约成功|签约|签订.{0,8}协议|自动扣款协议|自动续费协议|免密支付协议|开通.{0,10}(自动续费|连续包月|自动扣款|免密支付))")
+
+    /**
+     * 已知品牌名。**排在通用的「商户:」规则前面** ——
+     * 「发生消费时商户可自动从你账户扣款」这种句子会把通用规则带偏，抓出「可自动从你账户扣款」
+     * 当商户名（实测就是这个）。先认品牌名，认不出再退回通用规则。
+     */
+    private val KNOWN_BRANDS = Regex(
+        "(爱奇艺|腾讯视频|网易云音乐|网易云|QQ音乐|哔哩哔哩|哔哩|优酷|喜马拉雅|Keep|京东|美团|淘宝" +
+            "|饿了么|滴滴|WPS|百度网盘|芒果TV|夸克|微博|知乎|得到|盒马|叮咚买菜|山姆|网易严选)",
+    )
+
+    /** 签约句式里的商户名：「在网易云音乐开通…」「开通了 Keep 连续包月」 */
+    private val SIGNUP_NAME = listOf(
+        Regex("在\\s*([^\\s，。,；;！!【】]{2,18}?)\\s*(?:开通|订购|续订|签约|签订|购买)"),
+        Regex("(?:开通|订购|续订|签订|签约)了?\\s*([^\\s，。,；;！!【】]{2,18}?)\\s*(?:的)?(?:连续包月|自动续费|自动扣款|免密支付|会员|vip|VIP)"),
+    )
+
+    /** 抓到的"名字"其实是一句动作描述（「可自动从你账户扣款」）—— 不能用 */
+    private val NOT_A_NAME = Regex("(可|将|会|无需|需|你|我|自动|扣款|扣费|免密|消费|账户|支付|成功|开通|签约|协议)")
+
     /** 手动补包名时的合法性：至少一个点、不含空格 */
     fun looksLikePackage(pkg: String): Boolean {
         val p = pkg.trim()
@@ -155,10 +194,29 @@ object SubScanner {
 
     /* ── 短信分析 ── */
 
+    /**
+     * 从原文里挑出商户名。**顺序就是可信度**：越像"平台自己写明的商户"越靠前。
+     *
+     * 实测被这条坑过的一条真实通知（支付宝「签约成功通知」）：
+     *   「账户130*****39在网易云音乐开通网易云音乐vip会员，发生消费时商户可自动从你账户扣款…」
+     * 原来的顺序是「商户:」规则在前，于是抓出「可自动从你账户扣款」当商户名 —— 一句话被当成了店名。
+     * 所以：先看签约句式（在 X 开通…），再看已知品牌，最后才用通用规则，并且过滤掉像动作的描述。
+     */
     private fun extractMerchant(body: String): String? {
-        Regex("(?:商户|收款方|商家|平台)[:：]?\\s*([^，。,；;！!\\s]{2,18})").find(body)?.let { return it.groupValues[1].trim() }
+        // ① 签约/开通句式
+        for (r in SIGNUP_NAME) {
+            val n = r.find(body)?.groupValues?.get(1)?.trim() ?: continue
+            if (n.length in 2..18 && !NOT_A_NAME.containsMatchIn(n)) return n
+        }
+        // ② 已知品牌名
+        KNOWN_BRANDS.find(body)?.let { return it.groupValues[1] }
+        // ③ 【商户名】这种显式标记
         Regex("[【\\[]([^】\\]]{2,18})[】\\]]").find(body)?.let { return it.groupValues[1].trim() }
-        Regex("(爱奇艺|腾讯视频|网易云音乐|Keep|京东|美团|哔哩哔哩|优酷|QQ音乐|淘宝|饿了么|滴滴|WPS|百度网盘|喜马拉雅)").find(body)?.let { return it.groupValues[1] }
+        // ④ 通用规则（「商户：xxx」/「收款方 xxx」）—— 抓到动作描述就丢掉
+        Regex("(?:商户|收款方|商家|平台|服务商)[:：]?\\s*([^，。,；;！!\\s]{2,18})").find(body)?.let {
+            val n = it.groupValues[1].trim()
+            if (n.length in 2..18 && !NOT_A_NAME.containsMatchIn(n)) return n
+        }
         return null
     }
 
@@ -237,22 +295,30 @@ object SubScanner {
 
     private fun parseNotification(body: String, ts: Long): Candidate? {
         if (EXCLUDE.containsMatchIn(body)) return null
+        val signup = SIGNUP_N.containsMatchIn(body)
         val strong = STRONG_N.containsMatchIn(body)
         val weak = WEAK_N.containsMatchIn(body)
-        if (!strong && !weak) return null
+        if (!strong && !signup && !weak) return null
         // 弱信号（支出 / 付款 / 续费 …）单独出现不采信：必须同时有明确的商户标记，
         // 否则"向某某付款 500 元"这类无关通知会被当成一笔订阅。
-        if (!strong && !MERCHANT_MARK.containsMatchIn(body)) return null
+        if (!strong && !signup && !MERCHANT_MARK.containsMatchIn(body)) return null
         val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
             ?: Regex("[¥￥]\\s*(\\d+(?:\\.\\d{1,2})?)").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
-            ?: return null
-        if (amt <= 0 || amt > 3000) return null
+        // 金额是硬门槛，只有一种情况可以没有：**签约 / 开通**。
+        // 签约当下不扣钱，原文里本来就没有金额 —— 这时候编一个 0 才是撒谎。
+        // 其余（扣款类）读不出金额说明这条通知我们没读懂，宁可不要（保持原来的行为）。
+        if (!signup && amt == null) return null
+        if (amt != null && (amt <= 0 || amt > 3000)) return null
         val name = extractMerchant(body) ?: return null
         if (name.length < 2 || name.length > 18) return null
-        return Candidate(name, amt, ts, body.take(70), "通知", parseDueDate(body))
+        // signup 只在**这一条确实没读出金额**时才算数：带金额的签约（首月已扣 25 元）是一笔真扣款
+        return Candidate(name, amt, ts, body.take(70), "通知", parseDueDate(body), signup && amt == null)
     }
 
-    /** 服务回调:命中扣费关键词才留档(同名 3 天内去重,只保留最近 200 条) */
+    /**
+     * 服务回调:命中关键词才留档(同名 3 天内去重,只保留最近 200 条)。
+     * 「签约 / 开通」也算命中 —— 且它**允许没有金额**（签约当下不扣钱）。见 [SIGNUP_N]。
+     */
     fun recordNotification(context: Context, pkg: String, title: String, text: String) {
         val body = (title + " " + text).replace("\n", " ").trim()
         if (body.isEmpty()) return
@@ -271,6 +337,7 @@ object SubScanner {
             o.put("snippet", cand.snippet)
             o.put("pkg", pkg)
             o.put("nextDate", cand.nextDate)
+            o.put("signup", cand.signup)
             arr.put(o)
             val cut = org.json.JSONArray()
             val from = if (arr.length() > 200) arr.length() - 200 else 0
@@ -287,12 +354,17 @@ object SubScanner {
             val amt = cand.amount ?: 0.0
             val added = store.addPendingClaim(cand.name, amt, cand.dateMs, cand.nextDate, pkg, cand.snippet)
             if (added) {
-                val amtText = if (amt > 0) "¥" + store.fmtMoney(amt) + " " else ""
-                store.addChat(
-                    false,
+                // 签约类不能照着"扣费"说：钱还没扣。金额也不报 ¥0.00，就说"没写金额"。
+                val msg = if (cand.signup) {
+                    "刚收到一条「${cand.name}」的签约通知 —— 你开通了自动扣款，但这一笔还没扣钱，" +
+                        "金额原文里没写，我不猜。先放进「待确认」了：你在守护页认一下是不是你的订阅，" +
+                        "认了我才加进守护清单；不是就点「不是我的」。"
+                } else {
+                    val amtText = if (amt > 0) "¥" + store.fmtMoney(amt) + " " else ""
                     "刚收到一条「${cand.name}」的扣费通知（${amtText}）。我先放进「待确认」了 —— " +
-                        "你在守护页认一下是不是你的订阅，认了我才记账；不是就点「不是我的」。",
-                )
+                        "你在守护页认一下是不是你的订阅，认了我才记账；不是就点「不是我的」。"
+                }
+                store.addChat(false, msg)
             }
         } catch (e: Exception) {
         }
@@ -314,6 +386,7 @@ object SubScanner {
                         o.optString("snippet"),
                         "通知",
                         o.optString("nextDate", ""),
+                        o.optBoolean("signup", false),
                     ),
                 )
             }
@@ -342,9 +415,55 @@ object SubScanner {
                 val due = if (newer.nextDate.isNotEmpty()) newer.nextDate
                 else if (c.nextDate.isNotEmpty()) c.nextDate
                 else old.nextDate
-                map[c.name] = newer.copy(source = src, nextDate = due)
+                // 金额取**读得到的那个**：短信说「25 元」、通知只说「已签约」，合并后不该丢掉那 25。
+                // 于是「签约（没金额）」只有在两边都没金额时才成立 —— 有一条读到过真金额，它就不是纯签约。
+                val amt = newer.amount ?: old.amount
+                map[c.name] = newer.copy(
+                    source = src,
+                    nextDate = due,
+                    amount = amt,
+                    signup = newer.signup && amt == null,
+                )
             }
         }
         return map.values.sortedByDescending { it.dateMs }
+    }
+
+    /**
+     * **只给调试版用的**一条探针：把任意一条通知正文过一遍解析器，回一句人话。
+     *
+     * 为什么要它：用户报「某某通知没扫出来」时，光看代码猜不出是哪一关没过
+     * （关键词？金额？商户名？银行 App 根本不在监听名单里？）。有了这条，
+     * 拿他截图里的原话喂进来，一眼就能看到是"没命中"还是"命中了但名字抓错"。
+     *
+     * 纯函数，不写任何数据；release 包里没有任何入口会调它（见 MainActivity 的 notif64 深链）。
+     */
+    fun debugPreview(title: String, text: String): String {
+        val body = (title + " " + text).replace("\n", " ").trim()
+        if (body.isEmpty()) return "正文为空"
+        val c = parseNotification(body, System.currentTimeMillis())
+        if (c == null) {
+            // 按**真实的判定顺序**报第一个没过的那一关。
+            // 报一堆"可能的原因"等于什么都没报 —— 实测"向张三付款 500 元"会被报成"认不出商户名"，
+            // 而它其实是卡在"只有弱信号、又没有商户标记"。这两件事的修法完全不同。
+            val strong = STRONG_N.containsMatchIn(body)
+            val signup = SIGNUP_N.containsMatchIn(body)
+            val weak = WEAK_N.containsMatchIn(body)
+            val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
+                ?: Regex("[¥￥]\\s*(\\d+(?:\\.\\d{1,2})?)").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
+            val why = when {
+                EXCLUDE.containsMatchIn(body) -> "命中排除词（退款/转账/验证码/登录…）"
+                !strong && !signup && !weak -> "没有扣费 / 签约关键词"
+                !strong && !signup && !MERCHANT_MARK.containsMatchIn(body) ->
+                    "只有弱信号（付款/支出/续费），又没有「商户·收款方·【】」标记"
+                !signup && amt == null -> "既不是签约、又读不出金额"
+                amt != null && (amt <= 0 || amt > 3000) -> "金额越界（<=0 或 >3000）"
+                extractMerchant(body) == null -> "认不出商户名（也不在已知品牌里）"
+                else -> "其他（商户名长度不合格）"
+            }
+            return "未命中：$why"
+        }
+        return "命中 商户=${c.name} 金额=${c.amount?.let { "¥$it" } ?: "留空"} " +
+            "签约=${c.signup} 下次扣费=${c.nextDate.ifEmpty { "原文没写" }}"
     }
 }

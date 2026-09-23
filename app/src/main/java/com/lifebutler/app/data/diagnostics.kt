@@ -60,7 +60,18 @@ object Diagnostics {
         appendLine("位置权限：" + perm(ctx, "android.permission.ACCESS_COARSE_LOCATION"))
         appendLine("读取短信权限：" + perm(ctx, "android.permission.READ_SMS"))
         appendLine("桌面天气：" + onOff(Weather.enabled(ctx)))
-        appendLine("扣费通知读取（通知使用权）：" + onOff(notifAccess(ctx)))
+        // 光报"授权在不在"没法定位问题：系统会把监听服务断开，而设置里那条授权仍然留着
+        // （见 SubScanner.notificationsEnabled）。用户报"扫描扫不出来"时，第一个要分辨的正是
+        // 「压根没在收」还是「收了但没认出来」—— 这两件事的修法完全不同。
+        appendLine(
+            "扣费通知读取：" + if (!notifAccess(ctx)) {
+                "未开启（通知使用权没给）"
+            } else when (SubScanner.notificationListenerConnected()) {
+                true -> "已开启 · 监听服务已连上"
+                false -> "已开启 · 但监听服务被系统断开了（这会儿正在漏通知）"
+                null -> "已开启 · 服务状态未知（本进程刚起，还没收到系统回调）"
+            },
+        )
         appendLine(
             "AI 管家：" + when (AiConfig.source(ctx)) {
                 AiConfig.Source.OWN -> "用户自己的接口"
@@ -81,6 +92,9 @@ object Diagnostics {
         appendLine("档案 " + store.archive.size + " 组 · 相册 " + store.album.size + " 张")
         appendLine("对话 " + store.chat.size + " 条")
         appendLine("账目 " + store.expenses.size + " 笔 · 扣费流水 " + store.charges.size + " 条")
+        // 用户报「刚开通自动续费，扫描里什么都没有」时，这一行最能定性：
+        // 0 条 = 通知压根没被认出来（或被系统断了监听）；>0 条 = 收到了、挂在「待确认」等他点。
+        appendLine("待认领线索 " + store.pendingClaims.size + " 条（通知命中后等你确认，不算账目）")
         appendLine("有记录：" + onOff(store.hasAnyRecord()))
         appendLine()
 

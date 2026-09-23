@@ -164,14 +164,14 @@ fun ScanScreen(onBack: () -> Unit) {
                 LbCard(modifier = Modifier.padding(top = 10.dp)) {
                     Text("一键扫描本机自动续费", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
-                        "扫描会查看三处：\n① 扣费短信（需要短信读取权限，只在本机分析、不上传）\n② 微信/支付宝的扣费通知（需开启「通知读取」，从开启后开始记录；命中后先进「待确认」，由你确认是不是订阅）\n③ 已安装应用列表（对照常见订阅类 App）",
+                        "扫描会查看三处：\n① 扣费短信（需要短信读取权限，只在本机分析、不上传）\n② 微信/支付宝的扣费与签约通知（需开启「通知读取」：开启后开始记录，开启那一刻还留在通知栏里的也会读一遍；命中后先进「待确认」，由你确认是不是订阅）\n③ 已安装应用列表（对照常见订阅类 App）",
                         fontSize = 12.5.sp,
                         color = LbInk2,
                         lineHeight = 20.sp,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     Text(
-                        "短信里出现的扣费会作为凭证直接记账；通知里的线索会先放到「待确认」，你在守护页点「认得」之后才落库 —— 关键词判不出「这笔是不是订阅」，不该替你做主。结果仅供参考，核对以平台账单为准。",
+                        "短信里出现的扣费会作为凭证直接记账；通知里的线索会先放到「待确认」，你在守护页点「认得」之后才落库 —— 关键词判不出「这笔是不是订阅」，不该替你做主。「签约成功」这类通知也收（签约当下不扣钱，所以金额留空，不猜）。结果仅供参考，核对以平台账单为准。",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(top = 6.dp),
@@ -216,12 +216,12 @@ fun ScanScreen(onBack: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("通知读取（微信/支付宝扣费推送）", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                            Text("通知读取（微信/支付宝的扣费与签约推送）", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                             Text(
                                 when {
-                                    notifEnabled -> "已开启：扣费通知会在本机留档，命中后进「待确认」"
+                                    notifEnabled -> "已开启：扣费与签约通知会在本机留档，命中后进「待确认」"
                                     notifGranted -> "授权还在，但系统把监听断开了（省电策略或异常重启）—— 现在收不到任何通知。点「重新开启」再授权一次。"
-                                    else -> "未开启：只能从开启之后开始记录"
+                                    else -> "未开启：现在一条都收不到；开启后从那一刻开始记录"
                                 },
                                 fontSize = 11.5.sp,
                                 color = if (notifGranted && !notifEnabled) LbRust else LbInk3,
@@ -334,7 +334,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     }
                 }
                 if (candidates.isNotEmpty()) {
-                    SectionHeader("本机发现的扣费线索") {
+                    SectionHeader("本机发现的扣费 / 签约线索") {
                         Text("${candidates.size} 条", fontSize = 12.5.sp, color = LbInk3)
                     }
                     LbCard(contentPadding = 8.dp) {
@@ -369,7 +369,10 @@ fun ScanScreen(onBack: () -> Unit) {
                                         }
                                     }
                                     Text(
-                                        (c.amount?.let { "¥" + store.fmtMoney(it) } ?: "金额待补充") + " · " + SubScanner.fmtDate(c.dateMs) + " · 来源:" + c.source,
+                                        (if (c.signup) "签约 · " else "") +
+                                            (c.amount?.let { "¥" + store.fmtMoney(it) }
+                                                ?: if (c.signup) "金额未知（签约当下没扣钱）" else "金额待补充") +
+                                            " · " + SubScanner.fmtDate(c.dateMs) + " · 来源:" + c.source,
                                         fontSize = 11.5.sp,
                                         color = LbInk2,
                                         modifier = Modifier.padding(top = 2.dp),
@@ -427,7 +430,7 @@ fun ScanScreen(onBack: () -> Unit) {
                 if (candidates.isEmpty() && apps.isEmpty()) {
                     LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 12.dp) {
                         Text(
-                            "没有发现线索。微信/支付宝的扣费可以通过「通知读取」积累（从开启后开始）；也可以稍后再试，或在「守护」页手动添加。",
+                            "没有发现线索。微信/支付宝的扣费与签约通知可以通过「通知读取」积累（开启后开始记录；开启那一刻还留在通知栏里的也会读一遍）；也可以稍后再试，或在「守护」页手动添加。",
                             fontSize = 12.5.sp,
                             color = LbInk3,
                             lineHeight = 19.sp,

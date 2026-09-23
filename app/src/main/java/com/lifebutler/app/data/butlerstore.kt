@@ -1370,6 +1370,11 @@ class ButlerStore private constructor(context: Context) {
     fun addPendingClaim(name: String, amount: Double, at: Long, nextDate: String, pkg: String, snippet: String): Boolean {
         val n = name.trim()
         if (n.isEmpty()) return false
+        // 用户点过「不是我的」的商户不再回来问。
+        // 这条防线以前只有"入守护清单"那一侧看 dismissed，这里没看 —— 而通知栏里那条通知可能还挂着，
+        // 监听服务每次重连都会回扫一遍（见 NotifListenerService.onListenerConnected），
+        // 结果就是"我说了不是我的，它还一直问"。
+        if (isDismissed(n)) return false
         if (pendingClaims.any { it.name == n && at - it.at < 3L * 86400000L }) return false
         pendingClaims.add(ButlerClaim(id(), n, amount, at, nextDate, pkg, snippet.take(70)))
         save()

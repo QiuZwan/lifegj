@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.ReminderScheduler
+import com.lifebutler.app.data.SubScanner
 import com.lifebutler.app.ui.components.ButlerFloat
 import com.lifebutler.app.ui.components.ButlerLockGate
 import com.lifebutler.app.ui.components.LbBottomBar
@@ -138,6 +139,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val store = ButlerStore.get(applicationContext)
         dumpIfAsked(store)
+        probeNotifIfAsked()
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { _ -> store.darkMode.value },
             navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { _ -> store.darkMode.value },
@@ -175,6 +177,7 @@ class MainActivity : ComponentActivity() {
         routeFromIntent(intent)?.let { tabRequest.value = it }
         if (isDebuggable(this)) intent.getStringExtra("ask")?.let { askRequest.value = it }
         dumpIfAsked(ButlerStore.get(applicationContext))
+        probeNotifIfAsked()
     }
 
     /**
@@ -203,6 +206,45 @@ class MainActivity : ComponentActivity() {
         android.util.Log.d("LbState", "BEGIN ${parts.size} ${s.length} $nonce")
         parts.forEachIndexed { i, p -> android.util.Log.d("LbState", "$i|$p") }
         android.util.Log.d("LbState", "END")
+    }
+
+    /**
+     * 自动化测试用的第三个深链：把**任意一条通知正文**喂给扣费 / 签约解析器，看它认不认。
+     *
+     *   adb shell am start -n com.lifebutler.app/.MainActivity \
+     *     --es notif64 <通知正文 UTF-8 的 base64> \
+     *     [--es notif_title64 <标题的 base64>] [--es notif_pkg com.eg.android.AlipayGphone]
+     *
+     * 为什么用 base64 而不是直接传中文：adb 这条链上给 CJK 的待遇很差
+     * （`input text` 遇中文直接 NPE），base64 是纯 ASCII，绕开整条编码链。
+     *
+     * 结果打进 logcat 的 `LbState`（`adb logcat -s LbState:V`），而且**真的**走一遍
+     * `recordNotification` —— 所以「待认领线索有没有 +1、商户名抓到什么」一起被验证。
+     * 只在 debug 包生效：release 包的 debuggable 为 false，这段直接返回。
+     */
+    private fun probeNotifIfAsked() {
+        if (!isDebuggable(this)) return
+        val b64 = intent?.getStringExtra("notif64") ?: return
+        val text = decodeB64(b64) ?: return
+        val title = intent?.getStringExtra("notif_title64")?.let { decodeB64(it) } ?: ""
+        val pkg = intent?.getStringExtra("notif_pkg") ?: "com.eg.android.AlipayGphone"
+        val store = ButlerStore.get(applicationContext)
+        val before = store.pendingClaims.size
+        android.util.Log.d("LbState", "[notif] pkg=$pkg title=$title")
+        android.util.Log.d("LbState", "[notif] ${SubScanner.debugPreview(title, text)}")
+        SubScanner.recordNotification(this, pkg, title, text)
+        android.util.Log.d(
+            "LbState",
+            "[notif] END 待认领 $before -> ${store.pendingClaims.size} " +
+                store.pendingClaims.joinToString(" / ") { "${it.name}@${it.amount}" },
+        )
+    }
+
+    /** base64(UTF-8) → 字符串；解不出来就返回 null（不猜、不硬塞） */
+    private fun decodeB64(s: String): String? = try {
+        String(android.util.Base64.decode(s, android.util.Base64.DEFAULT), Charsets.UTF_8)
+    } catch (e: Exception) {
+        null
     }
 
     private fun isDebuggable(ctx: android.content.Context): Boolean =

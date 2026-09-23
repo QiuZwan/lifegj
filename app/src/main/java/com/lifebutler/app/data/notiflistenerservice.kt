@@ -19,6 +19,20 @@ class NotifListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         setConnected(true)
+        // 把「通知栏里现在还留着」的那几条也过一遍。
+        //
+        // 系统只为**连上之后新到**的通知回调 onNotificationPosted —— 用户刚把「通知使用权」打开的那一刻，
+        // 栏里那条「支付宝 · 签约成功通知」不会触发任何回调。于是路径变成：
+        // 开通自动续费 → 想起来要开权限 → 开完回来点扫描 → 什么都没有，而用户只会判定"这扫描是坏的"。
+        //
+        // 这里读的是通知栏里**真实存在**的内容，不伪造任何东西；重复由 recordNotification 里
+        // 「同名 3 天内只留一条」兜住，用户点过「不是我的」的也不会再被追问
+        // （见 ButlerStore.addPendingClaim 里的 isDismissed 防线）。
+        try {
+            activeNotifications?.forEach { sbn -> if (sbn != null) handle(sbn) }
+        } catch (e: Exception) {
+            // 拿不到只影响这一次回扫，之后的新通知照收
+        }
     }
 
     override fun onListenerDisconnected() {
@@ -29,7 +43,11 @@ class NotifListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        val n = sbn ?: return
+        handle(sbn ?: return)
+    }
+
+    /** 解析一条通知。新到的与连上时回扫的都走这里 —— 别抄成两份。 */
+    private fun handle(n: StatusBarNotification) {
         val ctx = applicationContext ?: return
         if (!isWatched(ctx, n.packageName)) return
         val extras = n.notification?.extras ?: return
