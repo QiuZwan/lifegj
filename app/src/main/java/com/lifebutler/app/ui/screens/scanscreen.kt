@@ -7,7 +7,6 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -116,12 +115,18 @@ fun ScanScreen(onBack: () -> Unit) {
             val merged = withContext(Dispatchers.IO) { SubScanner.mergeCandidates(sms, SubScanner.notificationFindings(ctx)) }
             var added = 0
             merged.forEach { c ->
-                if (store.subs.none { it.name == c.name } && !store.isDismissed(c.name)) {
+                // ⚠️ 签约类（原文里读不出金额）**不自动落库**。
+                // 它只说明"你和这个商户签了自动扣款协议"，不代表这笔已经在扣钱；替用户
+                // 把一条"还没花出去的钱"塞进守护清单，他只会觉得"我没让你加啊"。
+                // 界面照样把它列出来，由他自己点「加入」。读得到金额的（真扣过钱）才自动加。
+                val pureSignup = c.signup && c.amount == null
+                if (!pureSignup && store.subs.none { it.name == c.name } && !store.isDismissed(c.name)) {
                     val src = if (c.source.contains("通知")) "通知" else "扫描"
                     store.addScannedSub(c.name, c.amount ?: 0.0, src, c.nextDate)
                     added++
                 }
-                // 短信本身就是一条真实的扣费凭证 → 写进真实扣费流水
+                // 短信本身就是一条真实的扣费凭证 → 写进真实扣费流水。
+                // 条件里的 `amount > 0` 一并挡住签约类：签约没扣钱，不许凭空造出一笔流水。
                 if (c.source.contains("短信") && (c.amount ?: 0.0) > 0) {
                     val iso = SubScanner.fmtIso(c.dateMs)
                     if (store.charges.none { it.subName == c.name && it.date == iso }) {
@@ -164,14 +169,18 @@ fun ScanScreen(onBack: () -> Unit) {
                 LbCard(modifier = Modifier.padding(top = 10.dp)) {
                     Text("一键扫描本机自动续费", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
-                        "扫描会查看三处：\n① 扣费短信（需要短信读取权限，只在本机分析、不上传）\n② 微信/支付宝的扣费与签约通知（需开启「通知读取」：开启后开始记录，开启那一刻还留在通知栏里的也会读一遍；命中后先进「待确认」，由你确认是不是订阅）\n③ 已安装应用列表（对照常见订阅类 App）",
+                        "扫描会查看三处：\n" +
+                            "① 扣费短信（需短信读取权限，只在本机分析、不上传）：可回看近一年的收件箱 —— 这是唯一能「翻历史」的来源；「您已与 XX 签订自动扣款协议」这类没写金额的签约短信也认\n" +
+                            "② 微信/支付宝的扣费与签约通知（需开启「通知读取」：开启后开始记录；开启那一刻还留在通知栏里的也会读一遍）\n" +
+                            "③ 已安装应用列表（对照常见订阅类 App，告诉你装了哪些、该去哪个入口自己查）",
                         fontSize = 12.5.sp,
                         color = LbInk2,
                         lineHeight = 20.sp,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     Text(
-                        "短信里出现的扣费会作为凭证直接记账；通知里的线索会先放到「待确认」，你在守护页点「认得」之后才落库 —— 关键词判不出「这笔是不是订阅」，不该替你做主。「签约成功」这类通知也收（签约当下不扣钱，所以金额留空，不猜）。结果仅供参考，核对以平台账单为准。",
+                        "短信里读到的「扣费」会作为凭证直接记账；「签约」类不会自动加进守护清单 —— 签约当下不扣钱，原文里本来就没有金额，所以留空、不猜，要你自己点「加入」。" +
+                            "通知里的线索一律先进「待确认」，你在守护页点「认得」之后才落库：关键词判不出「这笔是不是订阅」，不该替你做主。结果仅供参考，核对以平台账单为准。",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(top = 6.dp),
@@ -309,7 +318,7 @@ fun ScanScreen(onBack: () -> Unit) {
             else -> {
                 if (scannedWithSms && candidates.isEmpty()) {
                     LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 12.dp) {
-                        Text("短信里没有发现明确的扣费线索。", fontSize = 12.5.sp, color = LbInk3)
+                        Text("短信里没有发现扣费或签约线索（已翻近一年的收件箱）。", fontSize = 12.5.sp, color = LbInk3)
                     }
                 }
                 if (addedNow > 0) {
@@ -407,21 +416,32 @@ fun ScanScreen(onBack: () -> Unit) {
                 }
 
                 if (apps.isNotEmpty()) {
-                    SectionHeader("本机安装的相关应用") {
+                    SectionHeader("本机装了这些订阅类应用") {
                         Text("${apps.size} 个", fontSize = 12.5.sp, color = LbInk3)
                     }
                     LbCard(contentPadding = 12.dp) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            apps.chunked(2).forEach { pair ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    pair.forEach { a ->
-                                        val exists = store.subs.any { it.name == a }
-                                        AppChip(name = a, added = exists, modifier = Modifier.weight(1f)) { addAsSub(a, 0.0, "") }
-                                    }
-                                    if (pair.size == 1) {
-                                        Spacer(Modifier.weight(1f))
-                                    }
-                                }
+                        // ⚠️ 装了 App ≠ 开了会员。原来这里点一下就把「爱奇艺」当成一笔订阅加进守护清单，
+                        // 金额还是 0 —— 用户根本没开会员也会被加一条，只会以为扫描在乱来。
+                        // 会员状态存在各家自己的服务器上，第三方读不到（这是 Android 的硬边界），
+                        // 所以这一栏改成**帮你找到入口**：点「打开」进 App 自己看，查到有在续的再点「加入」。
+                        Text(
+                            "装了 App 不等于开了会员 —— 会员状态在各家自己手里，本机读不到。这一栏只帮你找入口：点「打开」进去看（大多在「我的 → 会员中心」），确认在续费的再点「加入」。",
+                            fontSize = 11.sp,
+                            color = LbInk3,
+                            lineHeight = 16.sp,
+                        )
+                        Column(
+                            Modifier.padding(top = 9.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            apps.forEach { a ->
+                                val exists = store.subs.any { it.name == a }
+                                AppEntry(
+                                    name = a,
+                                    added = exists,
+                                    onOpen = { SubScanner.packageOf(a)?.let { SubScanner.launchPackage(ctx, it) } },
+                                    onAdd = { addAsSub(a, 0.0, "") },
+                                )
                             }
                         }
                     }
@@ -430,7 +450,10 @@ fun ScanScreen(onBack: () -> Unit) {
                 if (candidates.isEmpty() && apps.isEmpty()) {
                     LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 12.dp) {
                         Text(
-                            "没有发现线索。微信/支付宝的扣费与签约通知可以通过「通知读取」积累（开启后开始记录；开启那一刻还留在通知栏里的也会读一遍）；也可以稍后再试，或在「守护」页手动添加。",
+                            "没有发现线索。可以这样想：\n" +
+                                "· 没给短信权限的话，App 就没有任何历史可翻 —— 短信是唯一能回头看一年的来源；\n" +
+                                "· 「通知读取」只在开启之后才开始积累，装 App 之前的历史通知系统不会补发；\n" +
+                                "· 也可以稍后再试，或在「守护」页手动添加。",
                             fontSize = 12.5.sp,
                             color = LbInk3,
                             lineHeight = 19.sp,
@@ -601,17 +624,46 @@ private fun MiniAction(text: String, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 「本机装了这些订阅类应用」里的一行：左边名字，右边「打开」+「加入」。
+ *
+ * 为什么要拆成两个动作：**装了 App 不等于开了会员**，而会员状态第三方读不到。
+ * 所以这里能帮的只有两件事 —— 把你送进那个 App 的入口（「打开」），
+ * 以及你把查到的结果记下来（「加入」）。点一下就把整个 App 当订阅塞进清单是错的。
+ */
 @Composable
-private fun AppChip(name: String, added: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun AppEntry(name: String, added: Boolean, onOpen: () -> Unit, onAdd: () -> Unit) {
     Row(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, if (added) LbAccentSoft else com.lifebutler.app.ui.theme.LbLineStrong, RoundedCornerShape(12.dp))
-            .clickable(enabled = !added, onClick = onClick)
-            .padding(horizontal = 11.dp, vertical = 9.dp),
+        Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(name, fontSize = 12.5.sp, color = LbInk, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(if (added) "已加入" else "+ 加入", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (added) LbInk3 else LbAccent)
+        Text(
+            name,
+            fontSize = 12.5.sp,
+            color = LbInk,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            "打开",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = LbAccent,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onOpen)
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        )
+        Text(
+            if (added) "已加入" else "+ 加入",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (added) LbInk3 else LbAccent,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(enabled = !added, onClick = onAdd)
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        )
     }
 }

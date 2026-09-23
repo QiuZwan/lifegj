@@ -65,6 +65,15 @@ object SubScanner {
     fun installedSubApps(context: Context): List<String> =
         SUBSCRIPTION_APPS.filter { isInstalled(context, it.first) }.map { it.second }
 
+    /**
+     * 展示名 → 包名。用于扫描结果里那个「打开」按钮。
+     *
+     * 为什么不复用 [merchantPackage]：那个是按**订阅名**猜的、只覆盖一部分品牌，
+     * 而这里的输入本来就来自 [KNOWN_APPS]，一对一查表更准（淘宝 / QQ音乐 这些它认不出）。
+     */
+    fun packageOf(displayName: String): String? =
+        KNOWN_APPS.firstOrNull { it.second == displayName }?.first
+
     /** 支付平台安装情况 */
     fun installedPlatforms(context: Context): List<Pair<String, Boolean>> = listOf(
         "支付宝" to isInstalled(context, "com.eg.android.AlipayGphone"),
@@ -220,20 +229,48 @@ object SubScanner {
         return null
     }
 
+    /**
+     * 短信解析。判据与 [parseNotification] **故意保持同一套**。
+     *
+     * ⚠️ 原来短信侧也要求「必须读出 X 元」（`amt ?: return null`），于是
+     * 「您已与 XX 签订自动扣款协议」这类**没有金额的签约短信**被整条丢掉。
+     * 这和通知侧那个 bug 是同一个病 —— 而短信恰恰是所有来源里**唯一能回头看历史**的一条
+     * （通知只在监听服务连上之后才有，装 App 之前的历史根本收不到）。
+     * 现在签约类同样允许没有金额，用 [Candidate.signup] 标出来。
+     */
     private fun parse(body: String, dateMs: Long): Candidate? {
         if (EXCLUDE.containsMatchIn(body)) return null
+        val signup = SIGNUP_N.containsMatchIn(body)
         val strong = STRONG.containsMatchIn(body)
         val weak = WEAK.containsMatchIn(body)
-        if (!strong && !weak) return null
-        val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
-        if (amt <= 0 || amt > 3000) return null
+        if (!strong && !signup && !weak) return null
+        val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
+        // 金额是硬门槛，唯一的例外是「签约 / 开通」：签约当下不扣钱，原文里本来就没有金额。
+        // 给它编一个 0 才是撒谎 —— 所以留空，界面如实写「金额未知」。
+        if (!signup && amt == null) return null
+        if (amt != null && (amt <= 0 || amt > 3000)) return null
         val name = extractMerchant(body) ?: return null
         if (name.length < 2 || name.length > 18) return null
-        if (!strong && !Regex("(商户|收款方|【)").containsMatchIn(body)) return null
-        return Candidate(name, amt, dateMs, body.replace("\n", " ").take(70), "短信", parseDueDate(body))
+        // 弱信号（扣费 / 续费成功）单独出现不采信：必须同时有明确的商户标记 —— 与通知侧一致。
+        if (!strong && !signup && !MERCHANT_MARK.containsMatchIn(body)) return null
+        return Candidate(
+            name,
+            amt,
+            dateMs,
+            body.replace("\n", " ").take(70),
+            "短信",
+            parseDueDate(body),
+            signup && amt == null,
+        )
     }
 
-    /** 分析近 180 天收件箱;返回按商户去重的候选项(取最新一条) */
+    /**
+     * 扫描收件箱里的扣费 / 签约短信；按商户去重，取最新一条。
+     *
+     * 范围给到**近 365 天、最多 2000 条**：这是全 App 唯一能「回头看」的来源
+     * （通知只在监听服务连上之后才有，装 App 之前的历史一条都收不到）。
+     * 原来只回看 180 天，用户「上个月开的自动续费怎么没扫到」会被误会成功能坏了。
+     */
     fun scanSms(context: Context): List<Candidate> {
         val out = HashMap<String, Candidate>()
         try {
@@ -245,8 +282,8 @@ object SubScanner {
             cursor?.use { c ->
                 val idxBody = c.getColumnIndexOrThrow("body")
                 val idxDate = c.getColumnIndexOrThrow("date")
-                val cutoff = System.currentTimeMillis() - 180L * 86400000L
-                while (c.moveToNext() && n < 400) {
+                val cutoff = System.currentTimeMillis() - 365L * 86400000L
+                while (c.moveToNext() && n < 2000) {
                     n++
                     val date = c.getLong(idxDate)
                     if (date < cutoff) continue
