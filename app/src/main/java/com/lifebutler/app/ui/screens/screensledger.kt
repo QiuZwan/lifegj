@@ -5,14 +5,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -24,6 +29,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +53,7 @@ import com.lifebutler.app.ui.components.IconBadge
 import com.lifebutler.app.ui.components.LbCard
 import com.lifebutler.app.ui.components.LbChip
 import com.lifebutler.app.ui.components.LbConfirmDialog
+import com.lifebutler.app.ui.components.LbDatePickerDialog
 import com.lifebutler.app.ui.components.LbField
 import com.lifebutler.app.ui.components.LbGhostButton
 import com.lifebutler.app.ui.components.LbInputDialog
@@ -54,6 +61,8 @@ import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
 import com.lifebutler.app.ui.components.SectionHeader
+import com.lifebutler.app.ui.components.lbHighlightBg
+import com.lifebutler.app.ui.components.lbItemHighlight
 import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
@@ -75,7 +84,13 @@ import java.util.Locale
 
 /* ── 记账本:今天花了多少、花在哪,一页看清 ── */
 
-val LB_EXPENSE_CATEGORIES = listOf("餐饮", "交通", "购物", "居家", "娱乐", "医疗", "人情", "其他")
+/**
+ * 记账分类的**默认值**。
+ *
+ * 真正的分类列表在 `store.expenseCategories`（可增删，与备忘录分类同构）。
+ * 这个名字留着只为「还没拿到 store 的地方」兜底，别再往里加硬编码分类。
+ */
+val LB_EXPENSE_CATEGORIES = ButlerStore.DEFAULT_EXPENSE_CATEGORIES
 
 private val LB_WEEK = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
@@ -113,8 +128,37 @@ private fun lbHm(at: Long): String = try {
     ""
 }
 
+/** 记一笔对话框里那一行用的短日期：今天 / 昨天 / 明天 / M 月 D 日 */
+private fun lbDateShort(date: String): String {
+    val d = try {
+        LocalDate.parse(date)
+    } catch (e: Exception) {
+        return date
+    }
+    val today = LocalDate.now()
+    return when (d) {
+        today -> "今天"
+        today.minusDays(1) -> "昨天"
+        today.plusDays(1) -> "明天"
+        else -> "${d.monthValue} 月 ${d.dayOfMonth} 日"
+    }
+}
+
+/**
+ * 「全部记录」那几个分组之前有多少个 item（标题行 / 4 个小标题 / 3 张卡片）。
+ *
+ * LazyColumn 只能按 **item 下标**滚，所以这个数必须跟上面的结构对齐：
+ * 在「全部记录」前面加/删一个 item，这里就要跟着改 —— 改错了只是「跳过去差几屏」。
+ */
+private const val LB_LEDGER_GROUPS_START = 8
+
 @Composable
-fun ExpenseScreen(onBack: () -> Unit) {
+fun ExpenseScreen(
+    onBack: () -> Unit,
+    /** 从搜索点进来时要落在哪一条 */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     var showAdd by remember { mutableStateOf(false) }
@@ -122,33 +166,52 @@ fun ExpenseScreen(onBack: () -> Unit) {
     var editId by remember { mutableStateOf<String?>(null) }
     var deleteId by remember { mutableStateOf<String?>(null) }
     var showBudget by remember { mutableStateOf(false) }
+    var showCats by remember { mutableStateOf(false) }
 
     val today = LocalDate.now()
     val todayStr = today.toString()
-    val todayList = store.expenses.filter { it.date == todayStr }.sortedByDescending { it.at }
+    // **一次分组，全页共用。**
+    // 原来「最近 7 天」是 7 次 `store.expenses.filter { it.date == d }` —— 也就是每重组一帧
+    // 就把整张表扫 7 遍，再加上「今天」「全部记录」各一次。记满一年之后，这页光算数就卡。
+    val byDate = remember(store.dataStamp()) { store.expenses.groupBy { it.date } }
+    val todayList = (byDate[todayStr] ?: emptyList()).sortedByDescending { it.at }
     val todaySpend = store.spendOf(todayList)
     val todayIncome = store.incomeOf(todayList)
     val catTotals = store.expenseCategoryTotals(todayList)
     // 趋势条只看「花掉多少」：把收入画进同一根柱子里，看的人会以为那天花得特别多
     val week = (0..6).map { i ->
         val d = today.minusDays(i.toLong())
-        d to store.spendOf(store.expenses.filter { it.date == d.toString() })
+        d to store.spendOf(byDate[d.toString()] ?: emptyList())
     }
     val weekTotal = week.sumOf { it.second }
     val maxWeek = week.maxOfOrNull { it.second } ?: 0.0
-    val groups = store.expenses.groupBy { it.date }.entries.sortedByDescending { it.key }
+    val groups = byDate.entries.sortedByDescending { it.key }
 
     val monthList = store.expensesInMonth(today.year, today.monthValue)
     val monthSpend = store.spendOf(monthList)
     val monthIncome = store.incomeOf(monthList)
     val budget = store.budgetStatus()
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
+    val listState = rememberLazyListState()
+    // 搜索跳过来的那一条：LazyColumn 根本不会组装屏幕外的内容，所以 `bringIntoView` 在这里没用，
+    // 只能算出它落在第几个分组、按 item 下标滚过去。
+    LaunchedEffect(highlightId, groups) {
+        val id = highlightId ?: return@LaunchedEffect
+        val gi = groups.indexOfFirst { (_, list) -> list.any { it.id == id } }
+        if (gi >= 0) {
+            listState.animateScrollToItem(LB_LEDGER_GROUPS_START + gi)
+        } else {
+            // 找不到（比如这条记录刚好被删了）：别把「待定位」一直挂着
+            onHighlightConsumed()
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 16.dp),
     ) {
+        item {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -168,7 +231,9 @@ fun ExpenseScreen(onBack: () -> Unit) {
             Spacer(Modifier.weight(1f))
             LbPlusButton(onClick = { showAdd = true }, contentDescription = "记一笔")
         }
+        }
 
+        item {
         SectionHeader("今天") {
             Text(
                 if (todayIncome > 0) "花 ¥${store.fmtMoney(todaySpend)} · 进 ¥${store.fmtMoney(todayIncome)}"
@@ -220,9 +285,31 @@ fun ExpenseScreen(onBack: () -> Unit) {
                         .fillMaxWidth()
                         .padding(top = 12.dp),
                 )
+                // 分类管理入口：备忘录的分类早就能自己增删，记账却只能塞「其他」——
+                // 有孩子的想加「教育」、养宠物的想加「宠物」、还贷的想加「房贷」，都无处可去。
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "分类管理（可自定义）",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbAccent,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showCats = true }
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                    )
+                }
             }
         }
 
+        }
+
+        item {
         SectionHeader("本月") {
             Text("${today.monthValue} 月", fontSize = 12.5.sp, color = LbInk3)
         }
@@ -344,6 +431,9 @@ fun ExpenseScreen(onBack: () -> Unit) {
             }
         }
 
+        }
+
+        item {
         SectionHeader("最近 7 天") {
             Text("合计 ¥${store.fmtMoney(weekTotal)}", fontSize = 12.5.sp, color = LbInk3)
         }
@@ -386,17 +476,24 @@ fun ExpenseScreen(onBack: () -> Unit) {
             }
         }
 
-        SectionHeader("全部记录") {
-            Text("${store.expenses.size} 笔", fontSize = 12.5.sp, color = LbInk3)
+        }
+
+        item {
+            SectionHeader("全部记录") {
+                Text("${store.expenses.size} 笔", fontSize = 12.5.sp, color = LbInk3)
+            }
         }
         if (groups.isEmpty()) {
+            item {
             LbCard(contentPadding = 14.dp) {
                 Text("还没有记录。今天花的钱，随手记一笔，月底就知道去哪了。", fontSize = 12.sp, color = LbInk3)
             }
+            }
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                groups.forEach { (date, list) ->
-                    Column {
+            // 一天一个 item：滚到哪儿才组装哪儿。原来这里是 `groups.forEach` 套在 Column 里，
+            // 一页记满几百条就要一次性把它们（连同每行的图标）全建出来，是这一页发涩的主因。
+            items(groups, key = { it.key }) { (date, list) ->
+                Column(Modifier.padding(bottom = 10.dp)) {
                         Text(
                             lbDateLabel(date),
                             fontSize = 11.5.sp,
@@ -405,10 +502,14 @@ fun ExpenseScreen(onBack: () -> Unit) {
                         )
                         LbCard(contentPadding = 6.dp) {
                             list.sortedByDescending { it.at }.forEach { e ->
+                                // 搜索跳过来的那一条：滚进来 + 亮一下
+                                val hl = lbItemHighlight(e.id, highlightId, onHighlightConsumed)
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
+                                        .then(hl.modifier)
+                                        .background(lbHighlightBg(hl.active))
                                         .lbPressable(onClick = { menuId = e.id })
                                         .padding(horizontal = 8.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -446,17 +547,16 @@ fun ExpenseScreen(onBack: () -> Unit) {
                                 }
                             }
                         }
-                    }
                 }
-            }
         }
-        Spacer(Modifier.height(16.dp))
+    }
     }
 
     if (showAdd) {
         ExpenseAddDialog(
-            onSave = { a, c, n, income ->
-                store.addExpense(a, c, n, income)
+            categories = store.expenseCategories.value,
+            onSave = { a, c, n, income, date ->
+                store.addExpense(a, c, n, income, date)
                 showAdd = false
             },
             onDismiss = { showAdd = false },
@@ -467,11 +567,22 @@ fun ExpenseScreen(onBack: () -> Unit) {
         val e = store.expenses.firstOrNull { it.id == id }
         ExpenseAddDialog(
             initial = e,
-            onSave = { a, c, n, income ->
-                store.updateExpense(id, a, c, n, income)
+            categories = store.expenseCategories.value,
+            onSave = { a, c, n, income, date ->
+                store.updateExpense(id, a, c, n, income, date)
                 editId = null
             },
             onDismiss = { editId = null },
+        )
+    }
+
+    if (showCats) {
+        ExpenseCategoryDialog(
+            categories = store.expenseCategories.value,
+            counts = store.expenseCategories.value.associateWith { store.expenseCountOf(it) },
+            onAdd = { store.addExpenseCategory(it) },
+            onRemove = { store.removeExpenseCategory(it) },
+            onDismiss = { showCats = false },
         )
     }
 
@@ -527,11 +638,12 @@ fun ExpenseScreen(onBack: () -> Unit) {
     }
 }
 
-/** 一笔账:金额 + 分类胶囊 + 备注;也用于编辑初始值。[onSave] 最后一项 true = 收入 */
+/** 一笔账:金额 + 分类胶囊 + 日期 + 备注;也用于编辑初始值。[onSave] 最后一项 true = 收入，再后是日期 */
 @Composable
 fun ExpenseAddDialog(
     initial: ButlerExpense? = null,
-    onSave: (Double, String, String, Boolean) -> Unit,
+    categories: List<String> = LB_EXPENSE_CATEGORIES,
+    onSave: (Double, String, String, Boolean, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val initAmount = initial?.let {
@@ -541,7 +653,16 @@ fun ExpenseAddDialog(
     var cat by remember { mutableStateOf(initial?.category ?: "餐饮") }
     var note by remember { mutableStateOf(initial?.note ?: "") }
     var income by remember { mutableStateOf(initial?.income ?: false) }
+    // 日期：默认今天；编辑时用这笔**原来的**日期（别把旧账顺手改成今天）。
+    // 「昨晚忘了记、今天早上补」是记账里最高频的场景，没有这一行就只能记成今天 ——
+    // 于是今天的合计里混进昨天的钱、昨天显示 0，近 7 天趋势条整体错位。
+    var date by remember { mutableStateOf(initial?.date ?: LocalDate.now().toString()) }
+    var showDate by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // 分类可能被删掉过（比如这份记录来自旧备份），把当前值补进去，免得选不中/看不出来
+    val cats = remember(categories, cat) {
+        if (categories.contains(cat)) categories else categories + cat
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
@@ -609,7 +730,7 @@ fun ExpenseAddDialog(
                     )
                 } else {
                     Text("分类", fontSize = 12.sp, color = LbInk3, modifier = Modifier.padding(top = 12.dp))
-                    LB_EXPENSE_CATEGORIES.chunked(4).forEach { row ->
+                    cats.chunked(4).forEach { row ->
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -637,6 +758,31 @@ fun ExpenseAddDialog(
                             repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                         }
                     }
+                }
+                // 日期行：点开用项目里**同一个**日历选择器（今天/昨天/明天…+ 月份导航），不另写一套
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(LbSurface2)
+                        .clickable { showDate = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (income) "入账日期" else "消费日期",
+                        fontSize = 12.sp,
+                        color = LbInk3,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        lbDateShort(date),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbAccent,
+                    )
+                    Text("  更改", fontSize = 11.sp, color = LbInk3)
                 }
                 OutlinedTextField(
                     value = note,
@@ -676,7 +822,7 @@ fun ExpenseAddDialog(
                             if (a == null || a <= 0) {
                                 error = "金额填数字，比如 25"
                             } else {
-                                onSave(a, if (income) "收入" else cat, note, income)
+                                onSave(a, if (income) "收入" else cat, note, income, date)
                             }
                         },
                         Modifier.weight(1f),
@@ -684,6 +830,15 @@ fun ExpenseAddDialog(
                 }
             }
         }
+    }
+    if (showDate) {
+        LbDatePickerDialog(
+            initial = date,
+            clearable = false,
+            onPick = { date = it; showDate = false },
+            onClear = { showDate = false },
+            onDismiss = { showDate = false },
+        )
     }
 }
 
@@ -705,3 +860,127 @@ private fun MonthStat(label: String, value: Double, color: androidx.compose.ui.g
 /** 这里只要「两位小数、去掉多余的 0」，不引用 store（本文件的对话框层没有 store 实例） */
 private fun fmtPlain(v: Double): String =
     if (v % 1.0 == 0.0) v.toLong().toString() else String.format(Locale.getDefault(), "%.2f", v).trimEnd('0').trimEnd('.')
+
+/* ── 记账分类管理：新增 / 删除（删分类**不删账**，账目改挂「其他」） ── */
+
+@Composable
+private fun ExpenseCategoryDialog(
+    categories: List<String>,
+    counts: Map<String, Int>,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
+            Column(
+                Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+            ) {
+                Text("记账分类", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text(
+                    "删掉一个分类不会删掉账目 —— 那些账会移到「其他」。「其他」是兜底分类，不能删除。",
+                    fontSize = 12.sp,
+                    color = LbInk3,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Column(Modifier.padding(top = 8.dp)) {
+                    categories.forEach { c ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(c, fontSize = 13.sp, color = LbInk, modifier = Modifier.weight(1f))
+                            Text(
+                                "${counts[c] ?: 0} 笔",
+                                fontSize = 11.sp,
+                                color = LbInk3,
+                                modifier = Modifier.padding(end = 8.dp),
+                            )
+                            if (c != ButlerStore.EXPENSE_FALLBACK) {
+                                Box(
+                                    Modifier
+                                        .size(28.dp)
+                                        .clip(RoundedCornerShape(9.dp))
+                                        .background(LbSurface2)
+                                        .clickable { error = null; onRemove(c) },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        LbIcons.trash,
+                                        contentDescription = "删除分类 $c",
+                                        tint = LbRust,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                }
+                            } else {
+                                Box(Modifier.size(28.dp))
+                            }
+                        }
+                    }
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it; error = null },
+                        placeholder = { Text("新的分类名，如：教育 / 宠物 / 房贷", fontSize = 12.sp, color = LbInk3) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LbAccent,
+                            unfocusedBorderColor = LbLine,
+                            cursorColor = LbAccent,
+                        ),
+                        textStyle = TextStyle(fontSize = 13.sp, color = LbInk),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    LbPrimaryButton(
+                        "添加",
+                        onClick = {
+                            val n = text.trim()
+                            when {
+                                n.isEmpty() -> error = "分类名不能为空"
+                                categories.any { it.equals(n, true) } -> error = "这个分类已经有了"
+                                else -> {
+                                    onAdd(n)
+                                    text = ""
+                                }
+                            }
+                        },
+                    )
+                }
+                error?.let {
+                    Text(it, fontSize = 12.sp, color = LbRust, modifier = Modifier.padding(top = 8.dp))
+                }
+                Text(
+                    "分类只存在本机，只用于你自己的账目统计。",
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                ) {
+                    LbGhostButton("完成", onDismiss, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}

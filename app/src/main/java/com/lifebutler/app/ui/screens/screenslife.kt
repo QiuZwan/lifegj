@@ -77,6 +77,7 @@ import com.lifebutler.app.data.BUILTIN_KEY
 import com.lifebutler.app.data.BUILTIN_LABEL
 import com.lifebutler.app.data.BUILTIN_MODEL
 import com.lifebutler.app.data.BackupIO
+import com.lifebutler.app.widget.LbWidgetProvider
 import com.lifebutler.app.data.ButlerArchive
 import com.lifebutler.app.data.ButlerMember
 import com.lifebutler.app.data.ButlerPhoto
@@ -94,11 +95,14 @@ import com.lifebutler.app.ui.components.LbChip
 import com.lifebutler.app.ui.components.LbConfirmDialog
 import com.lifebutler.app.ui.components.LbField
 import com.lifebutler.app.ui.components.LbGhostButton
+import com.lifebutler.app.ui.components.LbHighlightState
 import com.lifebutler.app.ui.components.LbInputDialog
 import com.lifebutler.app.ui.components.LbPasteDialog
 import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.SectionHeader
+import com.lifebutler.app.ui.components.lbHighlightBg
+import com.lifebutler.app.ui.components.lbItemHighlight
 import com.lifebutler.app.ui.components.lbLongPress
 import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
@@ -141,6 +145,9 @@ fun ChatScreen(
     onOpen: (String) -> Unit = {},
     autoAsk: String? = null,
     onAskConsumed: () -> Unit = {},
+    /** 从搜索点进来时要落在哪一句 */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
@@ -299,6 +306,17 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             store.chat.forEach { m ->
+                // 搜索跳过来的一条对话：滚进来 + 亮一下。
+                // 整条包一个 Box，左右对齐仍由里面的 Row 决定，所以底色会横跨整行 ——
+                // 对话页本来就是一问一答地竖着看，横着亮一条反而更清楚「是这一句」。
+                val hl = lbItemHighlight(m.id, highlightId, onHighlightConsumed)
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .then(hl.modifier)
+                        .background(lbHighlightBg(hl.active)),
+                ) {
                 if (m.photoPath.isNotEmpty()) {
                     Row(
                         Modifier.fillMaxWidth(),
@@ -334,6 +352,7 @@ fun ChatScreen(
                     }
                 } else {
                     ChatBubble(m.fromUser, m.text)
+                }
                 }
             }
 
@@ -623,7 +642,11 @@ private fun memberPhotoRes(photo: String): Int = when (photo) {
 }
 
 @Composable
-fun FamilyScreen() {
+fun FamilyScreen(
+    /** 从搜索点进来时要落在哪一条（家人 / 相册 / 关键日期共用这一个 id） */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     var showAddMember by remember { mutableStateOf(false) }
@@ -678,7 +701,10 @@ fun FamilyScreen() {
                     "${nearestMember.first.name}的${nearestMember.first.label} · ${store.fmtCn(nearestMember.first.date)}"
                 else "把家人的重要日子记下来",
                 sub = if (nearestMember != null)
-                    "${store.daysText(nearestMember.first.date)} · 提前一天会再提醒你"
+                    // 「提前一天」是旧说法：家人日期原来只吃全局提前量，这里的文案却写死了 1 天，
+                    // 与日报（按 aheadDaysFor 算）对不上。现在两处同一个算法、同一句话。
+                    "${store.daysText(nearestMember.first.date)} · 提前 " +
+                        "${store.aheadDaysFor(nearestMember.first.remindAhead, store.reminderDueDays.value)} 天会再提醒你"
                 else "点下面家人区右上角，添加第一位家人",
             )
             if (nearestMember != null) {
@@ -719,6 +745,7 @@ fun FamilyScreen() {
                                 filePath = if (store.isLocalPhoto(m.photo)) m.photo else "",
                                 modifier = Modifier.weight(1f),
                                 onClick = { memberMenu = m },
+                                highlight = lbItemHighlight(m.id, highlightId, onHighlightConsumed),
                             )
                         }
                         repeat((3 - rowMembers.size).coerceAtLeast(0)) {
@@ -728,6 +755,20 @@ fun FamilyScreen() {
                 }
             }
         }
+
+        // 家人的日期提前量：与订阅 / 义务 / 关键日期**同一套组件、同一个算法**。
+        // v2.12 把「能力一致」补到了订阅 / 义务 / 关键日期，唯独家人漏在外面 ——
+        // 妈妈的复诊想提前两周知道，和「纪念日提前 7 天」只能共用一个数。
+        LbRemindAheadSection(
+            title = "家人的日期提前多久提醒",
+            hint = "「默认」= 跟随「我的 → 提醒与免打扰」里的「到期提前」。复诊、手术这类" +
+                "耽误不起的事，可以单独提前久一点。",
+            items = store.members.map {
+                Triple(it.id, "${it.name}的${it.label.ifBlank { "重要日期" }}", it.remindAhead)
+            },
+            emptyText = "还没有家人记录。添加之后可以在这里给每个人单独设提前量。",
+            onPick = { id, days -> store.setMemberRemindAhead(id, days) },
+        )
 
         // 相册独立成册:不再从家人头像里取图,头像是头像、相册是相册
         SectionHeader("家庭相册") {
@@ -776,7 +817,12 @@ fun FamilyScreen() {
                 store.album.reversed().chunked(3).forEach { rowPhotos ->
                     Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                         rowPhotos.forEach { p ->
-                            AlbumThumb(p, Modifier.weight(1f)) { albumViewer = p }
+                            AlbumThumb(
+                                p,
+                                Modifier.weight(1f),
+                                onClick = { albumViewer = p },
+                                highlight = lbItemHighlight(p.id, highlightId, onHighlightConsumed),
+                            )
                         }
                         repeat((3 - rowPhotos.size).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
                     }
@@ -806,6 +852,7 @@ fun FamilyScreen() {
                             chip = store.daysText(k.date),
                             chipTone = if (d != null && d <= 14) ChipTone.Amber else ChipTone.Soft,
                             onLongClick = { deleteKeyId = k.id },
+                            highlight = lbItemHighlight(k.id, highlightId, onHighlightConsumed),
                         )
                     }
             }
@@ -1030,11 +1077,15 @@ private fun LbListRowMini(
     chip: String,
     chipTone: ChipTone,
     onLongClick: () -> Unit,
+    /** 从搜索跳过来的话：这一条需要被滚进可见区并短暂亮一下 */
+    highlight: LbHighlightState? = null,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
+            .then(highlight?.modifier ?: Modifier)
+            .background(lbHighlightBg(highlight?.active == true))
             .lbLongPress(onLongClick)
             .padding(vertical = 9.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1060,11 +1111,16 @@ private fun MemberCard(
     filePath: String = "",
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    /** 从搜索跳过来的话：这一位需要被滚进可见区并短暂亮一下 */
+    highlight: LbHighlightState? = null,
 ) {
     Surface(
-        modifier = modifier.lbPressable(onClick = onClick),
+        modifier = modifier
+            .then(highlight?.modifier ?: Modifier)
+            .lbPressable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
-        color = LbSurface,
+        // 卡片是不透明的 LbSurface，高亮只能换底色，不能靠外层垫色
+        color = if (highlight?.active == true) LbAmberSoft else LbSurface,
         border = androidx.compose.foundation.BorderStroke(1.dp, LbLine),
     ) {
         Column(
@@ -1182,12 +1238,24 @@ private fun MenuRow(
 
 /** 相册缩略图:方形裁切,点了看大图 */
 @Composable
-private fun AlbumThumb(photo: ButlerPhoto, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun AlbumThumb(
+    photo: ButlerPhoto,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    /** 从搜索跳过来的话：这一张需要被滚进可见区并短暂亮一下 */
+    highlight: LbHighlightState? = null,
+) {
     Box(
         modifier
             .height(96.dp)
             .clip(RoundedCornerShape(14.dp))
+            .then(highlight?.modifier ?: Modifier)
             .background(LbSurface2)
+            // 相册格子被照片铺满，垫底色看不出来 —— 用一圈琥珀描边来表示「就是这张」
+            .then(
+                if (highlight?.active == true) Modifier.border(2.dp, LbAmber, RoundedCornerShape(14.dp))
+                else Modifier,
+            )
             .clickable(onClick = onClick),
     ) {
         LocalImage(photo.path, Modifier.fillMaxSize(), ContentScale.Crop, maxDim = 320)
@@ -1345,6 +1413,7 @@ fun MineScreen(
     val appVersion = remember { UpdateCheck.versionName(ctx) }
     var showRename by remember { mutableStateOf(false) }
     var showData by remember { mutableStateOf(false) }
+    var showWidget by remember { mutableStateOf(false) }
     var showDemo by remember { mutableStateOf(false) }
     var showClear by remember { mutableStateOf(false) }
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -1365,22 +1434,32 @@ fun MineScreen(
         ActivityResultContracts.CreateDocument(BackupIO.MIME),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val err = BackupIO.write(ctx, uri, store.exportState())
-        Toast.makeText(
-            ctx,
-            if (err == null) "备份已存成文件，换机时用「从文件恢复」选回来" else "没能存成文件：$err",
-            Toast.LENGTH_LONG,
-        ).show()
+        val exp = store.exportAll()
+        val err = BackupIO.write(ctx, uri, exp.text)
+        val msg = when {
+            err != null -> "没能存成文件：$err"
+            // 备份内嵌图片的总额度是共享的，用光了后面的照片/档案会被跳过。
+            // 原来这里只说"备份已存成文件"，用户会一路以为全备好了 —— 必须如实说缺了什么。
+            exp.hasSkipped -> "备份已存成文件，但有 ${exp.skippedTotal} 个文件因体积上限没进去" +
+                "（${exp.skippedText()}），换机恢复时这些不在里面"
+            else -> "备份已存成文件，换机时用「从文件恢复」选回来"
+        }
+        Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
     }
     val backupOpenLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val raw = BackupIO.read(ctx, uri)
-        when {
-            raw.isNullOrBlank() -> Toast.makeText(ctx, "这个文件读不出来，换个文件试试", Toast.LENGTH_SHORT).show()
-            !store.isValidBackup(raw) -> Toast.makeText(ctx, "这个文件不像生活管家的备份", Toast.LENGTH_SHORT).show()
-            else -> restorePending = raw
+        // 文件通道现在会先看体积：太大的直接不读（原来是一口气读进内存，误选大文件就 OOM）
+        when (val r = BackupIO.read(ctx, uri)) {
+            is BackupIO.ReadResult.Fail ->
+                Toast.makeText(ctx, r.message, Toast.LENGTH_LONG).show()
+            is BackupIO.ReadResult.Ok ->
+                if (!store.isValidBackup(r.text)) {
+                    Toast.makeText(ctx, "这个文件不像生活管家的备份，已取消", Toast.LENGTH_SHORT).show()
+                } else {
+                    restorePending = r.text
+                }
         }
     }
     val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -1588,6 +1667,15 @@ fun MineScreen(
                     ),
                     Triple(LbIcons.fileText, "本月月报", "花销 · 订阅 · 省下"),
                     Triple(LbIcons.lock, "应用锁", if (store.appLockEnabled.value) "已开启 · 系统锁屏校验" else "已关闭"),
+                    Triple(
+                        LbIcons.deviceMobile,
+                        "桌面小组件",
+                        when (store.widgetDetailLevel()) {
+                            0 -> "显示全部内容"
+                            1 -> "只显示条数"
+                            else -> "隐藏正文"
+                        } + if (store.widgetDetail.value < 0) " · 跟随应用锁" else "",
+                    ),
                     Triple(LbIcons.shieldLock, "数据与隐私", "全部保存在本机"),
                     Triple(LbIcons.download, "导出家庭档案", "一键整理成文本"),
                     Triple(LbIcons.deviceFloppy, "备份与恢复", "换机不丢数据"),
@@ -1626,8 +1714,10 @@ fun MineScreen(
                                             val km = ctx.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
                                             Toast.makeText(
                                                 ctx,
-                                                if (km?.isDeviceSecure == true) "已开启，下次进入应用时会用系统锁屏校验"
-                                                else "已开启，但本机还没设锁屏密码／指纹，这个锁暂时保护不了 —— 去系统设置设一个才真正生效",
+                                                if (km?.isDeviceSecure == true)
+                                                    "已开启：进入应用会用系统锁屏校验，提醒通知也会隐藏正文（锁屏上只显示「有 1 条提醒」）"
+                                                else
+                                                    "已开启，但本机还没设锁屏密码／指纹，这个锁暂时保护不了 —— 去系统设置设一个才真正生效",
                                                 Toast.LENGTH_LONG,
                                             ).show()
                                         } else {
@@ -1635,6 +1725,7 @@ fun MineScreen(
                                         }
                                     }
                                     "数据与隐私" -> showData = true
+                                    "桌面小组件" -> showWidget = true
                                     "载入演示数据" -> showDemo = true
                                     "清空全部数据" -> showClear = true
                                     "关于管家" -> onOpenAbout()
@@ -1883,6 +1974,72 @@ fun MineScreen(
         )
     }
 
+    if (showWidget) {
+        // 桌面小组件显示档位。
+        // 起因：用户刚在 App 里开了应用锁，回到桌面却发现扣费明细就明写在桌面上，
+        // 任何人拿起手机（还没解锁）都能看到 —— 两个功能互相拆台。
+        val options = listOf(
+            -1 to "跟随应用锁",
+            0 to "显示全部内容",
+            1 to "只显示条数",
+            2 to "隐藏正文",
+        )
+        val cur = store.widgetDetail.value
+        Dialog(onDismissRequest = { showWidget = false }) {
+            Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
+                Column(Modifier.padding(20.dp)) {
+                    Text("桌面小组件显示多少", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                    Text(
+                        "桌面上，任何拿到这台手机的人（还没解锁）都能看到小组件的内容。" +
+                            "开了应用锁之后默认「跟随应用锁」= 只显示条数，不让扣费金额和商户名明写在桌面上。",
+                        fontSize = 12.sp,
+                        color = LbInk3,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    options.forEach { (v, label) ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (cur == v) LbAccentSoft else LbSurface2)
+                                .clickable {
+                                    store.setWidgetDetail(v)
+                                    LbWidgetProvider.refresh(ctx)
+                                    showWidget = false
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                label,
+                                fontSize = 13.sp,
+                                fontWeight = if (cur == v) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (cur == v) LbAccent else LbInk,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (cur == v) Text("当前", fontSize = 11.5.sp, color = LbAccent)
+                        }
+                    }
+                    Text(
+                        "改完回到桌面看一眼；个别手机会慢一拍，下拉刷新即可。",
+                        fontSize = 11.sp,
+                        color = LbInk3,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp),
+                    ) {
+                        LbGhostButton("完成", { showWidget = false }, Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+
     if (showBackup) {
         BackupDialog(
             onSaveFile = {
@@ -1896,14 +2053,18 @@ fun MineScreen(
             onCopy = {
                 // 剪贴板要经 Binder 跨进程送到 system_server，几 MB 的文本塞不进去。
                 // 这里如实报「装不下 / 偏大」，绝不让用户以为备份成功了 —— 那是丢数据的开始。
-                val text = store.exportState()
+                val exp = store.exportAll()
+                val text = exp.text
                 val kb = (text.length + 1023) / 1024
+                // 剪贴板这条也走同一个导出逻辑，所以同样可能漏文件；漏了就得说，不能只报"已复制"
+                val tail = if (exp.hasSkipped)
+                    "。注意：${exp.skippedTotal} 个文件因体积上限没进去（${exp.skippedText()}）" else ""
                 try {
                     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("生活管家备份", text))
                     Toast.makeText(
                         ctx,
-                        if (kb > 900) "已复制（约 ${kb}KB）。内容偏大，建议改用「存成文件」" else "备份已复制（约 ${kb}KB），存到安全的地方即可",
+                        (if (kb > 900) "已复制（约 ${kb}KB）。内容偏大，建议改用「存成文件」" else "备份已复制（约 ${kb}KB），存到安全的地方即可") + tail,
                         Toast.LENGTH_LONG,
                     ).show()
                 } catch (e: Exception) {
@@ -1952,9 +2113,27 @@ fun MineScreen(
     }
 
     restorePending?.let { raw ->
+        // 恢复是整体覆盖、且无法撤销，而手机里往往存着好几份不同日期的备份 ——
+        // 光看文件名分不清哪份里有那组保单。所以先解析一遍，把"这里面有什么"摆在用户面前。
+        val preview = remember(raw) { store.previewBackup(raw) }
+        val here = remember(raw) { store.recordCount() }
         LbConfirmDialog(
             title = "恢复这份备份？",
-            text = "将覆盖当前全部数据（待办 / 订阅 / 对话 / 家人 / 相册 / 照片），无法撤销。",
+            text = buildString {
+                append("将覆盖当前本机全部数据，且无法撤销。")
+                if (here > 0) append("\n\n当前本机已有 $here 条记录，恢复后会全部替换成下面这份。")
+                if (preview != null) {
+                    append("\n\n这份备份里有：")
+                    append("待办 ${preview.taskCount} · 订阅 ${preview.subCount} · 记账 ${preview.expenseCount}")
+                    append("\n家人 ${preview.memberCount} · 相册 ${preview.albumCount} · 档案 ${preview.archiveCount} · 备忘 ${preview.memoCount}")
+                    if (preview.fileCount > 0) append("\n内嵌照片/文件 ${preview.fileCount} 个")
+                    if (preview.totalCount == 0 && preview.fileCount == 0) {
+                        append("\n\n（这份备份里没有任何记录，恢复后本机将变成空数据）")
+                    }
+                } else {
+                    append("\n\n（这份备份的内容读不出来，无法预览，建议换一份）")
+                }
+            },
             confirmText = "覆盖恢复",
             onDismiss = { restorePending = null },
             onConfirm = {
@@ -2945,7 +3124,12 @@ private fun niceFileName(archiveId: String, stored: String): String {
 }
 
 @Composable
-fun VaultScreen(onOpenStates: () -> Unit) {
+fun VaultScreen(
+    onOpenStates: () -> Unit,
+    /** 从搜索点进来时要落在哪一组档案 */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     var query by remember { mutableStateOf("") }
@@ -3107,8 +3291,18 @@ fun VaultScreen(onOpenStates: () -> Unit) {
                 filtered.chunked(2).forEach { pair ->
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         pair.forEach { v ->
+                            // 搜索跳过来的那一组：滚进来 + 用一圈琥珀色描边亮一下
+                            // （卡片本身是不透明的 LbCard，在它背后垫底色是看不见的）
+                            val hl = lbItemHighlight(v.id, highlightId, onHighlightConsumed)
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .then(hl.modifier)
+                                    .background(lbHighlightBg(hl.active))
+                                    .padding(2.dp),
+                            ) {
                             LbCard(modifier = Modifier
-                                .weight(1f)
                                 .lbTapOrLong({ openId = v.id }, { deleteId = v.id }), contentPadding = 12.dp) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     IconBadge(LbIcons.folders, LbSurface2, LbInk2, size = 26.dp)
@@ -3176,6 +3370,7 @@ fun VaultScreen(onOpenStates: () -> Unit) {
                                         modifier = Modifier.padding(start = 4.dp),
                                     )
                                 }
+                            }
                             }
                         }
                         if (pair.size == 1) {

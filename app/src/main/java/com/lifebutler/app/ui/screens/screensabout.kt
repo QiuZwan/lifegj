@@ -134,7 +134,16 @@ fun AboutScreen(
     var updateErr by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
     var askInstallPerm by remember { mutableStateOf(false) }
+    // 这次是接着上次下的（还剩多少字节已存），0 表示从头下
+    var resumedBytes by remember { mutableStateOf(0L) }
     val downloading = progress != null
+
+    // 上次更新成功后留下的那份安装包（几十 MB）在这里清掉。
+    // 判据是「本机现在跑的版本已经不低于包名里那个版本」，所以刚下好还没装的那份不会被误删。
+    var cleanedPkgs by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        cleanedPkgs = withContext(Dispatchers.IO) { UpdateDownload.cleanInstalled(ctx) }
+    }
 
     fun doCheck() {
         if (checking) return
@@ -172,11 +181,18 @@ fun AboutScreen(
         if (job?.isActive == true) return
         updateErr = null
         readyFile = null
+        resumedBytes = 0L
         progress = 0
         hint = "正在下载 v${n.version}…"
         job = scope.launch {
             val r = withContext(Dispatchers.IO) {
-                UpdateDownload.download(ctx, url, n.version) { pct, _, _ -> progress = pct }
+                UpdateDownload.download(
+                    ctx, url, n.version,
+                    onProgress = { pct, _, _ -> progress = pct },
+                    // 上次没下完的话，这里会说一声「接着下」—— 直接从 40% 开始，
+                    // 不解释一句的话用户会以为进度条坏了
+                    onResume = { bytes -> resumedBytes = bytes },
+                )
             }
             progress = null
             when (r) {
@@ -317,6 +333,16 @@ fun AboutScreen(
                 sub = "当前 v$version" + if (hint.isNotBlank()) " · $hint" else "",
                 trailing = { CheckUpdatePill(checking || downloading, onCheck = { doCheck() }) },
                 onClick = { doCheck() },
+            )
+        }
+        // 清掉了什么就说一声：静默删东西，用户下次想找那份包时只会觉得"文件自己没了"
+        if (cleanedPkgs > 0) {
+            Text(
+                "顺手清掉了上次更新留下的 $cleanedPkgs 份安装包（几十 MB 一份，装在系统里之后就没用了）。",
+                fontSize = 11.sp,
+                color = LbInk3,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(top = 6.dp, start = 4.dp),
             )
         }
         /*
@@ -492,8 +518,18 @@ fun AboutScreen(
                                     .background(LbAccent),
                             )
                         }
+                        if (resumedBytes > 0) {
+                            Text(
+                                "接着上次继续下（已经有 ${resumedBytes / 1024 / 1024} MB 了），不用重新开始。",
+                                fontSize = 11.sp,
+                                color = LbAccent,
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
                         Text(
-                            "下载中可以关掉这个窗口，它在后台接着下，进度会显示在「版本信息」那一行。",
+                            "下载中可以关掉这个窗口，它在后台接着下，进度会显示在「版本信息」那一行。\n" +
+                                "中途断了也没关系：再点一次「更新」会从断的地方接着下。",
                             fontSize = 11.sp,
                             color = LbInk3,
                             lineHeight = 15.sp,
@@ -680,7 +716,8 @@ fun HelpScreen(onBack: () -> Unit) {
                 "订阅没扫到？→ 守护 → 一键扫描。扣费短信要授权「读取短信」，扣费通知要开「通知使用权」，" +
                     "两个都是只在本机解析、不上传。",
                 "管家说做了但其实没做？→ 看它最后有没有「没能写进本机」。有那句就是没做成，重说一次或换个说法。",
-                "天气不动？→ 要位置权限（只用来查天气）。关掉桌面天气后，App 完全不联网。",
+                "天气不动？→ 要位置权限（只用来查天气）。不想让它出网就关掉桌面天气，那不是不上网 —— " +
+                    "AI 管家是另一条独立的出网路径，要一起关（我的 → AI 智能管家 → 关闭）。",
                 "小机器人不见了？→ 多半是被拖到边上了，试着在屏幕右侧和底部找找。" +
                     "「清空全部数据」会把它复位回右侧。",
                 "换了手机数据没了？→ 本机存储，没有云端备份。这就是为什么建议定期导出。",

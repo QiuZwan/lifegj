@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lifebutler.app.R
@@ -58,6 +59,8 @@ import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
 import com.lifebutler.app.ui.components.SectionHeader
+import com.lifebutler.app.ui.components.lbHighlightBg
+import com.lifebutler.app.ui.components.lbItemHighlight
 import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
@@ -103,6 +106,77 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
         Column(Modifier.padding(top = 10.dp)) {
             Text("扣款守护", style = MaterialTheme.typography.labelSmall)
             Text("钱花在哪，一眼看清", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 4.dp))
+        }
+
+        // 扣费线索待确认。
+        // 通知命中关键词只说明「可能扣了一笔」，判不出「这是不是一笔订阅」—— 关键词里
+        // 「付款」「支出」这类词太宽。原来命中就直接写真实扣费流水 + 加进守护清单，
+        // 用户会看到守护页凭空多出一个订阅、账目多出一笔，只觉得"这东西在乱记我的账"。
+        // 现在先摆在这里，由他点「认得」才落库。
+        val claims = store.pendingClaims
+        if (claims.isNotEmpty()) {
+            LbCard(modifier = Modifier.padding(top = 12.dp), contentPadding = 14.dp) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconBadge(LbIcons.bell, LbAmberSoft, LbAmber, size = 32.dp)
+                        Column(
+                            Modifier
+                                .padding(start = 10.dp)
+                                .weight(1f),
+                        ) {
+                            Text(
+                                "收到 ${claims.size} 条扣费线索",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbInk,
+                            )
+                            Text(
+                                "是订阅吗？你认了我才记账、才放进守护清单。",
+                                fontSize = 11.5.sp,
+                                color = LbInk3,
+                                modifier = Modifier.padding(top = 1.dp),
+                            )
+                        }
+                    }
+                    claims.take(3).forEach { c ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    c.name,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = LbInk,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    (if (c.amount > 0) "¥" + store.fmtMoney(c.amount) + " · " else "") +
+                                        SubScanner.fmtDate(c.at) + " · 来自通知",
+                                    fontSize = 11.sp,
+                                    color = LbInk3,
+                                    modifier = Modifier.padding(top = 1.dp),
+                                )
+                            }
+                            ClaimBtn("认得", primary = true) { store.confirmClaim(c.id) }
+                            Spacer(Modifier.size(6.dp))
+                            ClaimBtn("不是我的", primary = false) { store.dismissClaim(c.id) }
+                        }
+                    }
+                    if (claims.size > 3) {
+                        Text(
+                            "还有 ${claims.size - 3} 条 —— 认掉前面几条就会露出来",
+                            fontSize = 11.sp,
+                            color = LbInk3,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+            }
         }
 
         Surface(
@@ -392,7 +466,13 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
 /* ── 03 订阅详情 ── */
 
 @Composable
-fun SubscriptionDetailScreen(subId: String?, onBack: () -> Unit) {
+fun SubscriptionDetailScreen(
+    subId: String?,
+    onBack: () -> Unit,
+    /** 从搜索点进来的话：订阅命中就是本订阅的 id，扣费流水命中就是**那一笔**的 id */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     val sub = store.subs.firstOrNull { it.id == subId }
@@ -406,6 +486,12 @@ fun SubscriptionDetailScreen(subId: String?, onBack: () -> Unit) {
     var showAddCharge by remember { mutableStateOf(false) }
     var chargeDeleteId by remember { mutableStateOf<String?>(null) }
     var showTrial by remember { mutableStateOf(false) }
+
+    // 订阅命中时 highlightId 就是**本订阅自己**的 id：整页就是它，没有「某一行」要滚，
+    // 直接算定位完成 —— 不然这个待定位状态会一直挂着，下次再进来还会亮一下。
+    LaunchedEffect(highlightId) {
+        if (highlightId != null && highlightId == sub.id) onHighlightConsumed()
+    }
 
     val hasDate = sub.nextDate.isNotBlank()
     val dayOfMonth = store.parseDate(sub.nextDate)?.dayOfMonth
@@ -608,10 +694,14 @@ fun SubscriptionDetailScreen(subId: String?, onBack: () -> Unit) {
                 )
             } else {
                 subCharges.forEach { c ->
+                    // 搜索点的是「这一笔扣费」的话，把这一行滚进来并亮一下
+                    val hl = lbItemHighlight(c.id, highlightId, onHighlightConsumed)
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
+                            .then(hl.modifier)
+                            .background(lbHighlightBg(hl.active))
                             .lbPressable(onClick = { }, onLongClick = { chargeDeleteId = c.id })
                             .padding(vertical = 9.dp, horizontal = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -837,7 +927,12 @@ private fun MiniGhost(text: String, onClick: () -> Unit) {
 /* ── 04 义务时间线 ── */
 
 @Composable
-fun ObligationsScreen(onBack: () -> Unit) {
+fun ObligationsScreen(
+    onBack: () -> Unit,
+    /** 从搜索点进来时要落在哪一条 */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     var showAdd by remember { mutableStateOf(false) }
@@ -917,10 +1012,14 @@ fun ObligationsScreen(onBack: () -> Unit) {
             } else {
                 list.forEachIndexed { i, d ->
                     val days = store.daysUntil(d.date)
+                    // 搜索跳过来的那一条：滚进来 + 亮一下
+                    val hl = lbItemHighlight(d.id, highlightId, onHighlightConsumed)
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
+                            .then(hl.modifier)
+                            .background(lbHighlightBg(hl.active))
                             .lbPressable(
                                 onClick = { store.toggleObligation(d.id) },
                                 onLongClick = { menuId = d.id },
@@ -1091,6 +1190,25 @@ fun ObligationsScreen(onBack: () -> Unit) {
                 store.removeObligation(id)
                 deleteId = null
             },
+        )
+    }
+}
+
+/** 待认领线索上的小按钮：认得 / 不是我的 */
+@Composable
+private fun ClaimBtn(text: String, primary: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (primary) LbAccentSoft else LbSurface2)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (primary) LbAccent else LbInk2,
         )
     }
 }

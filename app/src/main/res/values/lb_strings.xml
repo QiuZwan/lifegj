@@ -7,6 +7,7 @@
 <resources>
     <string name="lb_widget_name">生活管家 · 今日留意</string>
     <string name="lb_widget_desc">在桌面上看「今天有什么要留意」：最近的扣费、到期的事，以及待办条数</string>
+    <string name="lb_widget_action">记一笔</string>
 
     <string name="lb_sc_ledger_short">记一笔</string>
     <string name="lb_sc_ledger_long">打开记账本，记一笔</string>

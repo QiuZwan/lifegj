@@ -50,9 +50,34 @@ class LbWidgetProvider : AppWidgetProvider() {
             }
 
             // 没有任何要留意的内容时，说清「现在没事」——而不是留一片空白让人以为组件坏了
-            val title = digest?.first ?: "现在没有要留意的事"
-            val body = digest?.second
+            val fullTitle = digest?.first ?: "现在没有要留意的事"
+            val fullBody = digest?.second
                 ?: "待办、订阅、到期事务都会在这里出现。所有内容只在本机生成。"
+
+            // 显示档位：默认「跟随应用锁」——
+            // 用户刚在 App 里开锁，桌面却把「XX会员明天扣费 ¥25」明写在那儿，任何人拿起手机
+            // （还没解锁）都能看到，锁等于白开。两个功能不能互相拆台。
+            val level = try {
+                ButlerStore.get(context).widgetDetailLevel()
+            } catch (e: Exception) {
+                0
+            }
+            val title: String
+            val body: String
+            when (level) {
+                1 -> {
+                    title = fullTitle
+                    body = "正文已隐藏。点开查看，或到「我的 → 桌面小组件」改这个设置。"
+                }
+                2 -> {
+                    title = "生活管家"
+                    body = "桌面内容已隐藏。打开应用查看今天要留意什么。"
+                }
+                else -> {
+                    title = fullTitle
+                    body = fullBody
+                }
+            }
 
             views.setTextViewText(R.id.lb_widget_title, title)
             views.setTextViewText(R.id.lb_widget_body, body)
@@ -65,21 +90,24 @@ class LbWidgetProvider : AppWidgetProvider() {
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             val pi = PendingIntent.getActivity(context, WIDGET_CLICK_CODE, intent, flags)
             views.setOnClickPendingIntent(R.id.lb_widget_root, pi)
+            // 正文与整块**同一个去处**（看详情）。
+            // 原来把正文映射成「去记账本」，很反直觉 —— 点正文通常想要"看这条到底怎么回事"。
+            views.setOnClickPendingIntent(R.id.lb_widget_body, pi)
 
-            // 记一笔的口径与「今日」页那个按钮一致：点进去直接落在记账本
+            // 「记一笔」单独给一个小按钮，不再和正文抢位置
             val ledger = Intent(context, MainActivity::class.java)
                 .setAction(Intent.ACTION_MAIN)
                 .putExtra("open_tab", "ledger")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             views.setOnClickPendingIntent(
-                R.id.lb_widget_body,
-                PendingIntent.getActivity(context, WIDGET_BODY_CLICK_CODE, ledger, flags),
+                R.id.lb_widget_action,
+                PendingIntent.getActivity(context, WIDGET_ACTION_CLICK_CODE, ledger, flags),
             )
             return views
         }
 
         /** 两个点击目标的 requestCode 必须不同，否则后一个会覆盖前一个的 PendingIntent */
         private const val WIDGET_CLICK_CODE = 7301
-        private const val WIDGET_BODY_CLICK_CODE = 7302
+        private const val WIDGET_ACTION_CLICK_CODE = 7302
     }
 }

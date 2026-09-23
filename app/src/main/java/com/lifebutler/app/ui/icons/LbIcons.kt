@@ -60,6 +60,8 @@ object LbIcons {
     val inbox: ImageVector by lazy { lb("inbox", "M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12 M4 13h3l3 3h4l3 -3h3") }
     val car: ImageVector by lazy { lb("car", "M5 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0 M15 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0 M5 17h-2v-6l2 -5h9l4 5h1a2 2 0 0 1 2 2v4h-2m-4 0h-6m-6 -6h15m-6 0v-5") }
     val phoneCall: ImageVector by lazy { lb("phoneCall", "M5 4h4l2 5l-2.5 1.5a11 11 0 0 0 5 5l1.5 -2.5l5 2v4a2 2 0 0 1 -2 2a16 16 0 0 1 -15 -15a2 2 0 0 1 2 -2 M15 7a2 2 0 0 1 2 2 M15 3a6 6 0 0 1 6 6") }
+    /** 手机 / 桌面小组件用（Tabler: device-mobile） */
+    val deviceMobile: ImageVector by lazy { lb("deviceMobile", "M6 5a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-14 M11 17h2") }
     val wallet: ImageVector by lazy { lb("wallet", "M17 8v-3a1 1 0 0 0 -1 -1h-10a2 2 0 0 0 0 4h12a1 1 0 0 1 1 1v3m0 4v3a1 1 0 0 1 -1 1h-12a2 2 0 0 1 -2 -2v-12 M20 12v4h-4a2 2 0 0 1 0 -4h4") }
     val receipt: ImageVector by lazy { lb("receipt", "M5 21v-16a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v16l-3 -2l-2 2l-2 -2l-2 2l-2 -2l-3 2m4 -14h6m-6 4h6m-2 4h2") }
     val clock: ImageVector by lazy { lb("clock", "M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0 M12 7v5l3 3") }

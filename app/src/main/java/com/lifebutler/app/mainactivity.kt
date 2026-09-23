@@ -230,6 +230,11 @@ fun LbApp(
     var tab by rememberSaveable { mutableStateOf(if (overlayStart != null) "今日" else (initialTab ?: "今日")) }
     var overlay by rememberSaveable { mutableStateOf(overlayStart) }
     var detailSubId by rememberSaveable { mutableStateOf<String?>(null) }
+    // 搜索点了一条结果之后「要落在哪一条」。
+    // 这里连**目标页**一起记（而不是只记一个 id）：只记 id 的话，「先搜一条待办、再从底栏
+    // 翻去记账页」也会亮一下 —— 那条待办的 id 当然不在记账页里，用户看到的是「页面闪了一下」。
+    // 页面自己认领（拿到的 id 与自己的 key 匹配才用），亮完回调清空。
+    var highlightAt by remember { mutableStateOf<Pair<String, String>?>(null) }
     // 待发送的一句(深链带进来的),发完就清掉;再由新的深链带下一句进来
     var pendingAsk by remember { mutableStateOf(askRequest.value) }
     var showGuide by remember { mutableStateOf(false) }
@@ -300,28 +305,54 @@ fun LbApp(
                     modifier = Modifier.fillMaxSize(),
                 ) { key ->
                     when (key) {
-                        "detail" -> SubscriptionDetailScreen(subId = detailSubId, onBack = { overlay = null })
+                        "detail" -> SubscriptionDetailScreen(
+                            subId = detailSubId,
+                            onBack = { overlay = null },
+                            highlightId = highlightAt?.takeIf { it.first == "detail" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
+                        )
                         "scan" -> ScanScreen(onBack = { overlay = null })
-                        "duties" -> ObligationsScreen(onBack = { overlay = null })
-                        "ledger" -> ExpenseScreen(onBack = { overlay = null })
-                        "memo" -> MemoScreen(onBack = { overlay = null })
+                        "duties" -> ObligationsScreen(
+                            onBack = { overlay = null },
+                            highlightId = highlightAt?.takeIf { it.first == "duties" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
+                        )
+                        "ledger" -> ExpenseScreen(
+                            onBack = { overlay = null },
+                            highlightId = highlightAt?.takeIf { it.first == "ledger" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
+                        )
+                        "memo" -> MemoScreen(
+                            onBack = { overlay = null },
+                            highlightId = highlightAt?.takeIf { it.first == "memo" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
+                        )
                         "search" -> SearchScreen(
                             onBack = { overlay = null },
                             // 点结果就真的翻过去：订阅带 subId 的要落到「哪一笔」的详情，
                             // 光给一个页面名会跳到列表顶部，等于没跳
-                            onOpen = { route, subId ->
+                            onOpen = { route, subId, hl ->
                                 if (subId != null) {
                                     detailSubId = subId
                                     overlay = "detail"
+                                    // 订阅命中时 hl 就是它自己的 id；扣费流水命中时 hl 是**那一笔**的 id
+                                    // （subId 指的是它归属的订阅），详情页靠这个把流水那一行滚出来。
+                                    highlightAt = "detail" to (hl ?: subId)
                                 } else {
                                     if (route == "chat") tab = "智能管家" else openRoute(route)
                                     if (route == "chat") overlay = null
+                                    // 落定之后再写定位，免得被 openRoute 里可能的重置盖掉
+                                    highlightAt = hl?.let { pageKeyOf(route) to it }
                                 }
                             },
                         )
                         "report" -> MonthReportScreen(onBack = { overlay = null })
                         "states" -> StatesScreen(onBack = { overlay = null }, onOpenScan = { overlay = "scan" })
-                        "vault" -> VaultScreen(onOpenStates = { overlay = "states" })
+                        "vault" -> VaultScreen(
+                            onOpenStates = { overlay = "states" },
+                            highlightId = highlightAt?.takeIf { it.first == "vault" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
+                        )
                         // 「关于管家」及其子页(帮助 / 服务协议 / 隐私协议 / 意见反馈)。
                         // 全走 overlay,底栏会自然收起,和别的浮层页一个待遇。
                         "about" -> AboutScreen(
@@ -341,6 +372,9 @@ fun LbApp(
                             onOpenLedger = { overlay = "ledger" },
                             onOpenReport = { overlay = "report" },
                             onOpenSearch = { overlay = "search" },
+                            onOpenFamily = { tab = "家庭" },
+                            highlightId = highlightAt?.takeIf { it.first == "今日" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
                         )
                         "守护" -> GuardScreen(
                             onOpenDetail = { id ->
@@ -355,8 +389,13 @@ fun LbApp(
                             onOpen = { route -> openRoute(route) },
                             autoAsk = pendingAsk,
                             onAskConsumed = { pendingAsk = null },
+                            highlightId = highlightAt?.takeIf { it.first == "智能管家" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
                         )
-                        "家庭" -> FamilyScreen()
+                        "家庭" -> FamilyScreen(
+                            highlightId = highlightAt?.takeIf { it.first == "家庭" }?.second,
+                            onHighlightConsumed = { highlightAt = null },
+                        )
                         "我的" -> MineScreen(
                             onOpenVault = { overlay = "vault" },
                             onOpenFamily = { tab = "家庭" },
@@ -450,6 +489,22 @@ private const val UNDO_WINDOW_MS = 5_000L
 private val OVERLAY_ROUTES = setOf(
     "memo", "ledger", "report", "vault", "duties", "scan", "states", "about", "search", "detail",
 )
+
+/**
+ * 搜索结果里的 route → 它在 `when(key)` 里对应的那个 key。
+ *
+ * 为什么要绕一层：搜索页给的 route 是「四个底部 tab + 一串浮层」两种东西混在一起的
+ * （`guard` 是底栏的「守护」，`ledger` 是浮层的记账本），而定位状态是按 `when(key)` 的 key 存的。
+ * 这份映射只有这里一处，加一页只改这里。
+ */
+private fun pageKeyOf(route: String): String = when (route) {
+    "today" -> "今日"
+    "guard" -> "守护"
+    "family" -> "家庭"
+    "chat" -> "智能管家"
+    "mine" -> "我的"
+    else -> route
+}
 
 /**
  * 首启三步引导。

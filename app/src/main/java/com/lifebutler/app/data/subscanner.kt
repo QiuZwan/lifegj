@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import java.text.SimpleDateFormat
-import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
 
@@ -102,7 +101,24 @@ object SubScanner {
     private val WEAK = Regex("(扣款|扣费|续费成功)")
     private val EXCLUDE = Regex("(退款|退货|入账|转入|转账|工资|红包|验证码|登录)")
 
-    private val STRONG_N = Regex("(自动续费|自动扣款|免密支付|代扣|已扣款|扣款|支出|付款|续费)")
+    /**
+     * 通知里的**强**扣费词：本身就足以判定"这是一笔自动扣款"。
+     * 「支出」「付款」原来被放在这里，但它们的覆盖面太宽 —— 微信里一句
+     * "向某某付款 500 元"（不带"转账"二字）就能命中，于是守护清单凭空多出一个订阅。
+     */
+    private val STRONG_N = Regex("(自动续费|自动扣款|连续包月|免密支付|代扣|已扣款|扣款成功|续费成功)")
+
+    /** 通知里的**弱**信号：单独出现不算数，必须同时有商户标记（商户/收款方/商家/【】）才认 */
+    private val WEAK_N = Regex("(扣款|扣费|支出|付款|续费)")
+
+    /** 文本里有没有明确的"商户"标记 —— 弱信号要不要采信，看它 */
+    private val MERCHANT_MARK = Regex("(商户|收款方|商家|【)")
+
+    /** 手动补包名时的合法性：至少一个点、不含空格 */
+    fun looksLikePackage(pkg: String): Boolean {
+        val p = pkg.trim()
+        return p.isNotEmpty() && p.contains('.') && !p.contains(' ')
+    }
 
     /* ── 真实的下次扣费日解析 ── */
 
@@ -193,8 +209,11 @@ object SubScanner {
     private const val NOTIF_PREFS = "lifebutler_scan"
     private const val NOTIF_KEY = "notif_findings"
 
-    /** 是否已开启「通知使用权」(设置 → 通知 → 通知使用权) */
-    fun notificationsEnabled(context: Context): Boolean {
+    /**
+     * 系统设置里那条「通知使用权」授权还在不在。
+     * ⚠️ 它**只代表授权还在**，不代表服务真的在收 —— 见 [notificationsEnabled]。
+     */
+    fun notificationAccessGranted(context: Context): Boolean {
         return try {
             val flat = android.provider.Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: return false
             flat.contains(context.packageName)
@@ -203,9 +222,27 @@ object SubScanner {
         }
     }
 
+    /** 监听服务当前的连接状态：null = 未知（进程刚起），true = 连着，false = 被系统断开 */
+    fun notificationListenerConnected(): Boolean? = NotifListenerService.connected
+
+    /**
+     * 界面判断"到底在不在收扣费通知"：**授权在** 且 **服务没被断开**，两个条件都要满足。
+     *
+     * 为什么不能只看授权：系统有时会把通知监听服务断开（省电策略、异常重启），
+     * 而设置里那条授权**仍然在**。原来只读授权 → App 内显示"已开启"，用户以为在收，
+     * 实际一条都没进来；他会以为是"扫描不准"，而不是"根本没在工作"。
+     */
+    fun notificationsEnabled(context: Context): Boolean =
+        notificationAccessGranted(context) && notificationListenerConnected() != false
+
     private fun parseNotification(body: String, ts: Long): Candidate? {
         if (EXCLUDE.containsMatchIn(body)) return null
-        if (!STRONG_N.containsMatchIn(body)) return null
+        val strong = STRONG_N.containsMatchIn(body)
+        val weak = WEAK_N.containsMatchIn(body)
+        if (!strong && !weak) return null
+        // 弱信号（支出 / 付款 / 续费 …）单独出现不采信：必须同时有明确的商户标记，
+        // 否则"向某某付款 500 元"这类无关通知会被当成一笔订阅。
+        if (!strong && !MERCHANT_MARK.containsMatchIn(body)) return null
         val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
             ?: Regex("[¥￥]\\s*(\\d+(?:\\.\\d{1,2})?)").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
             ?: return null
@@ -241,15 +278,21 @@ object SubScanner {
             prefs.edit().putString(NOTIF_KEY, cut.toString()).apply()
         } catch (e: Exception) {
         }
-        // 实时同步:写真实扣费流水,并自动加入守护清单(去重;移除过的不再加回)
+        // 不再直接落库：先记成一条「待认领线索」。
+        // 命中的通知只说明"可能发生了扣费"，判不出"这是不是一笔订阅" —— 关键词里
+        // 「付款」「支出」这类词太宽，让它们替用户认定，账目和守护清单很快就会被污染。
+        // 用户在守护页点「认得」之后才写真实扣费 / 加进守护清单（见 ButlerStore.confirmClaim）。
         try {
             val store = ButlerStore.get(context)
             val amt = cand.amount ?: 0.0
-            if (amt > 0) store.addCharge(cand.name, amt, LocalDate.now().toString(), "通知")
-            if (store.subs.none { it.name == cand.name } && !store.isDismissed(cand.name)) {
-                store.addScannedSub(cand.name, amt, "通知", cand.nextDate)
+            val added = store.addPendingClaim(cand.name, amt, cand.dateMs, cand.nextDate, pkg, cand.snippet)
+            if (added) {
                 val amtText = if (amt > 0) "¥" + store.fmtMoney(amt) + " " else ""
-                store.addChat(false, "刚收到一条「${cand.name}」的扣费通知（${amtText}），已自动放进守护清单；不是你的订阅就长按删掉。")
+                store.addChat(
+                    false,
+                    "刚收到一条「${cand.name}」的扣费通知（${amtText}）。我先放进「待确认」了 —— " +
+                        "你在守护页认一下是不是你的订阅，认了我才记账；不是就点「不是我的」。",
+                )
             }
         } catch (e: Exception) {
         }

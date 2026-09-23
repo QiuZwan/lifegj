@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「记一笔」小按钮的底：比小组件底色稍亮的强调色块，浅色文字在其上读得清。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#2F6B4A" />
+    <corners android:radius="999dp" />
+</shape>

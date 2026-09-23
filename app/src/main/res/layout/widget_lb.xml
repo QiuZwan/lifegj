@@ -44,4 +44,23 @@
         android:textColor="#AEB5AC"
         android:textSize="12sp" />
 
+    <!--
+      「记一笔」的独立小入口。
+      原来把「正文区域」直接映射成「去记账本」很反直觉 —— 点正文通常想要"看详情"。
+      现在正文与整块一致进对应页，记账单独给这一行。
+    -->
+    <TextView
+        android:id="@+id/lb_widget_action"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:background="@drawable/widget_lb_action_bg"
+        android:paddingLeft="10dp"
+        android:paddingTop="4dp"
+        android:paddingRight="10dp"
+        android:paddingBottom="4dp"
+        android:text="@string/lb_widget_action"
+        android:textColor="#EFEDE6"
+        android:textSize="11sp" />
+
 </LinearLayout>

@@ -52,6 +52,7 @@ import com.lifebutler.app.ui.theme.LbInk2
 import com.lifebutler.app.ui.theme.LbInk3
 import com.lifebutler.app.ui.theme.LbLine
 import com.lifebutler.app.ui.theme.LbSurface2
+import kotlinx.coroutines.delay
 
 /** 结果分组的先后顺序：常查的排前面。表里没有的类型（以后新加的）自动排到最后。 */
 private val LB_SEARCH_ORDER = listOf(
@@ -60,18 +61,44 @@ private val LB_SEARCH_ORDER = listOf(
 )
 
 /**
+ * 敲字停顿多久才算「这一句写完了」。
+ *
+ * 180ms 是两头的折中：往短了调，中文输入法的候选词每上屏一次都会触发一轮全表扫；
+ * 往长了调，用户会觉得「我都停手了它还没反应」。
+ */
+private const val LB_SEARCH_DEBOUNCE_MS = 180L
+
+/**
  * 跨模块搜索页（overlay key = "search"）。
  *
  * 空查询**什么都不显示**（只给提示），不是把全部记录铺出来 ——
  * 一进来就是几百条，比空白更让人不知道该干嘛。
+ *
+ * [onOpen] 的第三个参数是「要定位到的那一条的 id」：订阅走 [subId] 落详情页，
+ * 其余类型各自翻到对应模块并把那一条滚进可见区、短暂高亮（见 `lbItemHighlight`）。
  */
 @Composable
-fun SearchScreen(onBack: () -> Unit, onOpen: (route: String, subId: String?) -> Unit) {
+fun SearchScreen(
+    onBack: () -> Unit,
+    onOpen: (route: String, subId: String?, highlightId: String?) -> Unit,
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     val kb = LocalSoftwareKeyboardController.current
     var q by remember { mutableStateOf("") }
-    val hits = store.searchAll(q)
+    // 防抖：真正拿去搜的是 settled（滞后于输入框一点点），q 只负责显示。
+    var settled by remember { mutableStateOf("") }
+    LaunchedEffect(q) {
+        if (q.isBlank()) {
+            settled = ""
+            return@LaunchedEffect
+        }
+        delay(LB_SEARCH_DEBOUNCE_MS)
+        settled = q
+    }
+    // 缓存键 = 关键字 + 「本机数据动过没有」。少了后面那个，边搜边改会给出过期结果。
+    val hits = remember(settled, store.dataStamp()) { store.searchAll(settled) }
+    val pending = q != settled
     val grouped = hits.groupBy { it.kind }
     val kinds = LB_SEARCH_ORDER.filter { grouped.containsKey(it) } +
         grouped.keys.filter { it !in LB_SEARCH_ORDER }.sorted()
@@ -151,16 +178,24 @@ fun SearchScreen(onBack: () -> Unit, onOpen: (route: String, subId: String?) -> 
                     )
                 }
             }
+            hits.isEmpty() && pending -> {
+                // 刚敲完、防抖还没到点：这时候说「没找到」是在撒谎（搜的还是上一个词），
+                // 所以单给一行「正在找」。
+                Spacer(Modifier.height(14.dp))
+                LbCard(contentPadding = 14.dp) {
+                    Text("正在找…", fontSize = 12.sp, color = LbInk3)
+                }
+            }
             hits.isEmpty() -> {
                 Spacer(Modifier.height(14.dp))
                 LbCard(contentPadding = 14.dp) {
-                    Text("没有找到「$q」。换个词试试，或者确认一下是不是还没记过。", fontSize = 12.sp, color = LbInk3)
+                    Text("没有找到「$settled」。换个词试试，或者确认一下是不是还没记过。", fontSize = 12.sp, color = LbInk3)
                 }
             }
             else -> {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "共 ${hits.size} 条，分 ${kinds.size} 类",
+                    if (pending) "正在找…" else "共 ${hits.size} 条，分 ${kinds.size} 类",
                     fontSize = 11.5.sp,
                     color = LbInk3,
                     modifier = Modifier.padding(top = 10.dp, start = 4.dp, bottom = 2.dp),
@@ -198,7 +233,9 @@ fun SearchScreen(onBack: () -> Unit, onOpen: (route: String, subId: String?) -> 
                                     .clip(RoundedCornerShape(12.dp))
                                     .lbPressable(onClick = {
                                         kb?.hide()
-                                        onOpen(h.route, h.subId)
+                                        // 前两个参数决定「翻到哪一页」，第三个决定「到了之后落在哪一条」。
+                                        // 订阅是唯一有详情页的类型，它的 subId 与 id 是同一个值。
+                                        onOpen(h.route, h.subId, h.id)
                                     })
                                     .padding(horizontal = 9.dp, vertical = 9.dp),
                                 verticalAlignment = Alignment.CenterVertically,

@@ -24,14 +24,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,13 +51,16 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.max
 import com.lifebutler.app.R
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
@@ -72,6 +79,7 @@ import com.lifebutler.app.ui.theme.LbRust
 import com.lifebutler.app.ui.theme.LbRustSoft
 import com.lifebutler.app.ui.theme.LbSurface
 import com.lifebutler.app.ui.theme.LbSurface2
+import kotlinx.coroutines.delay
 
 @Composable
 fun LbCard(
@@ -437,6 +445,20 @@ private fun inkTone(): ColorFilter {
     )
 }
 
+/**
+ * 底栏标签的字号。
+ *
+ * 底栏文字是「导航 chrome」，不是正文 —— 它得在 5 等分的窄格里**始终保持一行**。
+ * 系统字号开到 2.0×（无障碍放大）时，11sp 的「智能管家」会折成两行：那一格的图标被顶高，
+ * 整条底栏高低不齐，反而更难读。所以这里把底栏标签的放大倍率封顶在 1.4×
+ * （渲染出来仍大于默认的 11sp，只是不再线性放大）；其余文字照常跟随系统字号。
+ */
+@Composable
+private fun lbNavLabelSize(): TextUnit {
+    val fontScale = LocalDensity.current.fontScale
+    return (11f / max(1f, fontScale / 1.4f)).sp
+}
+
 @Composable
 fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
     val items = listOf(
@@ -484,8 +506,12 @@ fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
                     }
                     Text(
                         item.label,
-                        fontSize = 11.sp,
+                        fontSize = lbNavLabelSize(),
                         color = tint,
+                        // 必须保持一行：系统字号开到 2.0× 时「智能管家」会折成两行，
+                        // 把这一格的图标顶上去，整条底栏就高低不齐了。
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(top = 3.dp),
                     )
                 }
@@ -551,3 +577,64 @@ fun LbPlusButton(onClick: () -> Unit, contentDescription: String = "添加") {
         Icon(LbIcons.plus, contentDescription = contentDescription, tint = LbInk2, modifier = Modifier.size(15.dp))
     }
 }
+
+/* ---------------------------------------------------------------------------
+ * 「搜索跳过来的那一条」的落地工具
+ *
+ * 场景：跨模块搜索点了一条「3 月的水电费」，翻到记账页 —— 如果只是把页面切过去，
+ * 用户看到的是一屏和一小时前一样的列表，还得自己从几十条里找，等于没跳。
+ *
+ * 做法：进来先滚到那一条、亮一会儿、然后自己退掉。这里必须用 bringIntoView，
+ * 因为本项目的列表页几乎全是 `Column + verticalScroll`（不是 LazyColumn，没有 index 可用），
+ * 只有 bringIntoView 能不去猜每一项的高度。
+ * ------------------------------------------------------------------------ */
+
+/** 等列表量完一遍再滚：这一帧还没测量的话，bringIntoView 会抛。 */
+private const val LB_HIGHLIGHT_SETTLE_MS = 140L
+
+/** 高亮停留多久。太短会「一闪而过」看着像闪屏；太长又像这一条被永久选中了。 */
+private const val LB_HIGHLIGHT_HOLD_MS = 2400L
+
+/** 列表项从 [lbItemHighlight] 拿到的东西。 */
+class LbHighlightState internal constructor(
+    /** 这一条是不是刚被搜到的目标 —— 用来决定要不要底色 */
+    val active: Boolean,
+    /** 挂到这一条的 Modifier 上（负责把它滚进可见区） */
+    val modifier: Modifier,
+)
+
+/**
+ * 列表项里调用一次，拿到「要不要高亮」和「要高亮就挂这个 Modifier」。
+ *
+ * [highlightId] 传页面级那个待定位的 id；[onConsumed] 在高亮结束时回调，
+ * 外层把状态置空 —— 否则下次从别处再进这一页，它还会亮一次，用户会以为是刚加的。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun lbItemHighlight(id: String, highlightId: String?, onConsumed: () -> Unit): LbHighlightState {
+    val active = highlightId != null && id.isNotEmpty() && id == highlightId
+    val requester = remember { BringIntoViewRequester() }
+    val consumedNow = rememberUpdatedState(onConsumed)
+    LaunchedEffect(active, highlightId) {
+        if (!active) return@LaunchedEffect
+        delay(LB_HIGHLIGHT_SETTLE_MS)
+        try {
+            requester.bringIntoView()
+        } catch (e: Exception) {
+            // 这一条刚好不在组合里（比如被筛掉了），滚不过去就算了，底色照样亮 ——
+            // 不能因为滚不动就把整页搞崩。
+        }
+        delay(LB_HIGHLIGHT_HOLD_MS)
+        consumedNow.value()
+    }
+    return LbHighlightState(active, Modifier.bringIntoViewRequester(requester))
+}
+
+/** 高亮底色（淡入淡出，别硬切）。[active] 为假时是透明，可直接叠在任何底色上。 */
+@Composable
+fun lbHighlightBg(active: Boolean): Color =
+    animateColorAsState(
+        targetValue = if (active) LbAmberSoft else Color.Transparent,
+        animationSpec = tween(260),
+        label = "hlBg",
+    ).value

@@ -59,6 +59,8 @@ import com.lifebutler.app.ui.components.LbGhostButton
 import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
+import com.lifebutler.app.ui.components.LbHighlightState
+import com.lifebutler.app.ui.components.lbItemHighlight
 import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
@@ -133,7 +135,12 @@ private fun lbMillisAt(d: LocalDate, hour: Int, minute: Int): Long =
     d.atTime(hour, minute).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
 @Composable
-fun MemoScreen(onBack: () -> Unit) {
+fun MemoScreen(
+    onBack: () -> Unit,
+    /** 从搜索点进来时要落在哪一条 */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
 
@@ -307,6 +314,7 @@ fun MemoScreen(onBack: () -> Unit) {
                         onOpen = { editId = m.id; editing = true },
                         onLong = { menuId = m.id },
                         onTogglePin = { store.toggleMemoPin(m.id) },
+                        highlight = lbItemHighlight(m.id, highlightId, onHighlightConsumed),
                     )
                 }
             }
@@ -395,6 +403,8 @@ private fun MemoCard(
     onOpen: () -> Unit,
     onLong: () -> Unit,
     onTogglePin: () -> Unit,
+    /** 从搜索跳过来的话：这一条需要被滚进可见区并短暂亮一下 */
+    highlight: LbHighlightState? = null,
 ) {
     val now = System.currentTimeMillis()
     val reminded = memo.remindAt > 0L && memo.remindAt <= now
@@ -403,9 +413,11 @@ private fun MemoCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
+            .then(highlight?.modifier ?: Modifier)
             .lbPressable(onClick = onOpen, onLongClick = onLong),
         shape = RoundedCornerShape(18.dp),
-        color = LbSurface,
+        // 高亮直接把卡片底色换掉：卡片是不透明的 LbSurface，用外层的 Box 垫底色是看不见的
+        color = if (highlight?.active == true) LbAmberSoft else LbSurface,
         border = BorderStroke(1.dp, LbLine),
         shadowElevation = 1.dp,
     ) {

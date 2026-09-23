@@ -51,7 +51,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.lifebutler.app.R
 import com.lifebutler.app.data.ButlerStore
-import com.lifebutler.app.data.ButlerSub
+import com.lifebutler.app.data.Notifier
 import com.lifebutler.app.data.Weather
 import com.lifebutler.app.ui.components.ChipTone
 import com.lifebutler.app.ui.components.CustodyCard
@@ -68,6 +68,8 @@ import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
 import com.lifebutler.app.ui.components.SectionHeader
 import com.lifebutler.app.ui.components.TaskRow
+import com.lifebutler.app.ui.components.lbHighlightBg
+import com.lifebutler.app.ui.components.lbItemHighlight
 import com.lifebutler.app.ui.components.lbPressable
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
@@ -109,6 +111,10 @@ fun TodayScreen(
     onOpenLedger: () -> Unit,
     onOpenReport: () -> Unit,
     onOpenSearch: () -> Unit = {},
+    onOpenFamily: () -> Unit = {},
+    /** 从搜索跳过来的话，这是「要落在哪一条待办」的 id */
+    highlightId: String? = null,
+    onHighlightConsumed: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
@@ -172,16 +178,12 @@ fun TodayScreen(
 
     val doneCount = store.tasks.count { it.done }
     val allDone = store.tasks.isNotEmpty() && doneCount == store.tasks.size
-    // 有明确扣费日的取最近一笔;都没有日期时,退而提醒第一笔「扣费日待补全」的订阅
-    val nextSub: Pair<ButlerSub, Long?>? = store.subs.filter { !it.closing }
-        .mapNotNull { s -> store.daysUntil(s.nextDate)?.let { s to it } }
-        .minByOrNull { it.second }
-        ?: store.subs.firstOrNull { !it.closing && store.daysUntil(it.nextDate) == null }?.let { it to null }
-    val nextOb = store.obligations.filter { !it.done }
-        .mapNotNull { o -> store.daysUntil(o.date)?.let { o to it } }
-        .minByOrNull { it.second }
+    // 「今天要留意」全部来自 Notifier.watchList —— 与桌面小组件、每日简报**同一份数据源**。
+    // 原来首页只算「最近一笔订阅 + 最近一件义务」两条，于是桌面写「今天有 5 件要留意」、
+    // 点开首页只有 2 条，剩下那 3 条里可能正好有他真正想看的（妈妈的复诊、纪念日、试用到期）。
+    val watches = Notifier.watchList(ctx)
+    val watchCount = watches.size
     val pendingObligations = store.obligations.count { !it.done }
-    val watchCount = (if (nextSub != null) 1 else 0) + (if (nextOb != null) 1 else 0)
 
     val wInfo = weatherInfo
     val chipText: String
@@ -208,6 +210,8 @@ fun TodayScreen(
     val expenseCats = store.expenseCategoryTotals(expenseTodayList)
 
     val monthExpense = store.spendOf(store.expensesInMonth(today.year, today.monthValue))
+    // 预算：null = 用户没设过。没设就什么都不提（口径同 budgetStatus）
+    val budgetOver = store.budgetStatus()
     val monthSub = store.subs.filter { !it.closing }.sumOf { it.amount }
 
     Column(
@@ -294,13 +298,23 @@ fun TodayScreen(
                 )
             } else {
                 store.tasks.forEach { t ->
-                    TaskRow(
-                        checked = t.done,
-                        onToggle = { store.toggleTask(t.id) },
-                        title = t.text,
-                        sub = t.meta.ifEmpty { null },
-                        onLongClick = { taskMenuId = t.id },
-                    )
+                    // 搜索跳过来的那一条：滚进来 + 亮一下（见 lbItemHighlight）
+                    val hl = lbItemHighlight(t.id, highlightId, onHighlightConsumed)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .then(hl.modifier)
+                            .background(lbHighlightBg(hl.active)),
+                    ) {
+                        TaskRow(
+                            checked = t.done,
+                            onToggle = { store.toggleTask(t.id) },
+                            title = t.text,
+                            sub = t.meta.ifEmpty { null },
+                            onLongClick = { taskMenuId = t.id },
+                        )
+                    }
                 }
             }
         }
@@ -313,6 +327,7 @@ fun TodayScreen(
             }
         }
         LbCard(contentPadding = 12.dp) {
+            Column {
             if (expenseTodayCount == 0) {
                 Text(
                     "今天还没记账。午饭、打车随手一记，月底就知道钱花哪了。",
@@ -346,59 +361,85 @@ fun TodayScreen(
                     Icon(LbIcons.arrowUpRight, contentDescription = null, tint = LbAccent, modifier = Modifier.size(14.dp))
                 }
             }
+            // 预算超支：只有用户**自己设过**预算才说。没设就一个字不提 ——
+            // 凭空替他定一个数、再告诉他"你超了"，是编造出来的焦虑。
+            // 首页每天报"今天花了多少"，却对"本月已经超了"一言不发，正是他把预算设了却没用的原因。
+            budgetOver?.let { (spent, cap, over) ->
+                if (over) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(LbAmberSoft)
+                            .clickable(onClick = onOpenLedger)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "本月已超 ¥${store.fmtMoney(spent - cap)}（预算 ¥${store.fmtMoney(cap)}）",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LbAmber,
+                        )
+                    }
+                }
+            }
+            }
         }
 
         SectionHeader("替你盯着的") {
             Text("$watchCount 项", fontSize = 12.5.sp, color = LbInk3)
         }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (nextSub != null) {
-                val s = nextSub.first
-                val days = nextSub.second
+            if (watches.isEmpty()) {
                 CustodyCard(
-                    badge = { IconBadge(LbIcons.creditCard, LbAmberSoft, LbAmber) },
-                    title = "${s.name} · ¥${store.fmtMoney(s.amount)}/月",
-                    sub = when {
-                        days == null -> "扣费日还没补全，去守护页补上更稳妥"
-                        days <= 1 -> "明天自动扣费，还来得及拦"
-                        else -> "${store.daysText(s.nextDate)}自动扣费（${store.fmtCn(s.nextDate)}）"
-                    },
-                    chips = listOf(
-                        (if (days == null) "扣费日待补全" else if (days <= 1) "明天扣费" else "${days} 天后扣费") to
-                            (if (days == null || days <= 3) ChipTone.Amber else ChipTone.Soft),
-                        "看关闭步骤" to ChipTone.Soft,
-                    ),
-                    onClick = { sheetSubId = s.id },
-                )
-            } else {
-                CustodyCard(
-                    badge = { IconBadge(LbIcons.creditCard, LbSurface2, LbInk2) },
-                    title = "还没有订阅记录",
-                    sub = "去「守护」页添加第一笔，我来替你盯着",
+                    badge = { IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent) },
+                    title = "今天没有要盯着的事",
+                    sub = "订阅、到期事务、纪念日与家人的日子都会出现在这里",
                     onClick = onOpenGuard,
                 )
-            }
-
-            if (nextOb != null) {
-                val o = nextOb.first
-                val days = nextOb.second
-                CustodyCard(
-                    badge = { IconBadge(LbIcons.calendarEvent, LbAccentSoft, LbAccent) },
-                    title = "${o.title} · ${if (days >= 0) "还有 $days 天" else store.daysText(o.date)}",
-                    sub = o.note.ifEmpty { "到期前会提前提醒" },
-                    chips = listOf(
-                        (if (days <= 14) "临近" else "已排期") to (if (days <= 14) ChipTone.Amber else ChipTone.Green),
-                        o.tag to ChipTone.Soft,
-                    ),
-                    onClick = onOpenDuties,
-                )
-            } else if (store.obligations.isEmpty() || pendingObligations == 0) {
-                CustodyCard(
-                    badge = { IconBadge(LbIcons.calendarEvent, LbAccentSoft, LbAccent) },
-                    title = if (store.obligations.isEmpty()) "还没有排期的事务" else "义务都处理完了",
-                    sub = "把要到期的事放进时间线，我帮你数日子",
-                    onClick = onOpenDuties,
-                )
+            } else {
+                // 按紧急度排前 4 条；订阅那几条点开还是回到「怎么关」的详情，其余回对应页面
+                watches.take(4).forEach { w ->
+                    CustodyCard(
+                        badge = {
+                            IconBadge(
+                                when (w.route) {
+                                    "guard" -> LbIcons.creditCard
+                                    "duties" -> LbIcons.calendarEvent
+                                    "ledger" -> LbIcons.wallet
+                                    else -> LbIcons.cake
+                                },
+                                if (w.urgent) LbAmberSoft else LbAccentSoft,
+                                if (w.urgent) LbAmber else LbAccent,
+                            )
+                        },
+                        title = w.title,
+                        sub = w.sub,
+                        chips = listOf(
+                            (if (w.days <= 0L) "就是今天" else "${w.days} 天后") to
+                                (if (w.urgent) ChipTone.Amber else ChipTone.Soft),
+                        ),
+                        onClick = {
+                            when {
+                                w.route == "guard" && w.id.isNotEmpty() -> sheetSubId = w.id
+                                w.route == "duties" -> onOpenDuties()
+                                w.route == "ledger" -> onOpenLedger()
+                                w.route == "family" -> onOpenFamily()
+                                else -> onOpenGuard()
+                            }
+                        },
+                    )
+                }
+                if (watchCount > 4) {
+                    Text(
+                        "还有 ${watchCount - 4} 项 —— 去「守护」页看全部",
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                    )
+                }
             }
         }
 
@@ -537,8 +578,9 @@ fun TodayScreen(
 
     if (showQuickExpense) {
         ExpenseAddDialog(
-            onSave = { a, c, n, income ->
-                store.addExpense(a, c, n, income)
+            categories = store.expenseCategories.value,
+            onSave = { a, c, n, income, date ->
+                store.addExpense(a, c, n, income, date)
                 showQuickExpense = false
             },
             onDismiss = { showQuickExpense = false },

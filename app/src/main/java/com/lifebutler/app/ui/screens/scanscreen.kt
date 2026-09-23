@@ -17,13 +17,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -40,14 +43,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.lifebutler.app.data.ButlerStore
+import com.lifebutler.app.data.NotifListenerService
 import com.lifebutler.app.data.SubScanner
 import com.lifebutler.app.ui.components.ChipTone
 import com.lifebutler.app.ui.components.IconBadge
 import com.lifebutler.app.ui.components.LbCard
 import com.lifebutler.app.ui.components.LbChip
+import com.lifebutler.app.ui.components.LbField
 import com.lifebutler.app.ui.components.LbGhostButton
+import com.lifebutler.app.ui.components.LbInputDialog
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.SectionHeader
 import com.lifebutler.app.ui.icons.LbIcons
@@ -81,6 +88,18 @@ fun ScanScreen(onBack: () -> Unit) {
     var scannedWithSms by remember { mutableStateOf(false) }
     var addedNow by remember { mutableStateOf(0) }
     var notifEnabled by remember { mutableStateOf(SubScanner.notificationsEnabled(ctx)) }
+    // 只读「授权在不在」会假阳性：系统省电策略会把监听服务断开，而授权那条仍然在。
+    // 所以把两件事都拿出来，界面才能如实说清是"没开"还是"开了但没在工作"。
+    var notifGranted by remember { mutableStateOf(SubScanner.notificationAccessGranted(ctx)) }
+    var notifAlive by remember { mutableStateOf(SubScanner.notificationListenerConnected()) }
+    var showWatchList by remember { mutableStateOf(false) }
+    var showAddPkg by remember { mutableStateOf(false) }
+
+    fun refreshNotif() {
+        notifGranted = SubScanner.notificationAccessGranted(ctx)
+        notifAlive = SubScanner.notificationListenerConnected()
+        notifEnabled = SubScanner.notificationsEnabled(ctx)
+    }
 
     fun addAsSub(name: String, amount: Double, nextDate: String = "") {
         store.addScannedSub(name, amount, "扫描", nextDate, force = true)
@@ -145,14 +164,14 @@ fun ScanScreen(onBack: () -> Unit) {
                 LbCard(modifier = Modifier.padding(top = 10.dp)) {
                     Text("一键扫描本机自动续费", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
-                        "扫描会查看三处：\n① 扣费短信（需要短信读取权限，只在本机分析、不上传）\n② 微信/支付宝的扣费通知（需开启「通知读取」，从开启后开始记录；到达时会自动进清单）\n③ 已安装应用列表（对照常见订阅类 App）",
+                        "扫描会查看三处：\n① 扣费短信（需要短信读取权限，只在本机分析、不上传）\n② 微信/支付宝的扣费通知（需开启「通知读取」，从开启后开始记录；命中后先进「待确认」，由你确认是不是订阅）\n③ 已安装应用列表（对照常见订阅类 App）",
                         fontSize = 12.5.sp,
                         color = LbInk2,
                         lineHeight = 20.sp,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     Text(
-                        "扫描结果会**自动加入「守护」清单**；误加入的可在结果里一键移除（移除后不会再自动加回）。结果仅供参考，核对以平台账单为准。",
+                        "短信里出现的扣费会作为凭证直接记账；通知里的线索会先放到「待确认」，你在守护页点「认得」之后才落库 —— 关键词判不出「这笔是不是订阅」，不该替你做主。结果仅供参考，核对以平台账单为准。",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(top = 6.dp),
@@ -199,16 +218,31 @@ fun ScanScreen(onBack: () -> Unit) {
                         Column(Modifier.weight(1f)) {
                             Text("通知读取（微信/支付宝扣费推送）", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                             Text(
-                                if (notifEnabled) "已开启：扣费通知会在本机留档，扫描时一起呈现" else "未开启：只能从开启之后开始记录",
+                                when {
+                                    notifEnabled -> "已开启：扣费通知会在本机留档，命中后进「待确认」"
+                                    notifGranted -> "授权还在，但系统把监听断开了（省电策略或异常重启）—— 现在收不到任何通知。点「重新开启」再授权一次。"
+                                    else -> "未开启：只能从开启之后开始记录"
+                                },
                                 fontSize = 11.5.sp,
-                                color = LbInk3,
+                                color = if (notifGranted && !notifEnabled) LbRust else LbInk3,
+                                lineHeight = 17.sp,
                                 modifier = Modifier.padding(top = 1.dp),
                             )
+                            if (notifGranted && notifAlive == null && notifEnabled) {
+                                Text(
+                                    "（本次启动还没收到系统的连接回调，状态暂不确定）",
+                                    fontSize = 11.sp,
+                                    color = LbInk3,
+                                    modifier = Modifier.padding(top = 1.dp),
+                                )
+                            }
                         }
-                        if (notifEnabled) {
-                            LbChip("已开启", ChipTone.Green)
-                        } else {
-                            MiniAction("去开启") {
+                        when {
+                            notifEnabled -> LbChip("已开启", ChipTone.Green)
+                            notifGranted -> MiniAction("重新开启") {
+                                ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                            }
+                            else -> MiniAction("去开启") {
                                 ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                             }
                         }
@@ -219,9 +253,39 @@ fun ScanScreen(onBack: () -> Unit) {
                         color = LbAccent,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { notifEnabled = SubScanner.notificationsEnabled(ctx) }
+                            .clickable { refreshNotif() }
                             .padding(top = 6.dp, bottom = 2.dp),
                     )
+                    // 在听哪些 App：原来这件事是个谜。卡不在这十几家里的人，开了权限也永远扫不到，
+                    // 只会判定「这功能是坏的」；而系统那句「可以读取你的所有通知」又会让在意隐私的人不敢开。
+                    // 把名单摆出来、把「其余不解析」写清楚，并允许自己补一个包名。
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(LbSurface2)
+                            .clickable { showWatchList = true }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "在听哪些应用（${NotifListenerService.WATCHED_BUILTIN.size + store.watchedExtraPackages.value.size} 个）",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = LbInk,
+                            )
+                            Text(
+                                "其余应用的通知不解析、不保存。点这里看名单，或自己补一个包名。",
+                                fontSize = 11.5.sp,
+                                color = LbInk3,
+                                lineHeight = 17.sp,
+                                modifier = Modifier.padding(top = 1.dp),
+                            )
+                        }
+                        Icon(LbIcons.chevronRight, contentDescription = null, tint = LbInk3, modifier = Modifier.size(14.dp))
+                    }
                 }
             }
 
@@ -392,6 +456,132 @@ fun ScanScreen(onBack: () -> Unit) {
             }
         }
         Spacer(Modifier.height(16.dp))
+    }
+
+    if (showWatchList) {
+        WatchListDialog(
+            builtin = NotifListenerService.WATCHED_BUILTIN,
+            extra = store.watchedExtraPackages.value,
+            onAdd = { showWatchList = false; showAddPkg = true },
+            onRemove = { store.removeWatchedPackage(it) },
+            onDismiss = { showWatchList = false },
+        )
+    }
+    if (showAddPkg) {
+        LbInputDialog(
+            title = "补一个要监听的应用",
+            fields = listOf(
+                LbField("应用包名", "如：com.abc.bank（在「应用信息」或商店链接里能看到）"),
+            ),
+            confirmText = "添加",
+            onDismiss = { showAddPkg = false },
+            onConfirm = { v ->
+                val p = v.getOrElse(0) { "" }.trim()
+                when {
+                    p.isEmpty() -> "包名不能为空"
+                    !SubScanner.looksLikePackage(p) -> "这不像一个包名（应形如 com.abc.bank）"
+                    NotifListenerService.WATCHED_BUILTIN.any { it.first.equals(p, true) } -> "这个应用本来就在监听名单里"
+                    !store.addWatchedPackage(p) -> "这个包名已经加过了"
+                    else -> {
+                        showAddPkg = false
+                        null
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** 正在监听的应用名单：内置那批 + 用户自己补的 */
+@Composable
+private fun WatchListDialog(
+    builtin: List<Pair<String, String>>,
+    extra: List<String>,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
+            Column(
+                Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+            ) {
+                Text("在听哪些应用", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text(
+                    "只解析下面这些应用的通知，其余应用的通知不解析、不保存。数据全部在本机。",
+                    fontSize = 12.sp,
+                    color = LbInk3,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Text(
+                    "内置 ${builtin.size} 个",
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                builtin.forEach { (pkg, label) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(label, fontSize = 13.sp, color = LbInk)
+                            Text(pkg, fontSize = 10.5.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
+                        }
+                        LbChip("内置", ChipTone.Soft)
+                    }
+                }
+                Text(
+                    "你自己补的（${extra.size} 个）",
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                if (extra.isEmpty()) {
+                    Text(
+                        "还没有。如果你的银行不在上面，把它的包名加进来就能一起监听。",
+                        fontSize = 12.sp,
+                        color = LbInk3,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                } else {
+                    extra.forEach { pkg ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(pkg, fontSize = 12.5.sp, color = LbInk, modifier = Modifier.weight(1f))
+                            MiniAction("移除") { onRemove(pkg) }
+                        }
+                    }
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    LbGhostButton("补一个包名", onAdd, Modifier.weight(1f))
+                    LbGhostButton("完成", onDismiss, Modifier.weight(1f))
+                }
+                Text(
+                    "包名填错不会有副作用，只是那条规则不起作用。",
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+        }
     }
 }
 

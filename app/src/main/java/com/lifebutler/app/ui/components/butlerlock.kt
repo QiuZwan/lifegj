@@ -69,7 +69,12 @@ fun ButlerLockGate(
 ) {
     val ctx = LocalContext.current
     val km = remember(ctx) { ctx.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager }
-    val secure = remember(ctx) { km?.isDeviceSecure == true }
+    // ⚠️ 必须把 foregroundTick 一起做 key：原来只 remember(ctx)，于是"本机设没设锁屏"这件事
+    // 只在进入组合时算了一次就永远缓存。用户按提示去系统里设好锁屏、切回 App —— 界面**依然**
+    // 显示「应用锁现在不生效」，他会以为"我设了它没认"，反过来怀疑锁屏没设成功。
+    // foregroundTick 本来就在 onResume 时自增（见本文件顶部第 3 条说明），拿它当 key
+    // 恰好就是"回到前台重算一次"。
+    val secure = remember(ctx, foregroundTick) { km?.isDeviceSecure == true }
 
     var locked by remember { mutableStateOf(enabled) }
     // 本机没设锁屏时用户选了「暂时进入」：本次进程内不再拦

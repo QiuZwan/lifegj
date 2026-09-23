@@ -51,22 +51,37 @@ object UpdateDownload {
     /**
      * 下载安装包(阻塞式,调用方放 IO 线程)。
      *
+     * **支持断点续传**:上一次下到一半的 `.part` 不再一进门就删,而是带着 `Range: bytes=N-`
+     * 接着下。原来每次失败(信号不好、切个 WiFi、手滑退出去)都要从 0 重来 —— 这个包有几十 MB,
+     * 用移动网络的人一晚上都装不上。
+     *
+     * 两条必须写清的边界:
+     * ① 服务端不认 Range(回了 200 而不是 206)时,把半截文件删掉重下 —— 不能把新旧两段拼一起;
+     * ② 半截文件**不删**,失败/取消都留着,下次才能接着下(它只是 cache 里的东西,不是用户数据)。
+     *
      * @param onProgress (百分比 0..100, 已下载字节, 总字节);总大小拿不到时百分比给 -1。
-     *                   下载中协程被取消会抛 CancellationException,并把半截文件删掉。
+     * @param onResume   如果这次是接着上次下的,回调一次「已经存了多少字节」,好让界面说清楚。
      */
     suspend fun download(
         ctx: Context,
         url: String,
         version: String,
         onProgress: (Int, Long, Long) -> Unit = { _, _, _ -> },
+        onResume: (Long) -> Unit = {},
     ): Result {
         val dir = dir(ctx)
         if (!dir.exists() && !dir.mkdirs()) return Result.Failed("建不了下载目录,存不下安装包。")
         val target = fileFor(ctx, version)
         val part = File(dir, "${target.name}.part")
+        // 上次下到哪儿了。文件名里带着版本号,所以不会把 2.13 的半截接到 2.14 上。
+        val already = if (part.exists()) part.length().coerceAtLeast(0L) else 0L
         // 先拿到连接再往下走:失败在这句话里就能说清,不用把可空性一路带下去
         val conn = try {
-            open(url)
+            open(url, already)
+        } catch (e: RangeRejected) {
+            // 服务端说这个 Range 它不认 —— 把半截删掉,下一次调用会自然从 0 重来
+            runCatching { part.delete() }
+            return Result.Failed("上次没下完的那一截接不上了,已经清掉,请再点一次「更新」。")
         } catch (e: Exception) {
             return Result.Failed(
                 "连不上下载地址(${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""})。" +
@@ -74,34 +89,46 @@ object UpdateDownload {
             )
         }
         try {
-            val total = try {
-                conn.contentLengthLong
+            val resumed = conn.resumed && already > 0
+            if (already > 0 && !resumed) {
+                // 服务端忽略了 Range,整包从头发来:先清掉旧的那截,否则拼出来是个坏文件
+                runCatching { part.delete() }
+            }
+            if (resumed) onResume(already)
+            val startAt = if (resumed) already else 0L
+            val remain = try {
+                conn.conn.contentLengthLong
             } catch (e: Exception) {
                 -1L
             }
             // 明显不对的:地址给回来一个几百字节的东西(多半是错误页)。别等装的时候才失败。
-            if (total in 1L until MIN_APK_BYTES) {
-                return Result.Failed("那个地址返回的内容不像安装包(只有 ${total / 1024} KB),可能发布页上的资产有问题。")
+            val guessTotal = if (remain > 0) remain + startAt else -1L
+            if (guessTotal in 1L until MIN_APK_BYTES) {
+                return Result.Failed("那个地址返回的内容不像安装包(只有 ${guessTotal / 1024} KB),可能发布页上的资产有问题。")
             }
-            conn.inputStream.use { ins ->
-                FileOutputStream(part).use { fos ->
+            conn.conn.inputStream.use { ins ->
+                // append = resumed:续传时是往后接,不是覆盖
+                FileOutputStream(part, resumed).use { fos ->
                     val buf = ByteArray(64 * 1024)
-                    var got = 0L
+                    var got = startAt
                     while (true) {
                         coroutineContext.ensureActive()
                         val n = ins.read(buf)
                         if (n <= 0) break
                         fos.write(buf, 0, n)
                         got += n
-                        val pct = if (total > 0) ((got * 100) / total).toInt().coerceIn(0, 100) else -1
-                        onProgress(pct, got, total)
+                        val pct = if (guessTotal > 0) ((got * 100) / guessTotal).toInt().coerceIn(0, 100) else -1
+                        onProgress(pct, got, guessTotal)
                     }
                     fos.flush()
                 }
             }
             if (part.length() < MIN_APK_BYTES) {
-                part.delete()
-                return Result.Failed("下载到的文件只有 ${part.length() / 1024} KB,不完整,已丢弃。")
+                // 太小说明这次也没下全,但**不删** —— 留着下次接着下
+                return Result.Failed(
+                    "这次只下到 ${part.length() / 1024} KB,还没下完。等网络好一点再点一次「更新」," +
+                        "会接着这次继续下。",
+                )
             }
             if (target.exists()) target.delete()
             if (!part.renameTo(target)) {
@@ -110,17 +137,24 @@ object UpdateDownload {
             }
             if (!target.exists()) return Result.Failed("下载完成了,但文件没能存下来。")
             cleanOld(ctx, keep = target)
-            return verify(ctx, target)
+            val v = verify(ctx, target)
+            // 装不了的那份留着只会白占地方,而且下次点「更新」会以为已经下好了 —— 直接清掉
+            if (v is Result.Failed) runCatching { target.delete() }
+            return v
         } catch (e: kotlinx.coroutines.CancellationException) {
-            runCatching { part.delete() }
+            // 用户退出这一页 / 换了版本:半截文件**留着**,下次接着下
             throw e
         } catch (e: Exception) {
-            runCatching { part.delete() }
-            return Result.Failed("下载失败:${e.javaClass.simpleName}${e.message?.let { "（$it）" } ?: ""}")
+            return Result.Failed("下载中断:${e.javaClass.simpleName}${e.message?.let { "（$it）" } ?: ""}。再点一次「更新」会接着下。")
         } finally {
-            runCatching { conn.disconnect() }
+            runCatching { conn.conn.disconnect() }
         }
     }
+
+    /** 服务端不接受我们给的 Range(回了 416)。 */
+    private class RangeRejected : Exception("range rejected")
+
+    private class Conn(val conn: HttpURLConnection, val resumed: Boolean)
 
     /**
      * 打开连接并**自己跟重定向**。
@@ -128,8 +162,11 @@ object UpdateDownload {
      * 为什么要自己跟:GitHub 的下载地址(`.../releases/download/...`)不是直接给文件,
      * 而是先回一个 302 跳到 objects.githubusercontent.com 的签名地址。
      * 用 `instanceFollowRedirects = true` 在有些实现里跨主机不跟,所以这里手写循环,最多 5 跳。
+     *
+     * [from] > 0 时带 `Range` 头。**每一跳都带** —— 302 之后才是真正给字节的那台机器,
+     * 只在第一跳带 Range 等于没带。
      */
-    private fun open(url: String): HttpURLConnection {
+    private fun open(url: String, from: Long): Conn {
         var cur = url
         var hop = 0
         while (true) {
@@ -138,6 +175,7 @@ object UpdateDownload {
             c.readTimeout = 30000
             c.instanceFollowRedirects = false
             c.setRequestProperty("User-Agent", "LifeButler-Android")
+            if (from > 0) c.setRequestProperty("Range", "bytes=$from-")
             val code = c.responseCode
             if (code in 300..399) {
                 val loc = c.getHeaderField("Location")
@@ -147,11 +185,16 @@ object UpdateDownload {
                 hop++
                 continue
             }
+            if (code == 206) return Conn(c, true)
+            if (code == 416) {
+                c.disconnect()
+                throw RangeRejected()
+            }
             if (code != 200) {
                 c.disconnect()
                 throw IllegalStateException("HTTP $code")
             }
-            return c
+            return Conn(c, false)
         }
     }
 
@@ -215,5 +258,42 @@ object UpdateDownload {
                 if (keep == null || f.absolutePath != keep.absolutePath) f.delete()
             }
         }
+    }
+
+    /**
+     * 把「已经装上了的那份安装包」清掉（几十 MB，留着没有任何用处）。
+     *
+     * 为什么不在「下载完」或「叫出安装界面」的那一刻删：那时候**装还没发生**。
+     * 用户可能在系统安装器里点了取消、可能装到一半接了个电话 —— 删了他就得重下一遍，
+     * 而他那会儿多半正是信号不好的时候。
+     * 所以判据换成「**本机现在跑的版本已经不低于包名里那个版本**」：说明更新真的成功了。
+     *
+     * 进「关于管家」时调一次就够（那里是更新流程的起点，也是用户装完会回来的地方）。
+     *
+     * @return 删掉了几份，给界面说一句「清掉了 N 份旧安装包」。
+     */
+    fun cleanInstalled(ctx: Context): Int {
+        val now = UpdateCheck.versionName(ctx)
+        var n = 0
+        runCatching {
+            dir(ctx).listFiles()?.forEach { f ->
+                val v = versionOfFileName(f.name) ?: return@forEach
+                // 装上的版本比包里的新或一样 → 这份包已经没用了
+                if (UpdateCheck.compare(now, v) >= 0) {
+                    if (f.delete()) n++
+                }
+                // 系统化的半截文件：留了超过一周还是半截，说明用户早就放弃了
+                if (f.name.endsWith(".part") && System.currentTimeMillis() - f.lastModified() > 7L * 24 * 3600 * 1000) {
+                    f.delete()
+                }
+            }
+        }
+        return n
+    }
+
+    /** 从 `LifeButler-v2.13.apk` / `LifeButler-v2.13.apk.part` 里取出版本号。 */
+    private fun versionOfFileName(name: String): String? {
+        val m = Regex("""^LifeButler-v(.+?)\.apk(\.part)?$""").find(name) ?: return null
+        return m.groupValues[1].ifBlank { null }
     }
 }
