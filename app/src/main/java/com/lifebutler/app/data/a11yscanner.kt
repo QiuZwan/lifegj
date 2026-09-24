@@ -11,7 +11,8 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * 「代扣协议读取」—— 用无障碍读屏，把你**自己打开**的那张「免密支付 / 自动续费」清单读下来。
+ * 「代扣协议读取」—— 用无障碍读屏，把那两张「免密支付 / 自动续费」清单读下来。
+ * 两种到达方式：**你自己打开**，或者（v2.18 起）让它**替你一级级点进去**（见 `A11yNav`）。
  *
  * ## 为什么是这几页，而不是"逐个 App 进去看"
  *
@@ -386,7 +387,7 @@ object A11yScanner {
                 store.addChat(
                     false,
                     "刚从${payer.title}的「${payer.pageName}」页读到 ${rows.size} 条签约：$names。\n" +
-                        "这些是你自己打开那一页时我看到的，只记在本机。回到「守护」页核对一下 —— " +
+                        "这些是从那一页读到的（无论你自己打开的还是我替你翻进去的），只记在本机。回到「守护」页核对一下 —— " +
                         "认了才进清单，不是你的点「不是我的」。",
                 )
             } catch (e: Exception) {
