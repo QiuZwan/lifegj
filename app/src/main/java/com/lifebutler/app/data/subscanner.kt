@@ -54,6 +54,16 @@ object SubScanner {
 
     private val SUBSCRIPTION_APPS = KNOWN_APPS.filter { it.second != "支付宝" && it.second != "微信" }
 
+    /**
+     * 包名 → 展示名；认不出来返回**空串**。
+     *
+     * 给线索行用（B9：线索有 `pkg` 字段却一直写死「来自通知」）。
+     * ⚠️ 认不出来就返回空，让调用方回退成「来自通知」—— 绝不把 `com.xxx.yyy` 这种
+     * 包名直接糊到用户脸上，那跟没说一样。
+     */
+    fun appNameOf(pkg: String): String =
+        KNOWN_APPS.firstOrNull { it.first == pkg }?.second.orEmpty()
+
     fun isInstalled(context: Context, pkg: String): Boolean = try {
         context.packageManager.getPackageInfo(pkg, 0)
         true

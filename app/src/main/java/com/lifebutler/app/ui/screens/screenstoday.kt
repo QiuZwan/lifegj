@@ -63,6 +63,7 @@ import com.lifebutler.app.ui.components.LbConfirmDialog
 import com.lifebutler.app.ui.components.LbField
 import com.lifebutler.app.ui.components.LbGhostButton
 import com.lifebutler.app.ui.components.LbInputDialog
+import com.lifebutler.app.ui.components.LbNoticeBar
 import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.LbTwoActionDialog
@@ -601,6 +602,8 @@ private fun PaySheet(store: ButlerStore, subId: String, onDismiss: () -> Unit) {
         return
     }
     var step by remember(subId) { mutableStateOf(if (sub.closing) 2 else 0) }
+    // D12 / C8：反馈留在这一屏上，不再靠转瞬即逝的 Toast。
+    var notice by remember { mutableStateOf<String?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val dayOfMonth = store.parseDate(sub.nextDate)?.dayOfMonth
 
@@ -679,7 +682,19 @@ private fun PaySheet(store: ButlerStore, subId: String, onDismiss: () -> Unit) {
                 }
             } else if (step == 1) {
                 Column(Modifier.padding(top = 4.dp)) {
-                    CancelGuide(store = store, subId = sub.id, onDone = { step = 2 })
+                    notice?.let { msg ->
+                        LbNoticeBar(
+                            text = msg,
+                            onDismiss = { notice = null },
+                            modifier = Modifier.padding(bottom = 10.dp),
+                        )
+                    }
+                    CancelGuide(
+                        store = store,
+                        subId = sub.id,
+                        onDone = { step = 2 },
+                        onNotice = { notice = it },
+                    )
                 }
             } else {
                 Column(

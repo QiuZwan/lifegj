@@ -638,3 +638,62 @@ fun lbHighlightBg(active: Boolean): Color =
         animationSpec = tween(260),
         label = "hlBg",
     ).value
+
+/**
+ * 页面内留痕的提示条 —— 用来**替掉 Toast**（D12 / C8）。
+ *
+ * 为什么不用 Toast：它转瞬即逝、页面不留痕、也没有「那怎么办」的下一步；
+ * 用户一走神就不知道刚才发生了什么，更别说反悔。
+ * 这条留在页面上直到用户点「知道了」，带上 [action] 时它就是那次操作的后悔药。
+ *
+ * @param action 可选的动作文字（如「撤销」）。给了就显示一个可点的动作按钮。
+ */
+@Composable
+fun LbNoticeBar(
+    text: String,
+    action: String? = null,
+    onAction: () -> Unit = {},
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(LbAccentSoft)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(LbIcons.circleCheck, contentDescription = null, tint = LbAccent, modifier = Modifier.size(16.dp))
+        Text(
+            text,
+            fontSize = 11.5.sp,
+            color = LbInk,
+            lineHeight = 16.sp,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 8.dp),
+        )
+        if (action != null) {
+            Text(
+                action,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = LbAccent,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onAction)
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+            )
+        }
+        Text(
+            "知道了",
+            fontSize = 11.5.sp,
+            color = LbInk3,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onDismiss)
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+        )
+    }
+}

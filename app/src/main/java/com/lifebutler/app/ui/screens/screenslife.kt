@@ -102,9 +102,11 @@ import com.lifebutler.app.ui.components.LbPlusButton
 import com.lifebutler.app.ui.components.LbPrimaryButton
 import com.lifebutler.app.ui.components.SectionHeader
 import com.lifebutler.app.ui.components.lbHighlightBg
+import com.lifebutler.app.ui.components.lbDialogBody
 import com.lifebutler.app.ui.components.lbItemHighlight
 import com.lifebutler.app.ui.components.lbLongPress
 import com.lifebutler.app.ui.components.lbPressable
+import androidx.compose.ui.window.Dialog
 import com.lifebutler.app.ui.icons.LbIcons
 import com.lifebutler.app.ui.theme.LbAccent
 import com.lifebutler.app.ui.theme.LbAccentSoft
@@ -1426,6 +1428,10 @@ fun MineScreen(
     var showAi by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
     var showRestore by remember { mutableStateOf(false) }
+    // 「不再提示的商户」管理页。
+    // 为什么必须有：点一次「以后别再提」，那个商户就**永久不再自动加进来**，
+    // 而 v2.18 之前界面上没有任何撤销的地方 —— 一次误点没法回头。
+    var showDismissed by remember { mutableStateOf(false) }
     var restoreInitial by remember { mutableStateOf("") }
     var restorePending by remember { mutableStateOf<String?>(null) }
     // 备份文件的进出通道（P0）：含照片的备份能到好几 MB，剪贴板跨进程装不下这么多，
@@ -1677,6 +1683,12 @@ fun MineScreen(
                         } + if (store.widgetDetail.value < 0) " · 跟随应用锁" else "",
                     ),
                     Triple(LbIcons.shieldLock, "数据与隐私", "全部保存在本机"),
+                    Triple(
+                        LbIcons.bell,
+                        "不再提示的商户",
+                        if (store.dismissedNames().isEmpty()) "没有 · 点「以后别再提」会加进来"
+                        else "${store.dismissedNames().size} 个 · 可以改回来",
+                    ),
                     Triple(LbIcons.download, "导出家庭档案", "一键整理成文本"),
                     Triple(LbIcons.deviceFloppy, "备份与恢复", "换机不丢数据"),
                     Triple(LbIcons.eye, "载入演示数据", "用示例内容预览"),
@@ -1725,6 +1737,7 @@ fun MineScreen(
                                         }
                                     }
                                     "数据与隐私" -> showData = true
+                                    "不再提示的商户" -> showDismissed = true
                                     "桌面小组件" -> showWidget = true
                                     "载入演示数据" -> showDemo = true
                                     "清空全部数据" -> showClear = true
@@ -1841,6 +1854,72 @@ fun MineScreen(
             onDismiss = { showData = false },
             onConfirm = { showData = false },
         )
+    }
+
+    // 「不再提示的商户」管理：逐条改回来。
+    // 这个名单以前**只进不出** —— 点一次「以后别再提」那个商户就永久不再自动加进来，
+    // 而界面上没有任何撤销的地方。这里就是它的后悔药。
+    if (showDismissed) {
+        val names = store.dismissedNames()
+        Dialog(onDismissRequest = { showDismissed = false }) {
+            Surface(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp)),
+                color = LbSurface,
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("不再提示的商户", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                    Text(
+                        "这些是你点过「以后别再提」的名字：扫描再读到它们也不会自动加进守护清单。点「改回来」就恢复。",
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    // ⚠️ 名单可以很长（长度不由我们决定）→ 正文必须挂 lbDialogBody：
+                    // 限高 + 可滚，按钮留在滚动区外，不会被顶出屏幕。
+                    Column(
+                        Modifier
+                            .padding(top = 10.dp)
+                            .lbDialogBody(),
+                    ) {
+                        if (names.isEmpty()) {
+                            Text(
+                                "还没有。在守护页的线索上点「以后别再提」，名字会加到这里。",
+                                fontSize = 12.sp,
+                                color = LbInk3,
+                                lineHeight = 17.sp,
+                            )
+                        } else {
+                            names.forEach { n ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(n, fontSize = 12.5.sp, color = LbInk, modifier = Modifier.weight(1f))
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .border(1.dp, LbLineStrong, RoundedCornerShape(999.dp))
+                                            .clickable { store.undismissName(n) }
+                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    ) {
+                                        Text("改回来", fontSize = 12.sp, color = LbAccent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Row(Modifier.padding(top = 12.dp)) {
+                        LbGhostButton("关闭", onClick = { showDismissed = false }, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
     }
 
     if (showDemo) {

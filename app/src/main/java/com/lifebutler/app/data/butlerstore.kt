@@ -419,12 +419,19 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
-    /** 列表右侧短日期:临近用「明天 / N 天后」,否则用「M-d」;没日期就说待补全 */
+    /**
+     * 列表右侧短日期。
+     *
+     * ⚠️ 口径（D9/B6）：**7 天以内一律用相对说法**（就是今天 / 明天 / N 天后），超过 7 天
+     * 才给「M-D」。原来判据是 `<= 1`，于是同一列里「明天」「3 天后」「10-23」三种写法混排，
+     * 扫读时没有共同基线 —— 看清单的人要的是「哪笔快了」而不是精确日期。
+     * 没日期就说「待补全」，不猜。
+     */
     fun dateLabel(date: String): String {
         if (date.isBlank()) return "待补全"
         val d = parseDate(date) ?: return date
         val n = daysUntil(date)
-        return if (n != null && n <= 1) daysText(date) else "%d-%02d".format(d.monthValue, d.dayOfMonth)
+        return if (n != null && n <= 7) daysText(date) else "%d-%02d".format(d.monthValue, d.dayOfMonth)
     }
 
     fun fmtCn(date: String): String {
@@ -943,6 +950,20 @@ class ButlerStore private constructor(context: Context) {
     }
 
     /**
+     * 撤销「以后别再提」。
+     *
+     * 为什么必须有它：v2.18 之前这个名单**只进不出**，界面上也没有任何撤销的地方 ——
+     * 用户点了一次「不是我的」，这个商户就永久消失，连"我后悔了"都没处说。
+     * [dismissed] 是个集合，撤销就是移出去，零成本、可逆，没有任何理由不给。
+     */
+    fun undismissName(name: String) {
+        if (dismissed.remove(name)) save()
+    }
+
+    /** 「不再提示的商户」名单（只读快照，给「我的」里的管理入口用） */
+    fun dismissedNames(): List<String> = dismissed.toList()
+
+    /**
      * 扫描/通知自动加入订阅。
      * nextDate 只在扫描真的从短信里解析到扣费日时才传;解析不到留空,
      * 界面显示「扣费日待补全」,绝不凭空编一个日期。
@@ -1014,6 +1035,22 @@ class ButlerStore private constructor(context: Context) {
      */
     fun aheadDaysFor(itemAhead: Int, globalDays: Int): Int =
         if (itemAhead > 0) itemAhead else globalDays
+
+    /**
+     * 撤销「关闭中」：放回在用清单。
+     *
+     * 为什么需要：[markSubClosing] 是**可逆**的（只是打个标记），按 D12 的分级就该
+     * 「立即生效 + 给 Undo、不弹确认框」。原来没有撤销入口，用户点错了只能整条删掉重记。
+     * ⚠️ 关闭历史里那一条也要一并拿掉 —— 不然「历史累计关闭 N 笔」会一直留着一个没关成的。
+     */
+    fun unmarkSubClosing(id: String) {
+        val i = subs.indexOfFirst { it.id == id }
+        if (i >= 0 && subs[i].closing) {
+            subs[i] = subs[i].copy(closing = false, closingAt = 0L)
+            closedHistory.removeAll { it.name == subs[i].name && it.amount == subs[i].amount }
+            save()
+        }
+    }
 
     /** 标记为关闭中:写一条真实关闭历史,统计数字由历史复算 */
     fun markSubClosing(id: String, withReceipt: Boolean = true) {
@@ -1587,6 +1624,42 @@ class ButlerStore private constructor(context: Context) {
             val d = dateOfMillis(it.closedAt)
             d.year == year && d.monthValue == month
         }
+
+    /**
+     * 「接下来要扣多少」：**从今天起到下一个自然月末**之间会到期的在用订阅。
+     *
+     * 为什么是这个窗口而不是「本月合计」：用户看守护页问的是「我接下来要花多少」，
+     * 本月**已经过去**的扣费日不该再算进「要扣」。而只看单月又会在月末丢掉下月初那几笔。
+     *
+     * ⚠️ 两条硬口径：① 只算 `active`（关闭中的不计，与合计同源）；
+     * ② **解析不出日期的条目一律不计** —— 不知道什么时候扣，就不许混进一个确定的数字里，
+     * 否则「要扣 ¥X」里藏着一笔没日期的，用户按这个数对账就会对不上。
+     *
+     * @return (金额, 笔数)
+     */
+    fun dueBeforeNextMonthEnd(): Pair<Double, Int> {
+        val now = LocalDate.now()
+        val end = now.plusMonths(1).withDayOfMonth(now.plusMonths(1).lengthOfMonth())
+        val hit = subs
+            .filter { !it.closing }
+            .mapNotNull { s -> parseDate(s.nextDate)?.let { s to it } }
+            .filter { (_, d) -> !d.isBefore(now) && !d.isAfter(end) }
+        return hit.sumOf { it.first.amount } to hit.size
+    }
+
+    /**
+     * 本月**已经记下**的扣费流水合计。
+     *
+     * 只认 [charges]（真实发生过的扣费），绝不用订阅金额推算 ——
+     * 「没扣过的钱不算花掉」是这整个 App 的底线，推算出来的"已扣"就是伪造。
+     */
+    fun chargedThisMonth(): Double {
+        val now = LocalDate.now()
+        return charges
+            .mapNotNull { c -> parseDate(c.date)?.let { c to it } }
+            .filter { (_, d) -> d.year == now.year && d.monthValue == now.monthValue }
+            .sumOf { it.first.amount }
+    }
 
     /** 从一句话里猜记账分类(离线规则模式和 AI 管家共用) */
     fun guessExpenseCategory(text: String): String = when {
