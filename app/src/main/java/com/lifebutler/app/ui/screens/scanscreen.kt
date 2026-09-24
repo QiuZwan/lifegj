@@ -23,11 +23,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import com.lifebutler.app.data.A11yNav
 import com.lifebutler.app.data.A11yScanner
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.NotifListenerService
@@ -97,6 +100,12 @@ fun ScanScreen(onBack: () -> Unit) {
     var a11yOn by remember { mutableStateOf(A11yScanner.active(ctx)) }
     var showWatchList by remember { mutableStateOf(false) }
     var showAddPkg by remember { mutableStateOf(false) }
+    // 「帮我翻进去」：navTick 一加就开一轮观察（轮询服务的实时进度），navLine 是过程中那句话，
+    // navLast 是上一趟的结果留痕（成功读到几条 / 停在哪一步）。都存在本机。
+    var navTick by remember { mutableStateOf(0) }
+    var navLine by remember { mutableStateOf("") }
+    var navLast by remember { mutableStateOf(A11yNav.lastNote(ctx)) }
+    var navHint by remember { mutableStateOf("") }
 
     fun refreshNotif() {
         notifGranted = SubScanner.notificationAccessGranted(ctx)
@@ -107,6 +116,22 @@ fun ScanScreen(onBack: () -> Unit) {
     fun refreshA11y() {
         a11yGranted = A11yScanner.enabled(ctx)
         a11yOn = A11yScanner.active(ctx)
+        navLast = A11yNav.lastNote(ctx)
+    }
+
+    // 点「帮我翻进去」之后：一直盯到导航结束（或满 90 秒兜底），再把结果留痕读回来。
+    // ⚠️ 这期间用户在看支付宝，我们的界面在后台 —— LaunchedEffect 不会因为退到后台被取消
+    // （Activity 只是 stopped，composition 还在），所以回来时能立刻看到结果。
+    LaunchedEffect(navTick) {
+        if (navTick == 0) return@LaunchedEffect
+        var waited = 0
+        while (A11yNav.running && waited < 90_000) {
+            navLine = A11yNav.live?.text() ?: "正在打开…"
+            delay(350)
+            waited += 350
+        }
+        navLine = ""
+        navLast = A11yNav.lastNote(ctx)
     }
 
     fun addAsSub(name: String, amount: Double, nextDate: String = "") {
@@ -162,6 +187,9 @@ fun ScanScreen(onBack: () -> Unit) {
             addedNow = added
             candidates = merged
             apps = a
+            // 记下「跑过一次扫描」。守护页的空态要靠它区分「还没扫过」与「扫过确实没有发现」——
+            // 少了这个状态，用户刚扫完看到的还是「还没扫过」，只会以为功能坏了。
+            runCatching { store.markScanned() }
             step = 2
         }
     }
@@ -377,35 +405,115 @@ fun ScanScreen(onBack: () -> Unit) {
                         lineHeight = 16.sp,
                         modifier = Modifier.padding(top = 2.dp),
                     )
-                    A11yScanner.PAYERS.forEach { p ->
+                    // 「帮我翻进去」的结果 + 过程中的那句话。
+                    // 为什么值得占一行位置：这功能会**跳到别人的 App 里去**，用户必须能在本页
+                    // 看到"上一步做成了什么/停在哪"，否则一次失败就像石沉大海。
+                    if (navLine.isNotEmpty()) {
                         Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(LbAccentSoft)
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(13.dp),
+                                strokeWidth = 2.dp,
+                                color = LbAccent,
+                            )
+                            Text(
+                                "$navLine —— 它只点导航，遇到「关闭/解约/付款」这类词会拒绝点击",
+                                fontSize = 11.sp,
+                                color = LbAccent,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                    }
+                    if (navHint.isNotEmpty()) {
+                        Text(
+                            navHint,
+                            fontSize = 11.sp,
+                            color = LbRust,
+                            lineHeight = 16.sp,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    if (navLast.isNotEmpty() && navLine.isEmpty()) {
+                        Text(
+                            "上次帮你翻：$navLast",
+                            fontSize = 11.sp,
+                            color = LbInk3,
+                            lineHeight = 16.sp,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+
+                    A11yScanner.PAYERS.forEach { p ->
+                        Column(
                             Modifier
                                 .fillMaxWidth()
                                 .padding(top = 8.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(LbSurface2)
                                 .padding(horizontal = 12.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("${p.title} · ${p.pageName}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("${p.title} · ${p.pageName}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                                    Text(
+                                        "路径：" + p.manualPath,
+                                        fontSize = 11.sp,
+                                        color = LbInk3,
+                                        lineHeight = 16.sp,
+                                        modifier = Modifier.padding(top = 1.dp),
+                                    )
+                                }
                                 Text(
-                                    "路径：" + p.manualPath,
+                                    "自己打开",
                                     fontSize = 11.sp,
-                                    color = LbInk3,
-                                    lineHeight = 16.sp,
-                                    modifier = Modifier.padding(top = 1.dp),
+                                    color = LbInk2,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { SubScanner.launchPackage(ctx, p.pkg) }
+                                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                                )
+                            }
+                            Row(
+                                Modifier
+                                    .padding(top = 7.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(if (a11yOn) LbAccent else LbSurface)
+                                    .clickable {
+                                        if (!a11yOn) {
+                                            navHint = "先开启「代扣协议读取」（上面那一栏），我才有办法在${p.title}里点导航。"
+                                        } else {
+                                            navHint = ""
+                                            A11yNav.start(ctx, p)?.let { navHint = it }
+                                            navLine = A11yNav.live?.text() ?: "正在打开…"
+                                            navTick++
+                                        }
+                                    }
+                                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "帮我翻进去并读取",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (a11yOn) androidx.compose.ui.graphics.Color.White else LbInk3,
                                 )
                             }
                             Text(
-                                "打开",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = LbAccent,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { SubScanner.launchPackage(ctx, p.pkg) }
-                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                "它会在${p.title}里自己点「${p.route.joinToString(" → ") { it.candidates.first() }}」，" +
+                                    "到了那张清单页就停下来读，读完不会替你点任何东西。" +
+                                    "⚠️ 这条路径是照公开资料写的、没在真机上核过；点了没动静就照上面的「路径」自己走一遍，也能读到。",
+                                fontSize = 10.5.sp,
+                                color = LbInk3,
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(top = 5.dp),
                             )
                         }
                     }

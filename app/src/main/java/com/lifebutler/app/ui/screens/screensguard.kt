@@ -1,8 +1,10 @@
 package com.lifebutler.app.ui.screens
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -42,7 +44,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.lifebutler.app.R
+import com.lifebutler.app.data.A11yScanner
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.SubScanner
 import com.lifebutler.app.ui.components.ChipTone
@@ -88,14 +92,26 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     val store = remember { ButlerStore.get(ctx) }
     var showAdd by remember { mutableStateOf(false) }
     var deleteSubId by remember { mutableStateOf<String?>(null) }
+    // 「已处理」（关闭中）那一组默认收起 —— 用户来守护页要看的是「还在扣钱的」。
+    var showClosed by remember { mutableStateOf(false) }
 
+    // ⚠️ 全页的口径就是这三个:
+    //   active  = 清单里列的、合计里算的、右上角数的「在用订阅」；
+    //   closing = 已标记关闭的,单独收进「已处理」,不进合计;
+    //   total   = 只加 active。
+    // 原来合计用 active、而「N 笔」和列表用全部 subs,同一个数字在页面上两副面孔。
     val active = store.subs.filter { !it.closing }
+    val closingList = store.subs.filter { it.closing }
     val total = active.sumOf { it.amount }
     val nearest = active
         .mapNotNull { s -> store.daysUntil(s.nextDate)?.let { s to it } }
         .minByOrNull { it.second }
-    val closingCount = store.subs.count { it.closing }
+    val closingCount = closingList.size
     val pendingObligations = store.obligations.count { !it.done }
+    // 空态要说清是哪一种「空」:没开权限 / 开了没扫过 / 扫过确实没有。
+    // 判据只能是「有没有任何一路现在还读得到」—— 不猜、不假定。
+    val canScan = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED ||
+        SubScanner.notificationAccessGranted(ctx) || A11yScanner.enabled(ctx)
 
     Column(
         Modifier
@@ -197,18 +213,24 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                         color = LbOnDark,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                    // 口径必须与合计的 total 一致(total 只算 active)。
+                    // 原来这里写 store.subs.size,把「关闭中」的也算进去,
+                    // 于是会出现「合计 ¥60」下面跟着「3 笔订阅」而清单里只列得出一条的怪事。
                     Text(
                         when {
-                            store.subs.isEmpty() -> "还没有订阅记录"
-                            nearest != null -> "${store.subs.size} 笔订阅 · 最近一笔在${store.daysText(nearest.first.nextDate)}"
-                            else -> "${store.subs.size} 笔订阅 · 全部在处理中"
+                            active.isEmpty() && closingCount > 0 -> "没有在用的订阅 · $closingCount 笔关闭中"
+                            active.isEmpty() -> "还没有订阅记录"
+                            nearest != null -> "${active.size} 笔订阅 · 最近一笔在${store.daysText(nearest.first.nextDate)}"
+                            else -> "${active.size} 笔订阅 · 都还没填下次扣费日"
                         },
                         fontSize = 11.5.sp,
                         color = LbOnDark2,
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
-                LbChip("${java.time.LocalDate.now().monthValue} 月", ChipTone.OnDark)
+                // 这里原来是一个纯装饰的月份 chip,点不动 —— 守护页最该做的事就是
+                // 「找出我忘关的订阅」,所以把它换成通往扫描的入口。
+                HeroScanChip("去扫描") { onOpenScan() }
             }
         }
 
@@ -234,7 +256,16 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                         .weight(1f),
                 ) {
                     Text("一键扫描本机自动续费", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-                    Text("读取扣费短信与已安装应用，找出你忘记的订阅", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
+                    // 原来只写「读取扣费短信与已安装应用」—— 少说了两个来源,也完全没提
+                    // v2.17 起才有的「代扣协议」(用户最难自己想到的那条路)。
+                    Text("短信 · 通知 · 已装应用 · 支付宝/微信代扣协议，四处一起找", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
+                    Text(
+                        if (store.lastScanAt > 0L) "能自动帮你翻进那两家的续费页 · 上次扫描 " + store.fmtCnAt(store.lastScanAt)
+                        else "能自动帮你翻进支付宝 / 微信的续费页，替你读那些忘关的",
+                        fontSize = 11.5.sp,
+                        color = LbAccent,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                 }
                 Icon(LbIcons.chevronRight, contentDescription = null, tint = LbInk3, modifier = Modifier.size(15.dp))
             }
@@ -288,65 +319,82 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
 
         SectionHeader("订阅清单") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("${store.subs.size} 笔", fontSize = 12.5.sp, color = LbInk3)
+                Text(
+                    if (closingCount > 0) "${active.size} 笔在用 · $closingCount 笔已处理" else "${active.size} 笔在用",
+                    fontSize = 12.5.sp,
+                    color = LbInk3,
+                )
                 Spacer(Modifier.width(9.dp))
                 LbPlusButton(onClick = { showAdd = true }, contentDescription = "添加订阅")
             }
         }
         LbCard(contentPadding = 8.dp) {
-            if (store.subs.isEmpty()) {
-                Text(
-                    "还没有订阅。点右上角 + 记下第一笔，我会在扣费前提醒你。",
-                    fontSize = 12.sp,
-                    color = LbInk3,
-                    lineHeight = 18.sp,
-                    modifier = Modifier.padding(12.dp),
-                )
+            if (active.isEmpty()) {
+                // 空态分三种,各带一个能立刻做的动作。
+                // 原来只有一句「还没有订阅。点右上角 + 记下第一笔」—— 用户刚扫完、什么都没扫到,
+                // 看到的正是这句话,会以为扫坏了;而真正的原因(没开权限 / 没扫过 / 确实没有)三个字都没说。
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        when {
+                            !canScan -> "还没开扫描要用的权限"
+                            store.lastScanAt == 0L -> "还没扫过"
+                            else -> "扫过了，四处来源都没发现订阅"
+                        },
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LbInk,
+                    )
+                    Text(
+                        when {
+                            !canScan -> "短信里读「扣费 / 签约」要「读取短信」；读支付宝·微信那两页要「代扣协议读取」。开一路就能扫一路，不用全开。"
+                            store.lastScanAt == 0L -> "四处一起找：扣费短信 · 扣费通知 · 已安装应用 · 支付宝/微信代扣协议。后两家那两页我能替你翻进去读。"
+                            else -> "盖不到的地方我如实说：苹果 App Store 订阅、手机厂商商店（华为/小米等）、挂在话费里的代扣 —— 这三处只能你自己去看一眼。"
+                        },
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                    Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ClaimBtn(if (store.lastScanAt == 0L) "去扫描" else "再扫一次", primary = true) { onOpenScan() }
+                        Spacer(Modifier.width(8.dp))
+                        ClaimBtn("手动记一笔", primary = false) { showAdd = true }
+                    }
+                }
             } else {
-                store.subs.forEach { s ->
+                // 只渲染「在用」的。关闭中的全部收进下面的「已处理」——
+                // 原来两者混排,「关闭中」的也占着清单,于是合计/笔数/清单三处对不上。
+                active.forEach { s ->
                     LbListRow(
                         leading = {
                             Box(
                                 Modifier
                                     .size(36.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(if (s.closing) LbAccentSoft else LbSurface2),
+                                    .background(LbSurface2),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
                                     s.name.take(1),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = if (s.closing) LbAccent else LbInk2,
+                                    color = LbInk2,
                                 )
                             }
                         },
                         title = s.name,
+                        // 来源从「行尾的 chip」挪到「标题下面一行」:
+                        // 行尾原来最多能挤 4 个 chip,系统字号放到 2.0× 必定折行,金额和日期会被挤出屏幕。
+                        sub = if (s.source != "手动") "来源：${s.source}" else null,
                         trailing = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (s.source != "手动") {
-                                    LbChip(s.source, if (s.source == "演示") ChipTone.Amber else ChipTone.Soft)
+                                // ⚠️ 日期缺失时**别再放一个「待补全」chip**：行尾那格日期列
+                                // （store.dateLabel）本来就写「待补全」,两个一模一样的词会并排出现,
+                                // 看上去像坏了（第一次实测的截图里就是「待补全 ¥25 待补全」）。
+                                val d = store.daysUntil(s.nextDate)
+                                if (d != null && d <= 1) {
+                                    LbChip("明天扣", ChipTone.Amber)
                                     Spacer(Modifier.width(8.dp))
-                                }
-                                if (store.hasChargeAfterClosing(s)) {
-                                    LbChip("关闭后仍有扣费", ChipTone.Rust)
-                                    Spacer(Modifier.width(8.dp))
-                                }
-                                if (s.closing) {
-                                    LbChip("关闭中", ChipTone.Green)
-                                    Spacer(Modifier.width(8.dp))
-                                } else {
-                                    val d = store.daysUntil(s.nextDate)
-                                    when {
-                                        d == null -> {
-                                            LbChip("待补全", ChipTone.Soft)
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        d <= 1 -> {
-                                            LbChip("明天扣", ChipTone.Amber)
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                    }
                                 }
                                 Text(if (s.amount <= 0) "金额待补" else "¥" + store.fmtMoney(s.amount), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                                 Text(
@@ -366,23 +414,94 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             }
         }
 
-        LbCard(modifier = Modifier.padding(top = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent, size = 32.dp)
-                Column(Modifier.padding(start = 11.dp)) {
-                    Text(
-                        if (store.closedCount == 0) "还没有标记关闭的订阅"
-                        else "已标记关闭 ${store.closedCount} 笔订阅",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = LbInk,
-                    )
-                    Text(
-                        if (store.monthlySaved > 0) "每月少支出 ¥${store.fmtMoney(store.monthlySaved)}"
-                        else "在订阅详情点「我已关闭」，这里会开始累计",
-                        fontSize = 11.5.sp,
-                        color = LbInk3,
-                    )
+        // 「已处理」= 已标记关闭的订阅。默认收起,点一下展开。
+        // 原来这里只是一行统计文字(而且基数用的是历史累计 closedCount,与上面合计用的当前
+        // closing 又是两套基数),关闭中的订阅则混在清单里 —— 现在归拢到这一处,基数统一。
+        if (closingCount > 0) {
+            LbCard(modifier = Modifier.padding(top = 10.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { showClosed = !showClosed }
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent, size = 32.dp)
+                    Column(
+                        Modifier
+                            .padding(start = 11.dp)
+                            .weight(1f),
+                    ) {
+                        Text("$closingCount 笔已标记关闭", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                        Text(
+                            if (store.monthlySaved > 0) "每月少支出 ¥${store.fmtMoney(store.monthlySaved)} · 不计入上面的合计"
+                            else "不计入上面的合计",
+                            fontSize = 11.5.sp,
+                            color = LbInk3,
+                        )
+                    }
+                    Text(if (showClosed) "收起" else "查看", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
+                }
+                if (showClosed) {
+                    Column(Modifier.padding(top = 8.dp)) {
+                        closingList.forEach { s ->
+                            LbListRow(
+                                leading = {
+                                    Box(
+                                        Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(LbAccentSoft),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(LbIcons.circleCheck, contentDescription = null, tint = LbAccent, modifier = Modifier.size(17.dp))
+                                    }
+                                },
+                                title = s.name,
+                                trailing = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // 唯一还被允许留在行尾的提醒 chip:它是「你应该回头看一眼」的强信号。
+                                        if (store.hasChargeAfterClosing(s)) {
+                                            LbChip("关闭后仍有扣费", ChipTone.Rust)
+                                            Spacer(Modifier.width(8.dp))
+                                        }
+                                        Text(if (s.amount <= 0) "金额待补" else "¥" + store.fmtMoney(s.amount), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                                    }
+                                },
+                                onClick = { onOpenDetail(s.id) },
+                                onLongClick = { deleteSubId = s.id },
+                            )
+                        }
+                        Text(
+                            "点开可以核对「关闭后是否还在扣」，或长按删掉这一条。",
+                            fontSize = 11.sp,
+                            color = LbInk3,
+                            lineHeight = 16.sp,
+                            modifier = Modifier.padding(top = 6.dp, start = 4.dp),
+                        )
+                    }
+                }
+            }
+        } else {
+            LbCard(modifier = Modifier.padding(top = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent, size = 32.dp)
+                    Column(Modifier.padding(start = 11.dp)) {
+                        Text(
+                            if (store.closedCount == 0) "还没有标记关闭的订阅"
+                            else "历史累计标记关闭 ${store.closedCount} 笔",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LbInk,
+                        )
+                        Text(
+                            if (store.closedCount == 0) "在订阅详情点「我已关闭」，这里会开始累计"
+                            else "这些已不在清单里，也不再计入上面的合计",
+                            fontSize = 11.5.sp,
+                            color = LbInk3,
+                        )
+                    }
                 }
             }
         }
@@ -486,6 +605,9 @@ fun SubscriptionDetailScreen(
     var showAddCharge by remember { mutableStateOf(false) }
     var chargeDeleteId by remember { mutableStateOf<String?>(null) }
     var showTrial by remember { mutableStateOf(false) }
+    // 详情页里的删除入口。原来只有「回到清单长按那一行」一条路 —— 隐式手势，
+    // 而且进了详情页反而找不到删除。这里把它明说出来。
+    var showDelSub by remember { mutableStateOf(false) }
 
     // 订阅命中时 highlightId 就是**本订阅自己**的 id：整页就是它，没有「某一行」要滚，
     // 直接算定位完成 —— 不然这个待定位状态会一直挂着，下次再进来还会亮一下。
@@ -536,10 +658,12 @@ fun SubscriptionDetailScreen(
                 }
                 Column(Modifier.padding(start = 12.dp)) {
                     Text(sub.name, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                    // 判据用 `days != null`（**日期真的解析出来了**）而不是 `hasDate`（只判非空）：
+                    // 只判非空的话，写了个解析不出的日期会渲染成「每月 null 日」。
                     Text(
-                        if (hasDate) "自动续费 · 每月 $dayOfMonth 日" else "自动续费 · 扣费日待补全",
+                        if (days != null) "自动续费 · 每月 $dayOfMonth 日" else "自动续费 · 扣费日待补全",
                         fontSize = 12.sp,
-                        color = if (hasDate) LbInk3 else LbAmber,
+                        color = if (days != null) LbInk3 else LbAmber,
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
@@ -550,14 +674,14 @@ fun SubscriptionDetailScreen(
             ) {
                 if (sub.closing) {
                     LbChip("关闭处理中", ChipTone.Green)
-                } else if (days == null) {
-                    LbChip("扣费日待补全", ChipTone.Soft)
-                } else {
+                } else if (days != null) {
                     LbChip(
                         if (days <= 1) "明天自动扣费" else "${store.daysText(sub.nextDate)}自动扣费",
                         if (days <= 3) ChipTone.Amber else ChipTone.Soft,
                     )
                 }
+                // 日期缺失时不放 chip：上面那行副标题已经用 amber 说了「扣费日待补全」，
+                // 同一个事实说两遍只会显得啰嗦（实测截图里就是「扣费日待补全」出现了两次）。
                 LbChip("每月 ¥${store.fmtMoney(sub.amount)}", ChipTone.Soft)
                 if (sub.source != "手动") LbChip(sub.source, if (sub.source == "演示") ChipTone.Amber else ChipTone.Soft)
             }
@@ -585,6 +709,32 @@ fun SubscriptionDetailScreen(
                     color = LbAmber,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+            }
+        }
+
+        // 关闭入口前置。原来这一块在页面最底 —— 前面横着「提醒」「下次扣费」
+        // 「扣费记录」「手动补记」四块，想关掉一笔订阅得先滚过整页。而「怎么关掉它」
+        // 恰恰是用户点进详情最想知道的事,所以提到主卡下面第一位。
+        LbCard(contentPadding = 16.dp, modifier = Modifier.padding(top = 10.dp)) {
+            if (!sub.closing) {
+                CancelGuide(store = store, subId = sub.id, onDone = { })
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent, size = 36.dp)
+                    Column(
+                        Modifier
+                            .padding(start = 11.dp)
+                            .weight(1f),
+                    ) {
+                        Text("已标记为「关闭中」", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                        Text(
+                            "取消需在平台完成；之后若仍有扣费，扫描时会提醒你复核。要彻底移出清单，点页面最下面的「删除这条订阅」。",
+                            fontSize = 11.5.sp,
+                            color = LbInk3,
+                            lineHeight = 17.sp,
+                        )
+                    }
+                }
             }
         }
 
@@ -725,6 +875,53 @@ fun SubscriptionDetailScreen(
             LbGhostButton("手动补记一笔扣费", onClick = { showAddCharge = true }, modifier = Modifier.fillMaxWidth())
         }
 
+        // 删除入口。原来只有「回清单长按那一行」一条路：手势是隐式的，而且进了详情页反而没有。
+        // 放在整页最底 —— 它是「少见但彻底」的动作，不该和上面的「去关闭」抢注意力。
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .clickable { showDelSub = true }
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Icon(LbIcons.trash, contentDescription = null, tint = LbRust, modifier = Modifier.size(15.dp))
+            Text("删除这条订阅", fontSize = 12.5.sp, color = LbRust, modifier = Modifier.padding(start = 6.dp))
+        }
+        Text(
+            "删除只是让管家不再盯着它（本机动作）。真要停止扣费，仍然得在支付宝 / 微信里关掉自动续费。",
+            fontSize = 11.sp,
+            color = LbInk3,
+            lineHeight = 16.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp),
+        )
+
+        if (showDelSub) {
+            LbConfirmDialog(
+                title = "删除「${sub.name}」？",
+                text = if (sub.source == "手动")
+                    "删除后不再提醒扣费。这一笔是你手动记的，之后想恢复只能再记一次。"
+                else
+                    "删除后不再提醒扣费。这一条来自「${sub.source}」：删掉之后，扫描再读到它也不会自动加回 —— 这个「不再加回」是本机长期记住的，界面上没有撤销的地方。",
+                onDismiss = { showDelSub = false },
+                onConfirm = {
+                    val nm = sub.name
+                    val src = sub.source
+                    store.removeSub(sub.id)
+                    // 与「守护页清单长按删除」同一套规则：只有自动来源才记进「不再加回」。
+                    if (src == "扫描" || src == "通知" || src == "代扣页") store.dismissName(nm)
+                    showDelSub = false
+                    // 不手动 onBack()：sub 立刻变 null，composable 开头那段
+                    // `if (sub == null) { LaunchedEffect { onBack() } }` 会自动退回去。
+                },
+            )
+        }
+
         if (showEdit) {
         LbInputDialog(
             title = "编辑订阅",
@@ -753,23 +950,7 @@ fun SubscriptionDetailScreen(
         )
     }
 
-    LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 16.dp) {
-            if (!sub.closing) {
-                CancelGuide(store = store, subId = sub.id, onDone = { })
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent, size = 36.dp)
-                    Column(
-                        Modifier
-                            .padding(start = 11.dp)
-                            .weight(1f),
-                    ) {
-                        Text("已标记为「关闭中」", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
-                        Text("取消需在平台完成；之后若仍有扣费，扫描时会提醒你复核", fontSize = 11.5.sp, color = LbInk3)
-                    }
-                }
-            }
-        }
+        // （关闭入口原来在这里 —— 已前置到主卡下面，见上面那段注释）
         if (showAddCharge) {
             LbInputDialog(
                 title = "补记一笔扣费",
@@ -1210,5 +1391,24 @@ private fun ClaimBtn(text: String, primary: Boolean, onClick: () -> Unit) {
             fontWeight = FontWeight.SemiBold,
             color = if (primary) LbAccent else LbInk2,
         )
+    }
+}
+
+/**
+ * 深色「每月订阅合计」卡右上角的动作 chip。
+ *
+ * 原来那个位置是一个纯装饰的「N 月」,点不动。守护页第一件事就是「找出我忘关的订阅」,
+ * 把它换成扫描入口 —— 不增加任何新概念,只是让本来闲着的地方能点。
+ */
+@Composable
+private fun HeroScanChip(text: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color(0x29F6F5F0))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 8.dp),
+    ) {
+        Text(text, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = LbOnDark)
     }
 }

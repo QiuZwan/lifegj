@@ -50,6 +50,15 @@ object A11yScanner {
         val pageName: String,
         /** 手动怎么走过去（用户找不到时照着点） */
         val manualPath: String,
+        /**
+         * 「帮我翻进去」的逐级路径 —— 无障碍照着它一步步点。
+         *
+         * ⚠️ **这份文案是照公开信息写的，没在真机上核过**（手上没有真支付宝/微信账号）。
+         * 一旦某家改版，改这里的一行字就行，不用动逻辑。空列表 = 这家不支持自动翻。
+         * ⚠️ 候选词**只能写导航/入口类文字**，绝不能出现「关闭 / 解约 / 取消 / 付款」这类动作词
+         * ——[A11yNav.FORBIDDEN] 会拦，但拦下来就意味着这一步永远走不通。
+         */
+        val route: List<A11yNav.Step> = emptyList(),
         /** 能直达就直达；多数 App 没开放，所以可能是 null */
         val deepLink: String? = null,
     )
@@ -59,11 +68,27 @@ object A11yScanner {
             key = "alipay", title = "支付宝", pkg = "com.eg.android.AlipayGphone",
             pageName = "免密支付 / 自动扣款",
             manualPath = "我的 → 设置 → 支付设置 → 免密支付/自动扣款",
+            route = listOf(
+                A11yNav.Step("打开「我的」", listOf("我的")),
+                A11yNav.Step("进入「设置」", listOf("设置")),
+                A11yNav.Step("进入「支付设置」", listOf("支付设置")),
+                A11yNav.Step(
+                    "进入「免密支付/自动扣款」",
+                    listOf("免密支付/自动扣款", "免密支付 / 自动扣款", "免密支付", "自动扣款"),
+                ),
+            ),
         ),
         Payer(
             key = "wechat", title = "微信", pkg = "com.tencent.mm",
             pageName = "自动续费",
             manualPath = "我 → 服务 → 钱包 → 支付设置 → 自动续费",
+            route = listOf(
+                A11yNav.Step("打开「我」", listOf("我")),
+                A11yNav.Step("进入「服务」", listOf("服务")),
+                A11yNav.Step("进入「钱包」", listOf("钱包")),
+                A11yNav.Step("进入「支付设置」", listOf("支付设置")),
+                A11yNav.Step("进入「自动续费」", listOf("自动续费", "扣费服务")),
+            ),
         ),
     )
 
@@ -174,6 +199,26 @@ object A11yScanner {
 
     /** 这一页像不像"一张带金额/周期的清单"。不像就整页丢弃。 */
     private fun looksLikeList(rows: List<Row>): Boolean = rows.isNotEmpty()
+
+    /**
+     * 这一页**是不是**那张清单 —— 只判断、不改任何状态。
+     *
+     * 给 [A11yNav] 认「到位了没有」用：一认出是清单页就得**立刻停手**，
+     * 再点一下都可能点到「关闭服务」。
+     */
+    internal fun looksLikeListPage(root: AccessibilityNodeInfo): Boolean {
+        return try {
+            val texts = mutableListOf<String>()
+            collectTexts(root, texts, intArrayOf(MAX_NODES), 0)
+            if (texts.isEmpty()) return false
+            if (!PAGE_MARK.containsMatchIn(texts.joinToString(" "))) return false
+            val groups = mutableListOf<List<String>>()
+            collectGroups(root, groups, intArrayOf(MAX_NODES), 0)
+            extract(texts, groups).isNotEmpty()
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     /* ── 从无障碍树取文本 ── */
 
@@ -405,6 +450,8 @@ class A11yScannerService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         A11yScanner.connected = true
+        A11yNav.bind(this)          // 「帮我翻进去」收尾时要落一条结果留痕
+        A11yNav.sweep(this)         // 进程重启后别留着上次的"正在翻"状态
         serviceInfo = serviceInfo?.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
@@ -417,10 +464,14 @@ class A11yScannerService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
         if (pkg !in A11yScanner.WATCHED_PKGS) return
-        // 滚动/刷新会密集触发，节流到 ~0.6s 一次；真正去重靠 handleWindow 里的页面指纹
         val root = rootInActiveWindow ?: return
         try {
-            A11yScanner.handleWindow(this, pkg, root)
+            // ① 「帮我翻进去」优先：导航中这一步由它处理，我们就别去解析半路上的页面了。
+            //    ⚠️ 它返回 false 有两种情况都要照常往下走：**没在导航**，以及**刚认出到位了**——
+            //    后面那种正是我们要抓的那一页，必须让 handleWindow 去解析。
+            if (A11yNav.onWindow(this, pkg, root)) return
+            val n = A11yScanner.handleWindow(this, pkg, root)
+            A11yNav.afterParse(this, n)
         } catch (e: Exception) {
             // 解析失败不影响系统；绝不让异常冒出去
         }

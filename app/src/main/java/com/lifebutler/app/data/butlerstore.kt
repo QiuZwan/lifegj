@@ -278,6 +278,28 @@ class ButlerStore private constructor(context: Context) {
     private var startDate: String = LocalDate.now().toString()
 
     /**
+     * 上一次「一键扫描」是什么时候跑的（0 = 从来没扫过）。
+     *
+     * 为什么要这个：守护页空着的时候，用户分不清是「没授权」「没扫过」还是「扫了真没有」。
+     * 「知道自己不知道什么」是可信度的地基 —— 所以这是个必须落盘的标量，
+     * 按项目约定：只加 [save] 的 `put` + [load] 的 `opt`，不动集合那六处。
+     */
+    var lastScanAt: Long = 0L
+        private set
+
+    /** 扫描跑完时调一次；顺带把「上次扫描时间」落盘。 */
+    fun markScanned() {
+        lastScanAt = System.currentTimeMillis()
+        save()
+    }
+
+    /** 测试/清数据时用：把"扫过"这件事也一起忘掉，否则空态会一直说"扫过了" */
+    fun forgetScanned() {
+        lastScanAt = 0L
+        save()
+    }
+
+    /**
      * 悬浮管家（App 内全局那个小机器人）被拖到的位置，**归一化到 0~1**（相对可拖动区域的宽/高）。
      *
      * 为什么存分数不存像素：屏幕上可拖动的范围会变（换设备、系统字体、深色模式下的状态栏），
@@ -1717,6 +1739,7 @@ class ButlerStore private constructor(context: Context) {
         profileName.value = "小满"
         bloodType.value = ""; meds.value = ""; emergencyContact.value = ""
         startDate = LocalDate.now().toString()
+        forgetScanned()
         seedDemoData()
         save()
     }
@@ -1768,6 +1791,9 @@ class ButlerStore private constructor(context: Context) {
         // 悬浮管家回到默认位置（贴右侧）。它不算「记录」，只是界面摆放，但清空也一并复位更符合直觉。
         butlerFx = -1f; butlerFy = -1f
         startDate = LocalDate.now().toString()
+        // 「扫过了」这个状态跟着记录一起走。不清的话，用户清空数据后守护页会显示
+        // 「已扫过、没有发现」——而他其实一次都没扫过。
+        forgetScanned()
         chat.add(ButlerChat(id(), false, "数据已清空，从今天开始记录吧。说「记一下：…」试试，或去「守护」页扫描本机自动续费。", ""))
         save()
     }
@@ -2085,6 +2111,7 @@ class ButlerStore private constructor(context: Context) {
             val o = JSONObject()
             o.put("name", profileName.value)
             o.put("start", startDate)
+            o.put("scanAt", lastScanAt)
             o.put("blood", bloodType.value)
             o.put("meds", meds.value)
             o.put("contact", emergencyContact.value)
@@ -2158,6 +2185,7 @@ class ButlerStore private constructor(context: Context) {
             val o = JSONObject(raw)
             profileName.value = o.optString("name", "小满")
             startDate = o.optString("start", LocalDate.now().toString())
+            lastScanAt = o.optLong("scanAt", 0L)
             bloodType.value = o.optString("blood", "")
             meds.value = o.optString("meds", "")
             emergencyContact.value = o.optString("contact", "")
@@ -2321,6 +2349,7 @@ class ButlerStore private constructor(context: Context) {
             if (migrated) save()
         } catch (e: Exception) {
             clearLists()
+            lastScanAt = 0L
             chat.add(ButlerChat(id(), false, "本地数据读取失败，已从空白开始。之前的内容可以在「我的 → 备份与恢复」里用备份找回。", ""))
             save()
         }

@@ -10,6 +10,10 @@
     ① 这里补包名；
     ② data/a11yscanner.kt 的 PAYERS 补一条 Payer。
   只改一处会导致"服务收不到事件"或"收到了但认不出是哪一家"，都不报错、很难查。
+
+  canPerformGestures 只有「帮我翻进去」用得上：语义化点击
+  （performAction(ACTION_CLICK)）失败时，兜底按节点中心发一次手势。
+  点击范围仍然被 packageNames 锁在这两个包内 —— 它点不动别的 App，也点不动桌面。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/lb_a11y_desc"
@@ -19,4 +23,5 @@
     android:accessibilityFlags="flagReportViewIds"
     android:notificationTimeout="400"
     android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
     android:packageNames="com.eg.android.AlipayGphone,com.tencent.mm" />
