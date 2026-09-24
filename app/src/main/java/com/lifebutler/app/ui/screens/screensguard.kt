@@ -216,7 +216,12 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             ) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconBadge(LbIcons.bell, LbAmberSoft, LbAmber, size = 32.dp)
+                        // ── B8：线索徽章**退出 amber** ──
+                        // 线索是「等你判断」，不是「时间紧」。它不该和「这笔明天就要扣了」
+                        // 抢同一个警告色，否则用户分不清哪个必须现在处理。
+                        // 它是中性的待办：靠首屏位置 + 明确的「认得 / 以后别再提」引起注意。
+                        // amber 从此只表示「时间紧，该动手了」（见 theme.kt 的语义分工注释）。
+                        IconBadge(LbIcons.bell, LbSurface2, LbInk2, size = 32.dp)
                         Column(
                             Modifier
                                 .padding(start = 10.dp)
@@ -377,28 +382,12 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             }
         }
 
-        // 动态提醒条:优先显示「关闭进行中」,其次是临近扣费
-        if (closingCount > 0) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(LbAccentSoft)
-                    .padding(13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconBadge(LbIcons.circleCheck, LbSurface, LbAccent, size = 34.dp)
-                Column(
-                    Modifier
-                        .padding(start = 11.dp)
-                        .weight(1f),
-                ) {
-                    Text("$closingCount 笔已在关闭中", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
-                    Text("若之后仍有扣费，点开这条核对一下", fontSize = 11.5.sp, color = LbInk2)
-                }
-            }
-        } else if (nearest != null && nearest.second <= 3) {
+        // ── 顶部这一条**只留给「时间紧」**（B8 之后 amber 的唯一语义）──
+        // 原来这里是「关闭中」优先、临近扣费其次。问题是：只要有一笔在关闭中，
+        // **「这笔今天就扣」这条真正急的提醒就永远不出现**了 —— 而"在关闭中"这件事
+        // 下面本来就有一张常驻的「N 笔已标记关闭」卡在说。
+        // 把位置让给时间紧的那条，同一件事也不用说两遍。
+        if (nearest != null && nearest.second <= 3) {
             val s = nearest.first
             Row(
                 Modifier
@@ -501,7 +490,16 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                 // 看上去像坏了（第一次实测的截图里就是「待补全 ¥25 待补全」）。
                                 val d = store.daysUntil(s.nextDate)
                                 if (d != null && d <= 3) {
-                                    LbChip(if (d <= 1) "明天扣" else "${store.daysText(s.nextDate)}扣", ChipTone.Amber)
+                                    // ⚠️ `d == 0` 是「就是今天」，别把它并进 `d <= 1` 说成「明天扣」——
+                                    // 实测就出了这个错：日期是今天，chip 却写着「明天扣」，两处各说各话。
+                                    LbChip(
+                                        when {
+                                            d <= 0L -> "今天扣"
+                                            d == 1L -> "明天扣"
+                                            else -> "${store.daysText(s.nextDate)}扣"
+                                        },
+                                        ChipTone.Amber,
+                                    )
                                     Spacer(Modifier.width(8.dp))
                                 }
                                 // ── D11：缺的那个字段**点一下就补**，只弹这一个字段。
@@ -897,8 +895,13 @@ fun SubscriptionDetailScreen(
                     if (sub.closing) {
                         LbChip("关闭处理中", ChipTone.Green)
                     } else if (days != null) {
+                        // 同上：`days == 0` 是「就是今天」，别说成「明天」
                         LbChip(
-                            if (days <= 1) "明天自动扣费" else "${store.daysText(sub.nextDate)}自动扣费",
+                            when {
+                                days <= 0L -> "今天自动扣费"
+                                days == 1L -> "明天自动扣费"
+                                else -> "${store.daysText(sub.nextDate)}自动扣费"
+                            },
                             if (days <= 3) ChipTone.Amber else ChipTone.Soft,
                         )
                     }

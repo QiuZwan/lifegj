@@ -45,6 +45,20 @@ val LbOnAccent: Color get() = if (LbTheme.dark) Color(0xFF0E2019) else Color(0xF
 val LbDark: Color get() = if (LbTheme.dark) Color(0xFF26332C) else Color(0xFF1E2A24)
 val LbOnDark: Color = Color(0xFFF6F5F0)
 val LbOnDark2: Color = Color(0x9EF6F5F0)
+// ── 语义色的分工（v2.19 定死，别再混用）──
+//
+// 以前 amber 一个颜色同时表示「收到线索，要你判断」和「这笔明天就要扣了，时间紧」，
+// 用户分不清哪个是"必须现在处理"（清单 B8）。现在按**紧急程度**分三档：
+//
+//   LbAccent(绿)  = 信息 / 已完成 / 在守护 —— 「一切正常，这里只是告诉你一声」
+//   LbAmber(琥珀) = **时间紧，该动手了** —— 临近扣费、快到期、快到点的提醒。
+//                   ⚠️ 唯一语义，别拿它表示"待判断""数据不全"这类不紧急的事。
+//                   ⚠️ 强度分级：**整块 amber 底色 = 现在就该看**；只把文字染成 amber
+//                      （如「待补全」「金额待补」）= 需要留意但不急，且通常可点。
+//   LbRust(锈红)  = 出问题了 —— 关闭后仍在扣费、服务被系统断开这类"真的错了"。
+//
+// 「待你判断」的线索不属于任何一档紧急色：它是**中性的待办**，用 LbSurface/LbInk 表现，
+// 靠位置（首屏顶部）和明确的操作按钮（认得 / 以后别再提）来引起注意，不靠颜色喊。
 val LbAmber: Color get() = if (LbTheme.dark) Color(0xFFD8A95C) else Color(0xFF96661F)
 val LbAmberSoft: Color get() = if (LbTheme.dark) Color(0xFF33291A) else Color(0xFFF6EEDC)
 val LbRust: Color get() = if (LbTheme.dark) Color(0xFFE08A7E) else Color(0xFFA0453B)
