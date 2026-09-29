@@ -387,7 +387,7 @@ object A11yScanner {
                 store.addChat(
                     false,
                     "刚从${payer.title}的「${payer.pageName}」页读到 ${rows.size} 条签约：$names。\n" +
-                        "这些是从那一页读到的（无论你自己打开的还是我替你翻进去的），只记在本机。回到「守护」页核对一下 —— " +
+                        "这些是从那一页读到的，只记在本机。回到「订阅管理」页核对一下，" +
                         "认了才进清单，不是你的点「不是我的」。",
                 )
             } catch (e: Exception) {

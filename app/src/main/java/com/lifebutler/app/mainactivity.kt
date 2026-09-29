@@ -350,7 +350,7 @@ fun LbApp(
     fun openRoute(route: String) {
         when (route) {
             "today" -> { overlay = null; tab = "今日" }
-            "guard" -> { overlay = null; tab = "守护" }
+            "guard" -> { overlay = null; tab = "订阅管理" }
             "family" -> { overlay = null; tab = "家庭" }
             "mine" -> { overlay = null; tab = "我的" }
             "chat" -> Unit
@@ -442,7 +442,7 @@ fun LbApp(
                         "about_feedback" -> FeedbackScreen(onBack = { overlay = "about" })
                         "今日" -> TodayScreen(
                             onOpenDuties = { overlay = "duties" },
-                            onOpenGuard = { tab = "守护" },
+                            onOpenGuard = { tab = "订阅管理" },
                             onOpenLedger = { overlay = "ledger" },
                             onOpenReport = { overlay = "report" },
                             onOpenSearch = { overlay = "search" },
@@ -450,7 +450,7 @@ fun LbApp(
                             highlightId = highlightAt?.takeIf { it.first == "今日" }?.second,
                             onHighlightConsumed = { highlightAt = null },
                         )
-                        "守护" -> GuardScreen(
+                        "订阅管理" -> GuardScreen(
                             onOpenDetail = { id ->
                                 detailSubId = id
                                 overlay = "detail"
@@ -573,7 +573,7 @@ private val OVERLAY_ROUTES = setOf(
  */
 private fun pageKeyOf(route: String): String = when (route) {
     "today" -> "今日"
-    "guard" -> "守护"
+    "guard" -> "订阅管理"
     "family" -> "家庭"
     "chat" -> "智能管家"
     "mine" -> "我的"
@@ -593,8 +593,8 @@ private fun OnboardingGuide(onOpen: (String) -> Unit, onDismiss: () -> Unit) {
     val steps = listOf(
         Triple(
             "① 加一个订阅",
-            "把每月的会员费记下来：多少钱、哪天扣。扣费日前我会在每日简报里提醒你，不用自己记。",
-            "去守护页加一个" to "guard",
+            "把每月的会员费记下来：多少钱、哪天扣。扣费日前会在今日概要里提醒你，不用自己记。",
+            "去订阅管理页加一个" to "guard",
         ),
         Triple(
             "② 记一笔",

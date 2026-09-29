@@ -85,7 +85,7 @@ object Diagnostics {
 
         appendLine("--- 本机记录条数（只报条数，不含内容）---")
         appendLine("任务 " + store.tasks.size + " 条（未完成 " + store.tasks.count { !it.done } + "）")
-        appendLine("守护 " + store.obligations.size + " 条（未完成 " + store.obligations.count { !it.done } + "）")
+        appendLine("到期事项 " + store.obligations.size + " 条（未完成 " + store.obligations.count { !it.done } + "）")
         appendLine("订阅 " + store.subs.size + " 条（在用 " + store.subs.count { !it.closing } + "）")
         appendLine("备忘 " + store.memos.size + " 条")
         appendLine("家庭成员 " + store.members.size + " 人 · 纪念日 " + store.keyDates.size + " 个")
@@ -94,7 +94,7 @@ object Diagnostics {
         appendLine("账目 " + store.expenses.size + " 笔 · 扣费流水 " + store.charges.size + " 条")
         // 用户报「刚开通自动续费，扫描里什么都没有」时，这一行最能定性：
         // 0 条 = 通知压根没被认出来（或被系统断了监听）；>0 条 = 收到了、挂在「待确认」等他点。
-        appendLine("待认领线索 " + store.pendingClaims.size + " 条（通知命中后等你确认，不算账目）")
+        appendLine("待确认线索 " + store.pendingClaims.size + " 条（通知命中后等你确认，不算账目）")
         appendLine("有记录：" + onOff(store.hasAnyRecord()))
         appendLine()
 

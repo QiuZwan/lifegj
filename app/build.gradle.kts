@@ -19,8 +19,8 @@ android {
         applicationId = "com.lifebutler.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 33
-        versionName = "2.19"
+        versionCode = 34
+        versionName = "2.20"
     }
 
     signingConfigs {

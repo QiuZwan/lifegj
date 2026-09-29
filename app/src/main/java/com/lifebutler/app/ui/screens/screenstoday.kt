@@ -200,7 +200,7 @@ fun TodayScreen(
         chipText = "天气获取中…"
         chipIcon = LbIcons.cloud
     } else {
-        chipText = "本机记录 · 第 ${store.dayCount()} 天"
+        chipText = "已记录 ${store.dayCount()} 天"
         chipIcon = LbIcons.mapPin
     }
 
@@ -272,8 +272,8 @@ fun TodayScreen(
             painter = painterResource(R.drawable.hero_morning),
             height = 176.dp,
             kicker = "今天的第一件事",
-            title = if (store.tasks.isEmpty()) "先记下今天要做的一件事" else "还剩 ${store.tasks.count { !it.done }} 件没做完",
-            sub = if (store.tasks.isEmpty()) "点下方「+」记第一件，我帮你盯着" else "勾掉一件少一件，都完成后我来给你报个平安",
+            title = if (store.tasks.isEmpty()) "记一件今天要做的事" else "还剩 ${store.tasks.count { !it.done }} 件没做完",
+            sub = if (store.tasks.isEmpty()) "点下方「+」添加" else "今日共 ${store.tasks.size} 件 · 已完成 ${store.tasks.count { it.done }} 件",
             modifier = Modifier.padding(top = 12.dp),
         )
 
@@ -331,7 +331,7 @@ fun TodayScreen(
             Column {
             if (expenseTodayCount == 0) {
                 Text(
-                    "今天还没记账。午饭、打车随手一记，月底就知道钱花哪了。",
+                    "今天还没有记账",
                     fontSize = 12.sp,
                     color = LbInk3,
                     lineHeight = 18.sp,
@@ -363,8 +363,8 @@ fun TodayScreen(
                 }
             }
             // 预算超支：只有用户**自己设过**预算才说。没设就一个字不提 ——
-            // 凭空替他定一个数、再告诉他"你超了"，是编造出来的焦虑。
-            // 首页每天报"今天花了多少"，却对"本月已经超了"一言不发，正是他把预算设了却没用的原因。
+            // 凭空替他定一个数、再告诉他"已超预算"，是编造出来的焦虑。
+            // 首页每天报"今天花了多少"，却对"本月预算已超支"一言不发，正是他把预算设了却没用的原因。
             budgetOver?.let { (spent, cap, over) ->
                 if (over) {
                     Row(
@@ -389,15 +389,15 @@ fun TodayScreen(
             }
         }
 
-        SectionHeader("替你盯着的") {
+        SectionHeader("近期到期") {
             Text("$watchCount 项", fontSize = 12.5.sp, color = LbInk3)
         }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (watches.isEmpty()) {
                 CustodyCard(
                     badge = { IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent) },
-                    title = "今天没有要盯着的事",
-                    sub = "订阅、到期事务、纪念日与家人的日子都会出现在这里",
+                    title = "今天没有待办",
+                    sub = "订阅扣费、到期事项和纪念日会显示在这里",
                     onClick = onOpenGuard,
                 )
             } else {
@@ -435,7 +435,7 @@ fun TodayScreen(
                 }
                 if (watchCount > 4) {
                     Text(
-                        "还有 ${watchCount - 4} 项 —— 去「守护」页看全部",
+                        "还有 ${watchCount - 4} 项，去订阅管理页看全部",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(start = 4.dp, top = 2.dp),
@@ -455,7 +455,7 @@ fun TodayScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (pendingObligations > 0) "查看全部 $pendingObligations 项待办义务" else "打开义务时间线",
+                    if (pendingObligations > 0) "查看全部 $pendingObligations 项待办" else "打开到期时间线",
                     fontSize = 13.5.sp,
                     fontWeight = FontWeight.Medium,
                     color = LbAccent,
@@ -520,7 +520,7 @@ fun TodayScreen(
         val t = store.tasks.firstOrNull { it.id == id }
         LbTwoActionDialog(
             title = t?.text ?: "这件事",
-            text = "要修改内容 / 备注，还是删除？",
+            text = "修改还是删除？",
             actionA = "编辑",
             actionB = "删除",
             onA = { editTaskId = id; taskMenuId = null },
@@ -554,7 +554,7 @@ fun TodayScreen(
     deleteTaskId?.let { id ->
         LbConfirmDialog(
             title = "删除这件事？",
-            text = "删除后不可恢复；之后也可以在对话里重新记一遍。",
+            text = "删除后不可恢复",
             onDismiss = { deleteTaskId = null },
             onConfirm = {
                 store.removeTask(id)
@@ -637,7 +637,7 @@ private fun PaySheet(store: ButlerStore, subId: String, onDismiss: () -> Unit) {
                     ) {
                         Text(sub.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                         Text(
-                            if (dayOfMonth != null) "自动续费 · 每月 $dayOfMonth 日" else "自动续费 · 扣费日待补全",
+                            if (dayOfMonth != null) "自动续费 · 每月 $dayOfMonth 日" else "自动续费 · 扣费日未设置",
                             fontSize = 12.sp,
                             color = if (dayOfMonth != null) LbInk3 else LbAmber,
                         )
@@ -654,14 +654,14 @@ private fun PaySheet(store: ButlerStore, subId: String, onDismiss: () -> Unit) {
                     Text("¥%.2f".format(sub.amount), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
                         if (dayOfMonth != null) "下次扣费：${store.fmtCn(sub.nextDate)}（${store.daysText(sub.nextDate)}）"
-                        else "下次扣费日期还没补全，去「守护 → 编辑」补上更稳妥",
+                        else "未设置扣费日，点击补全",
                         fontSize = 12.sp,
                         color = LbInk2,
                         modifier = Modifier.padding(top = 3.dp),
                     )
                 }
                 Text(
-                    "取消只能在对应平台完成；管家把步骤带到手，并在之后帮你复核是否真的停了。",
+                    "关闭需在支付宝 / 微信完成；之后若仍有扣费，会提醒你复核。",
                     fontSize = 12.5.sp,
                     color = LbInk2,
                     lineHeight = 19.sp,
@@ -703,14 +703,14 @@ private fun PaySheet(store: ButlerStore, subId: String, onDismiss: () -> Unit) {
                 ) {
                     IconBadge(LbIcons.circleCheck, LbAccentSoft, LbAccent, size = 60.dp)
                     Text(
-                        "已标记为「关闭中」",
+                        "已标记关闭，进入复核",
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = LbInk,
                         modifier = Modifier.padding(top = 12.dp),
                     )
                     Text(
-                        "取消需在平台完成；之后若仍有扣费，扫描时会提醒你复核。月费 ¥${store.fmtMoney(sub.amount)} 已计入「每月少支出」。",
+                        "关闭需在平台完成，之后若仍有扣费会提醒你。月费 ¥${store.fmtMoney(sub.amount)} 已计入每月少支出。",
                         fontSize = 13.sp,
                         color = LbInk2,
                         lineHeight = 19.sp,
@@ -735,9 +735,9 @@ private fun WeatherIntroDialog(onEnable: () -> Unit, onSkip: () -> Unit) {
     Dialog(onDismissRequest = onSkip) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
             Column(Modifier.padding(20.dp)) {
-                Text("在首页显示真实天气？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text("在首页显示天气？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    "开启后只做一件事：联网下载你所在城市的天气（不上传任何数据）。需要「大致位置」权限；不想开的话，关闭状态下完全不联网。",
+                    "用于获取你所在城市的天气，需「大致位置」权限。天气数据仅下载、不上传。",
                     fontSize = 12.5.sp,
                     color = LbInk3,
                     lineHeight = 19.sp,

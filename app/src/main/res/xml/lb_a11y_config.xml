@@ -20,7 +20,7 @@
     android:summary="@string/lb_a11y_summary"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
     android:notificationTimeout="400"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"

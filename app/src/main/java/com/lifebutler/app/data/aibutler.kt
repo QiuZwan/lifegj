@@ -619,7 +619,7 @@ object AiButler {
                 if (name.isNotEmpty()) "没找到「$name」，未改动" else null
             } else {
                 store.markSubClosing(hit.id, withReceipt = false)
-                "把「${hit.name}」标记为关闭中"
+                "把「${hit.name}」标记为关闭复核中"
             }
         }
 
@@ -633,7 +633,7 @@ object AiButler {
                     a.optString("note").trim(),
                     a.optString("tag").trim().ifBlank { "证件" },
                 )
-                "义务「$title」"
+                "到期事项「$title」"
             }
         }
 
@@ -983,7 +983,7 @@ object AiButler {
 ${snapshot(store)}
 
 【怎么做事】
-1. 用户说一件事，你就把它真正记进对应的地方（待办 / 记账 / 订阅 / 义务 / 家人 / 关键日期 / 档案组 / 备忘录）。
+1. 用户说一件事，你就把它真正记进对应的地方（待办 / 记账 / 订阅 / 到期事项 / 家人 / 关键日期 / 档案组 / 备忘录）。
 2. 用户问你问题时，只依据上面的快照回答。快照里没有的，直说本机没有这条记录，绝不猜测、绝不编造数字和日期。
 3. 用户问某个模块的清单（比如「我有哪些档案」「备忘里有什么」「这个月记了几笔」）时，**直接把内容列出来**：
    条数少就全列，条数多就列前几条并说清总数，不要只回一句「请去档案页查看」。
@@ -1013,7 +1013,7 @@ actions：没有要执行的就给空数组；有就按下面的格式，一次�
 $ACTION_CHEATSHEET
 
 open_screen 的 screen 只能填这几个：vault(档案库) / ledger(记账本) / memo(备忘录) / report(月报) /
-duties(义务时间线) / scan(一键扫描) / states(系统状态) / today(今日) / guard(守护与订阅) / family(家庭) / mine(我的)。
+duties(到期时间线) / scan(一键扫描) / states(系统状态) / today(今日) / guard(订阅管理) / family(家庭) / mine(我的)。
 用户没要求看某一页时就不要给这个动作。
 
 日期规则：能确定年份就写 yyyy-MM-dd；只说了月日（生日、纪念日这类）就写 MM-DD，系统会按最近的将来算。

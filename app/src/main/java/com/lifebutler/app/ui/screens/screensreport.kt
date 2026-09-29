@@ -324,7 +324,7 @@ fun MonthReportScreen(onBack: () -> Unit) {
                 val noDate = activeSubs.count { it.nextDate.isBlank() }
                 if (noDate > 0) {
                     Text(
-                        "其中 $noDate 笔还没补全扣费日，去「守护」页补上",
+                        "其中 $noDate 笔还没补全扣费日，去「订阅管理」页补上",
                         fontSize = 11.5.sp,
                         color = LbAmber,
                         modifier = Modifier.padding(top = 6.dp),
@@ -382,7 +382,7 @@ fun MonthReportScreen(onBack: () -> Unit) {
         LbCard(contentPadding = 14.dp) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ProgressRow("待办事项", store.tasks.count { it.done }, store.tasks.size)
-                ProgressRow("到期义务", store.obligations.count { it.done }, store.obligations.size)
+                ProgressRow("到期事项", store.obligations.count { it.done }, store.obligations.size)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconBadge(LbIcons.wallet, LbAccentSoft, LbAccent, size = 30.dp)
                     Text(

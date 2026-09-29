@@ -75,6 +75,9 @@ object A11yNav {
     /** 一步最多滚几次去找入口 */
     private const val MAX_SCROLL_PER_STEP = 3
 
+    /** 找不到入口时先别收工：开屏广告 / 闪屏页既点不动也滚不动，等真页面出来再说 */
+    private const val MAX_NOFIND_LOOKS = 6
+
     /**
      * 点完 / 滚完之后的**闭眼期**。
      *
@@ -91,8 +94,8 @@ object A11yNav {
     /** 整趟导航的总超时（含启动 App 的时间） */
     private const val TIMEOUT_MS = 75_000L
 
-    private const val MAX_NODES = 1800
-    private const val MAX_DEPTH = 40
+    private const val MAX_NODES = 4000
+    private const val MAX_DEPTH = 60
 
     enum class Phase { IDLE, RUNNING, ARRIVED, FAILED }
 
@@ -112,6 +115,8 @@ object A11yNav {
     private var steps: List<Step> = emptyList()
     private var index = 0
     private var scrolls = 0
+    private var toastedStep = -1
+    private var noFinds = 0
     private var deadline = 0L
 
     /** 到位后等外面解析一次，再由 [afterParse] 收尾 */
@@ -160,7 +165,7 @@ object A11yNav {
         payer.route.flatMap { it.candidates }.firstOrNull { FORBIDDEN.containsMatchIn(it) }?.let {
             return "路径配置里的「$it」被安全规则拦住了，这条自动路走不通，请照下面的路径自己点。"
         }
-        if (!A11yScanner.enabled(ctx)) return "要先开启「代扣协议读取」，我才点得动。"
+        if (!A11yScanner.enabled(ctx)) return "需先开启「自动扣款读取」才能自动导航。"
         if (A11yScanner.connected == false) return "无障碍服务被系统断开了，去重开一下再试。"
         if (!SubScanner.isInstalled(ctx, payer.pkg)) return "这台机器上没装「${payer.title}」。"
 
@@ -168,6 +173,7 @@ object A11yNav {
         steps = payer.route
         index = 0
         scrolls = 0
+        noFinds = 0
         // 还没到位就开始点，等于没在清单页上乱点 —— 但这一步不会发生：下面是先开 App
         awaitingParse = false
         deadline = SystemClock.uptimeMillis() + TIMEOUT_MS
@@ -177,7 +183,7 @@ object A11yNav {
         handler.removeCallbacks(watchdog)
         handler.removeCallbacks(recheck)
         handler.postDelayed(watchdog, TIMEOUT_MS)
-        save(ctx, "正在帮你翻进「${payer.title}」…", ok = null)
+        save(ctx, "正在打开「${payer.title}」…", ok = null)
 
         if (!SubScanner.launchPackage(ctx, payer.pkg)) {
             finish(false, "打不开「${payer.title}」（没装或被系统限制）")
@@ -223,6 +229,10 @@ object A11yNav {
             finish(false, "路径走完了，但没看到那张清单 —— 可能这家改版了")
             return false
         }
+        if (index != toastedStep) {
+            toastedStep = index
+            toast(svc, "第 ${index + 1}/${steps.size} 步：${step.title}")
+        }
         live = Live(p.title, index, steps.size, step.title)
 
         // ② 找这一步要点的那个字
@@ -240,6 +250,7 @@ object A11yNav {
             }
             index++
             scrolls = 0
+            noFinds = 0
             handler.removeCallbacks(watchdog)
             handler.postDelayed(watchdog, TIMEOUT_MS)
             live = Live(p.title, index, steps.size, steps.getOrNull(index)?.title ?: "等页面出来")
@@ -253,7 +264,12 @@ object A11yNav {
             armGrace()
             return true
         }
-        finish(false, "在「${step.title}」这一步没找到入口，请照下面的路径自己点")
+        // 一次没看到不算数：那可能只是开屏页。闭眼等下一个窗口事件再看，
+        // 连续 MAX_NOFIND_LOOKS 次都没有才认输 —— 原来这里当场收工，
+        // 微信"打开就没下文"正是死在这一下：第一扇窗是闪屏，「我」当然不在。
+        noFinds++
+        if (noFinds < MAX_NOFIND_LOOKS) { armGrace(); return true }
+        finish(false, "在「${step.title}」这一步没找到入口；当页可见：${pageTexts(root)}。请照下面的路径自己点")
         return false
     }
 
@@ -308,6 +324,11 @@ object A11yNav {
         // 补看也要撤 —— 不收掉的话，收工之后那一次补看会拿着 payer=null 又跑一遍
         handler.removeCallbacks(recheck)
         if (p != null) storeNote(p, ok, note)
+        // 进度与失败原来只写在自家界面里，而此刻屏幕在对方 App 手里 —— 用户看到的就是"没下文"。
+        // 失败必须当场弹出来，这是唯一能穿过前台 App 的反馈通道。
+        if (!ok) toast(svc, note)
+        toastedStep = -1
+        noFinds = 0
     }
 
     /* ── 树操作 ── */
@@ -337,6 +358,29 @@ object A11yNav {
         }
         walk(root, 0)
         return found
+    }
+
+    private fun toast(ctx: Context?, msg: String) {
+        if (ctx == null) return
+        try { android.widget.Toast.makeText(ctx, "生活管家：$msg", android.widget.Toast.LENGTH_SHORT).show() } catch (e: Exception) {}
+    }
+
+    /** 失败诊断：摘出当页前几条短文本。有了它，"翻不进去"不用再猜是哪个词没匹配上 */
+    private fun pageTexts(root: AccessibilityNodeInfo): String {
+        val seen = LinkedHashSet<String>()
+        var budget = 600
+        fun walk(n: AccessibilityNodeInfo, depth: Int) {
+            if (seen.size >= 8 || budget <= 0 || depth > 20) return
+            budget--
+            val t = n.text?.toString()?.trim()
+            if (!t.isNullOrEmpty() && t.length <= 10) seen.add(t)
+            for (i in 0 until n.childCount) {
+                n.getChild(i)?.let { walk(it, depth + 1) }
+                if (seen.size >= 8) return
+            }
+        }
+        walk(root, 0)
+        return if (seen.isEmpty()) "（没读到文本，可能这一页是自绘的）" else seen.joinToString("、")
     }
 
     private fun norm(s: String): String = s.trim().replace("\\s+".toRegex(), "").replace("\u00A0", "")

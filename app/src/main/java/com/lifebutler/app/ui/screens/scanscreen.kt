@@ -158,7 +158,7 @@ fun ScanScreen(onBack: () -> Unit) {
                 // 把一条"还没花出去的钱"塞进守护清单，他只会觉得"我没让你加啊"。
                 // 界面照样把它列出来，由他自己点「加入」。读得到金额的（真扣过钱）才自动加。
                 //
-                // ⚠️ **代扣页来的也一律不自动落库**，理由同上：那张清单证明的是"协议签了"，
+                // ⚠️ **代扣页来的也一律不自动落库**，理由同上：那张清单证明的是"已签约"，
                 // 不是"这笔钱已经扣了"。而且它是**用户自己翻进去**才被读到的 —— 我们更该
                 // 把判断权还给他，而不是替他往守护清单里塞东西。
                 val pureSignup = c.signup && c.amount == null
@@ -167,7 +167,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     store.subs.none { it.name == c.name } && !store.isDismissed(c.name)
                 ) {
                     val src = when {
-                        c.source.contains("代扣页") -> "代扣页"
+                        c.source.contains("代扣页") -> "自动扣款页"
                         c.source.contains("通知") -> "通知"
                         else -> "扫描"
                     }
@@ -225,7 +225,7 @@ fun ScanScreen(onBack: () -> Unit) {
                         "扫描会查看四处：\n" +
                             "① 扣费短信（需「读取短信」）：可回看近一年的收件箱 —— 唯一能「翻历史」的来源；没写金额的签约短信也认\n" +
                             "② 扣费与签约通知（需「通知读取」：只从开启那一刻开始记录；开启时还留在通知栏里的也会读一遍）\n" +
-                            "③ 代扣协议清单（需「代扣协议读取」：把支付宝/微信那两页的签约清单读下来 —— 你自己打开、或点「帮我翻进去并读取」让它替你翻进去都行。这一条最接近「我到底在续什么」）\n" +
+                            "③ 自动扣款清单（需「自动扣款读取」：把支付宝/微信那两页的签约清单读下来，可自动导航）\n" +
                             "④ 已安装应用列表（只告诉你装了哪些，不代表开了会员）",
                         fontSize = 12.5.sp,
                         color = LbInk2,
@@ -233,9 +233,9 @@ fun ScanScreen(onBack: () -> Unit) {
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     Text(
-                        "短信里读到的「扣费」会作为凭证直接记账；「签约」类不会自动加进守护清单 —— 签约当下不扣钱，原文里本来就没有金额，所以留空、不猜，要你自己点「加入」。" +
-                            "通知里的线索一律先进「待确认」，你在守护页点「认得」之后才落库：关键词判不出「这笔是不是订阅」，不该替你做主。" +
-                            "代扣页读到的只说明「协议签了」，永远不写扣费流水（签约不等于扣过钱）。结果仅供参考，核对以平台账单为准。",
+                        "短信里读到的「扣费」会作为凭证直接记账；「签约」类不会自动加进订阅清单：签约当下不扣钱，原文里没有金额，所以留空不猜，由你点「加入」。" +
+                            "通知里的线索一律先进「待确认」，你在订阅管理页点「确认」之后才落库；关键词判不出是不是订阅，不自动做主。" +
+                            "自动扣款页读到的只说明已签约，不会写成扣费记录。",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(top = 6.dp),
@@ -335,7 +335,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "在听哪些应用（${NotifListenerService.WATCHED_BUILTIN.size + store.watchedExtraPackages.value.size} 个）",
+                                "监听中的应用（${NotifListenerService.WATCHED_BUILTIN.size + store.watchedExtraPackages.value.size} 个）",
                                 fontSize = 12.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = LbInk,
@@ -369,10 +369,10 @@ fun ScanScreen(onBack: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("代扣协议读取（支付宝/微信的签约清单）", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                            Text("自动扣款读取（支付宝/微信的签约清单）", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                             Text(
                                 when {
-                                    a11yOn -> "已开启：那两页的签约清单会被读下来、记进「待确认」；点下面的「帮我翻进去并读取」，它还能替你翻进去"
+                                    a11yOn -> "已开启：那两页的签约清单会被读下来、记进「待确认」；也可点下面的「自动导航并读取」"
                                     a11yGranted -> "授权还在，但服务被系统断开了 —— 现在什么都读不到。点「重新开启」再授权一次。"
                                     else -> "未开启：读不到「协议签在支付宝 / 微信里」的那些订阅"
                                 },
@@ -397,9 +397,9 @@ fun ScanScreen(onBack: () -> Unit) {
                             .padding(top = 6.dp, bottom = 2.dp),
                     )
                     Text(
-                        "为什么这两页就够：国内 App 没有支付牌照，它想每月自动扣你的钱，" +
-                            "就必须在支付宝或微信签一份代扣协议 —— 所以「别的 App 的续费」不用逐个进去看，那两页里就有。" +
-                            "剩下几家（苹果 App Store、手机厂商应用商店、运营商话费代扣）本机读不到，得你自己去看，入口见「关于管家 → 帮助」。",
+                        "支付宝 / 微信的自动续费都集中在这两页，读它们就能看全其他 App 的续费；" +
+                            "原理见「关于管家 → 帮助」。" +
+                            "未覆盖：苹果 App Store、厂商应用商店、运营商话费代扣；入口见「关于管家 → 帮助」。",
                         fontSize = 11.sp,
                         color = LbInk3,
                         lineHeight = 16.sp,
@@ -407,7 +407,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     )
                     // 「帮我翻进去」的结果 + 过程中的那句话。
                     // 为什么值得占一行位置：这功能会**跳到别人的 App 里去**，用户必须能在本页
-                    // 看到"上一步做成了什么/停在哪"，否则一次失败就像石沉大海。
+                    // 看到"执行进度"，否则一次失败就像石沉大海。
                     if (navLine.isNotEmpty()) {
                         Row(
                             Modifier
@@ -424,7 +424,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                 color = LbAccent,
                             )
                             Text(
-                                "$navLine —— 它只点导航，遇到「关闭/解约/付款」这类词会拒绝点击",
+                                "$navLine（只点导航，遇到「关闭/解约/付款」等词会拒绝点击）",
                                 fontSize = 11.sp,
                                 color = LbAccent,
                                 lineHeight = 16.sp,
@@ -443,7 +443,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     }
                     if (navLast.isNotEmpty() && navLine.isEmpty()) {
                         Text(
-                            "上次帮你翻：$navLast",
+                            "上次自动导航：$navLast",
                             fontSize = 11.sp,
                             color = LbInk3,
                             lineHeight = 16.sp,
@@ -488,7 +488,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                     .background(if (a11yOn) LbAccent else LbSurface)
                                     .clickable {
                                         if (!a11yOn) {
-                                            navHint = "先开启「代扣协议读取」（上面那一栏），我才有办法在${p.title}里点导航。"
+                                            navHint = "需先开启「自动扣款读取」才能在${p.title}里自动导航。"
                                         } else {
                                             navHint = ""
                                             A11yNav.start(ctx, p)?.let { navHint = it }
@@ -500,16 +500,16 @@ fun ScanScreen(onBack: () -> Unit) {
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    "帮我翻进去并读取",
+                                    "自动导航并读取",
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (a11yOn) androidx.compose.ui.graphics.Color.White else LbInk3,
                                 )
                             }
                             Text(
-                                "它会在${p.title}里自己点「${p.route.joinToString(" → ") { it.candidates.first() }}」，" +
-                                    "到了那张清单页就停下来读，读完不会替你点任何东西。" +
-                                    "⚠️ 这条路径是照公开资料写的、没在真机上核过；点了没动静就照上面的「路径」自己走一遍，也能读到。",
+                                "将在「${p.title}」内自动点击「${p.route.joinToString(" → ") { it.candidates.first() }}」，" +
+                                    "到达清单页后仅读取，不执行其他操作。" +
+                                    "若自动导航没有成功，按上面的路径手动打开那两页也能读取。",
                                 fontSize = 10.5.sp,
                                 color = LbInk3,
                                 lineHeight = 15.sp,
@@ -527,8 +527,8 @@ fun ScanScreen(onBack: () -> Unit) {
                         Column(Modifier.padding(start = 11.dp)) {
                             Text("正在扫描…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                             Text(
-                                if (smsGranted) "正在分析本机扣费短信、通知线索、代扣协议清单与已安装应用"
-                                else "正在检查通知线索、代扣协议清单与已安装应用",
+                                if (smsGranted) "正在分析本机扣费短信、通知线索、自动扣款清单与已安装应用"
+                                else "正在检查通知线索、自动扣款清单与已安装应用",
                                 fontSize = 12.sp,
                                 color = LbInk3,
                                 modifier = Modifier.padding(top = 2.dp),
@@ -560,7 +560,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                 .padding(start = 11.dp)
                                 .weight(1f),
                         ) {
-                            Text("已自动加入 $addedNow 条到守护清单", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
+                            Text("已自动加入 $addedNow 条到订阅清单", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbAccent)
                             Text("误加入的点「移除」即可；移除后不会再自动加回", fontSize = 11.5.sp, color = LbInk2)
                         }
                     }
@@ -616,7 +616,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                     )
                                     Text(
                                         if (c.nextDate.isNotEmpty()) "下次扣费：${store.fmtCn(c.nextDate)}"
-                                        else "下次扣费：原文里没有写明，加入后可在守护页补全",
+                                        else "下次扣费：原文未写明，加入后可在订阅管理页补全",
                                         fontSize = 11.sp,
                                         color = if (c.nextDate.isNotEmpty()) LbInk2 else LbInk3,
                                         modifier = Modifier.padding(top = 1.dp),
@@ -635,7 +635,7 @@ fun ScanScreen(onBack: () -> Unit) {
                                         store.removeSub(existing.id)
                                         store.dismissName(existing.name)
                                     }
-                                    existing != null -> LbChip("已在守护", ChipTone.Green)
+                                    existing != null -> LbChip("已加入", ChipTone.Green)
                                     else -> MiniAction("加入") { addAsSub(c.name, c.amount ?: 0.0, c.nextDate) }
                                 }
                             }
@@ -681,8 +681,8 @@ fun ScanScreen(onBack: () -> Unit) {
                             "没有发现线索。可以这样想：\n" +
                                 "· 没给短信权限的话，App 就没有任何历史可翻 —— 短信是唯一能回头看一年的来源；\n" +
                                 "· 「通知读取」只在开启之后才开始积累，装 App 之前的历史通知系统不会补发；\n" +
-                                "· 「代扣协议读取」要那两页真的显示在屏幕上才读得到 —— 你自己打开也行，回扫描页那栏点「帮我翻进去并读取」让它替你翻进去也行；\n" +
-                                "· 也可以稍后再试，或在「守护」页手动添加。",
+                                "· 「自动扣款读取」要那两页真的显示在屏幕上才读得到；可自己打开，也可点「自动导航并读取」；\n" +
+                                "· 也可以稍后再试，或在「订阅管理」页手动添加。",
                             fontSize = 12.5.sp,
                             color = LbInk3,
                             lineHeight = 19.sp,
@@ -700,7 +700,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     LbPrimaryButton("完成", onClick = onBack, modifier = Modifier.weight(1f))
                 }
                 Text(
-                    "全部在本机完成，不上传；结果仅供参考，请以各平台账单为准。",
+                    "全部在本机完成，不上传。",
                     fontSize = 11.sp,
                     color = LbInk3,
                     textAlign = TextAlign.Center,
@@ -764,7 +764,7 @@ private fun WatchListDialog(
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp),
             ) {
-                Text("在听哪些应用", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text("监听中的应用", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
                     "只解析下面这些应用的通知，其余应用的通知不解析、不保存。数据全部在本机。",
                     fontSize = 12.sp,

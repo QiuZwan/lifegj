@@ -863,7 +863,7 @@ fun FamilyScreen(
         // 家人的日期同样进每日简报（原来完全没进），逐条提前量也在这里调
         LbRemindAheadSection(
             title = "提前多久提醒我",
-            hint = "家人的复诊、生日、疫苗也会进每日简报，和到期事务用同一套提前量；" +
+            hint = "家人的复诊、生日、疫苗也会进今日概要，和到期事项用同一套提前量；" +
                 "重要的（复诊、手术）可以单独提前久一点。",
             items = store.keyDates.map { Triple(it.id, it.title, it.remindAhead) },
             emptyText = "还没有关键日期。生日、纪念日、复诊都可以放这里。",
@@ -1657,7 +1657,7 @@ fun MineScreen(
         ) {
             Column {
                 val rows = listOf(
-                    Triple(LbIcons.bell, "提醒与免打扰", "每日简报 · 扣费/到期提醒"),
+                    Triple(LbIcons.bell, "提醒与免打扰", "今日概要 · 扣费/到期提醒"),
                     Triple(LbIcons.notebook, "备忘录", if (store.memos.isEmpty()) "随手记 · 可设提醒" else "${store.memos.size} 条 · 可提醒"),
                     Triple(LbIcons.users, "家庭守护设置", "连接到「家庭」页"),
                     Triple(LbIcons.moon, "深色模式", if (store.darkMode.value) "已开启" else "已关闭"),
@@ -1685,8 +1685,8 @@ fun MineScreen(
                     Triple(LbIcons.shieldLock, "数据与隐私", "全部保存在本机"),
                     Triple(
                         LbIcons.bell,
-                        "不再提示的商户",
-                        if (store.dismissedNames().isEmpty()) "没有 · 点「以后别再提」会加进来"
+                        "已忽略的商户",
+                        if (store.dismissedNames().isEmpty()) "没有 · 点「忽略此商户」会加进来"
                         else "${store.dismissedNames().size} 个 · 可以改回来",
                     ),
                     Triple(LbIcons.download, "导出家庭档案", "一键整理成文本"),
@@ -1737,7 +1737,7 @@ fun MineScreen(
                                         }
                                     }
                                     "数据与隐私" -> showData = true
-                                    "不再提示的商户" -> showDismissed = true
+                                    "已忽略的商户" -> showDismissed = true
                                     "桌面小组件" -> showWidget = true
                                     "载入演示数据" -> showDemo = true
                                     "清空全部数据" -> showClear = true
@@ -1870,9 +1870,9 @@ fun MineScreen(
                 shape = RoundedCornerShape(20.dp),
             ) {
                 Column(Modifier.padding(18.dp)) {
-                    Text("不再提示的商户", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                    Text("已忽略的商户", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     Text(
-                        "这些是你点过「以后别再提」的名字：扫描再读到它们也不会自动加进守护清单。点「改回来」就恢复。",
+                        "这些是你点过「忽略此商户」的名字：扫描再读到它们也不会自动加进订阅清单。点「改回来」就恢复。",
                         fontSize = 11.5.sp,
                         color = LbInk3,
                         lineHeight = 17.sp,
@@ -1887,7 +1887,7 @@ fun MineScreen(
                     ) {
                         if (names.isEmpty()) {
                             Text(
-                                "还没有。在守护页的线索上点「以后别再提」，名字会加到这里。",
+                                "还没有。在订阅管理页的线索上点「忽略此商户」，名字会加到这里。",
                                 fontSize = 12.sp,
                                 color = LbInk3,
                                 lineHeight = 17.sp,
@@ -1925,7 +1925,7 @@ fun MineScreen(
     if (showDemo) {
         LbConfirmDialog(
             title = "载入演示数据？",
-            text = "会先清空当前记录，再写入一套示例内容（订阅、义务、家人、记账等），方便你先看看界面长什么样。\n\n演示的订阅都带「演示」角标，一眼能认出来；之后可以随时清空重来。",
+            text = "会先清空当前记录，再写入一套示例内容（订阅、到期事项、家人、记账等），方便你先看看界面长什么样。\n\n演示的订阅都带「演示」角标，一眼能认出来；之后可以随时清空重来。",
             confirmText = "载入演示",
             onDismiss = { showDemo = false },
             onConfirm = {
@@ -2352,7 +2352,7 @@ private fun AiManagerDialog(
                 Text("AI 智能管家", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
                     "开箱就已经能用了：安装包里内置了一份共享的免费额度（智谱 GLM-4-Flash，永久免费的模型），" +
-                        "不填任何东西也能听懂整句话——说「加个订阅：网易云 15 块，每月 5 号」，它会真写进守护清单。\n\n" +
+                        "不填任何东西也能听懂整句话——说「加个订阅：网易云 15 块，每月 5 号」，它会真写进订阅清单。\n\n" +
                         "这份额度是所有装了本应用的人共用的，人多时会排队甚至被限流；而且这把 Key 就在安装包里，注定拿得到" +
                         "（代码里做了倒序存放，防的只是扫包脚本，不算加密）。" +
                         "想更稳、或者不想和别人共用，就在下面填自己的：内置了十几家，点一下自动填好地址和模型名，" +
@@ -2596,11 +2596,11 @@ private fun navLabel(route: String): String = when (route) {
     "ledger" -> "记账本"
     "memo" -> "备忘录"
     "report" -> "本月月报"
-    "duties" -> "义务时间线"
+    "duties" -> "到期时间线"
     "scan" -> "一键扫描"
     "states" -> "系统状态"
     "today" -> "今日"
-    "guard" -> "扣款守护"
+    "guard" -> "订阅管理"
     "family" -> "家庭"
     "mine" -> "我的"
     else -> "智能管家"
@@ -2815,7 +2815,7 @@ private fun ReminderDialog(
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
             Column(Modifier.padding(20.dp)) {
-                Text("每日简报与提醒", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text("今日概要与提醒", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
                     "每天一条简报：临近的扣费、到期的事务、家人的重要日期；内容只在本机生成。",
                     fontSize = 12.sp,
@@ -3099,7 +3099,7 @@ private fun buildExport(store: ButlerStore): String {
     store.keyDates.forEach { sb.append("- ${it.title}:${it.date}（${store.daysText(it.date)}）\n") }
     sb.append("\n【订阅】\n")
     store.subs.forEach { sb.append("- ${it.name}:¥${store.fmtMoney(it.amount)}/月${if (it.closing) "（关闭处理中）" else ""}\n") }
-    sb.append("\n【义务】\n")
+    sb.append("\n【到期事项】\n")
     store.obligations.forEach { sb.append("- ${it.title}:${store.daysText(it.date)}${if (it.done) "（已完成）" else ""}\n") }
     sb.append("\n【档案】\n")
     store.archive.forEach { sb.append("- ${it.title}:${it.files.size} 个文件 · ${it.note}\n") }
@@ -3922,7 +3922,7 @@ fun StatesScreen(onBack: () -> Unit, onOpenScan: () -> Unit) {
                         color = LbInk,
                     )
                     Text(
-                        if (pending == 0) "扫描、自动扣费识别、每日简报都能正常用"
+                        if (pending == 0) "扫描、自动扣费识别、今日概要都能正常用"
                         else "下面未开启的项目打开后,对应功能才会生效",
                         fontSize = 11.sp,
                         color = LbInk3,
@@ -3939,7 +3939,7 @@ fun StatesScreen(onBack: () -> Unit, onOpenScan: () -> Unit) {
                 DataRow("扣费流水", "${store.charges.size} 笔")
                 DataRow("记账", "${store.expenses.size} 笔")
                 DataRow("待办", "${store.tasks.count { !it.done }} 件待处理 · 共 ${store.tasks.size} 件")
-                DataRow("义务", "${store.obligations.count { !it.done }} 件待处理 · 共 ${store.obligations.size} 件")
+                DataRow("到期事项", "${store.obligations.count { !it.done }} 件待处理 · 共 ${store.obligations.size} 件")
                 DataRow("家人", "${store.members.size} 位")
                 DataRow("相册", "${store.album.size} 张照片")
                 DataRow("档案", "${store.archive.size} 组 · ${store.archiveFileCount()} 个文件")
@@ -3978,7 +3978,7 @@ fun StatesScreen(onBack: () -> Unit, onOpenScan: () -> Unit) {
                 ) { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
                 StatusRow(
                     "通知权限",
-                    "每日简报提醒(Android 13 起需手动允许)",
+                    "今日概要提醒(Android 13 起需手动允许)",
                     notifOk,
                     okText = "已允许",
                     offText = "未允许",

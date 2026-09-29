@@ -58,7 +58,7 @@ val LbOnDark2: Color = Color(0x9EF6F5F0)
 //   LbRust(锈红)  = 出问题了 —— 关闭后仍在扣费、服务被系统断开这类"真的错了"。
 //
 // 「待你判断」的线索不属于任何一档紧急色：它是**中性的待办**，用 LbSurface/LbInk 表现，
-// 靠位置（首屏顶部）和明确的操作按钮（认得 / 以后别再提）来引起注意，不靠颜色喊。
+// 靠位置（首屏顶部）和明确的操作按钮（确认 / 忽略此商户）来引起注意，不靠颜色喊。
 val LbAmber: Color get() = if (LbTheme.dark) Color(0xFFD8A95C) else Color(0xFF96661F)
 val LbAmberSoft: Color get() = if (LbTheme.dark) Color(0xFF33291A) else Color(0xFFF6EEDC)
 val LbRust: Color get() = if (LbTheme.dark) Color(0xFFE08A7E) else Color(0xFFA0453B)

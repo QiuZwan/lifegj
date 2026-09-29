@@ -1060,7 +1060,7 @@ class ButlerStore private constructor(context: Context) {
             subs[i] = subs[i].copy(closing = true, closingAt = now)
             closedHistory.add(ButlerClosedSub(id(), subs[i].name, subs[i].amount, now))
             if (withReceipt) {
-                chat.add(ButlerChat(id(), false, "好，已把「${subs[i].name}」标记为关闭中。取消需要在对应平台完成；之后如果还有扣费，我会提醒你复核。", ""))
+                chat.add(ButlerChat(id(), false, "好，已把「${subs[i].name}」标记为关闭复核中。取消需要在对应平台完成；之后如果还有扣费，我会提醒你复核。", ""))
             }
             save()
         }
@@ -1716,9 +1716,9 @@ class ButlerStore private constructor(context: Context) {
             val hit = subs.filter { !it.closing }.firstOrNull { frag.isNotEmpty() && (it.name.contains(frag) || frag.contains(it.name)) }
             return if (hit != null) {
                 markSubClosing(hit.id, withReceipt = false)
-                "好，已在守护清单把「${hit.name}」标记为关闭中。真正的取消要在对应平台完成，步骤在详情页；之后如果仍有扣费，我会提醒你复核。"
+                "好，已在订阅清单把「${hit.name}」标记为关闭复核中。真正的取消要在对应平台完成，步骤在详情页；之后如果仍有扣费，我会提醒你复核。"
             } else {
-                "想取消哪一项？说「取消 爱奇艺」这样的名字就行；找不到的话，先去「守护」页看一眼名字。"
+                "想取消哪一项？说「取消 爱奇艺」这样的名字就行；找不到的话，先去「订阅管理」页看一眼名字。"
             }
         }
 
@@ -1753,11 +1753,11 @@ class ButlerStore private constructor(context: Context) {
         // ⑥ 订阅 / 开销
         if (t.contains("订阅") || t.contains("扣费")) {
             val active = subs.filter { !it.closing }
-            if (active.isEmpty()) return "现在还没有订阅记录，在「守护」页右上角可以添加。"
+            if (active.isEmpty()) return "现在还没有订阅记录，在「订阅管理」页右上角可以添加。"
             val total = active.sumOf { it.amount }
             val noDate = active.count { it.nextDate.isBlank() }
             return "现在有 ${active.size} 笔订阅，每月合计 ¥${fmtMoney(total)}" +
-                (if (noDate > 0) "（其中 $noDate 笔还不知道扣费日，可以在守护页补全）" else "") +
+                (if (noDate > 0) "（其中 $noDate 笔还不知道扣费日，可以在订阅管理页补全）" else "") +
                 "；已经标记关闭 ${closedCount} 笔，每月少支出 ¥${fmtMoney(monthlySaved)}。"
         }
 
@@ -1867,7 +1867,7 @@ class ButlerStore private constructor(context: Context) {
         // 「扫过了」这个状态跟着记录一起走。不清的话，用户清空数据后守护页会显示
         // 「已扫过、没有发现」——而他其实一次都没扫过。
         forgetScanned()
-        chat.add(ButlerChat(id(), false, "数据已清空，从今天开始记录吧。说「记一下：…」试试，或去「守护」页扫描本机自动续费。", ""))
+        chat.add(ButlerChat(id(), false, "数据已清空，从今天开始记录吧。说「记一下：…」试试，或去「订阅管理」页扫描本机自动续费。", ""))
         save()
     }
 
@@ -2247,7 +2247,7 @@ class ButlerStore private constructor(context: Context) {
             chat.add(
                 ButlerChat(
                     id(), false,
-                    "你好，我是你的生活管家。\n\n从一件小事开始就好：说「记一下：明天交房租」，或者去「守护」页扫一扫本机的自动续费。所有记录都只存在这台手机上。",
+                    "你好，我是你的生活管家。\n\n从一件小事开始就好：说「记一下：明天交房租」，或者去「订阅管理」页扫一扫本机的自动续费。所有记录都只存在这台手机上。",
                     "",
                 ),
             )

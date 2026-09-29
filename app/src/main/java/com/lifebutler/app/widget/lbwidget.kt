@@ -52,7 +52,7 @@ class LbWidgetProvider : AppWidgetProvider() {
             // 没有任何要留意的内容时，说清「现在没事」——而不是留一片空白让人以为组件坏了
             val fullTitle = digest?.first ?: "现在没有要留意的事"
             val fullBody = digest?.second
-                ?: "待办、订阅、到期事务都会在这里出现。所有内容只在本机生成。"
+                ?: "待办、订阅、到期事项都会在这里出现。所有内容只在本机生成。"
 
             // 显示档位：默认「跟随应用锁」——
             // 用户刚在 App 里开锁，桌面却把「XX会员明天扣费 ¥25」明写在那儿，任何人拿起手机

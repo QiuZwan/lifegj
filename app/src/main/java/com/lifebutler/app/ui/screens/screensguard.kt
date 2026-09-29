@@ -111,7 +111,7 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     var claimsY by remember { mutableStateOf(0f) }
     // 「要复核」那组（关了却还在扣费）的位置：结论 chip 在没有待认领线索时要滚到这里。
     var closedY by remember { mutableStateOf(0f) }
-    // 「以后别再提」必须能撤销：dismissed 集合**只进不出**是 v2.18 前最大的一处不闭环。
+    // 「忽略此商户」必须能撤销：dismissed 集合**只进不出**是 v2.18 前最大的一处不闭环。
     // 记住刚放进去的商户名，给一次 Undo（撤销就是把它移出集合，零成本）。
     var lastDismissed by remember { mutableStateOf<String?>(null) }
     // 页面内留痕的提示条，替掉转瞬即逝的 Toast（C8）。空 = 不显示。
@@ -162,7 +162,7 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             .padding(horizontal = 20.dp),
     ) {
         Column(Modifier.padding(top = 10.dp)) {
-            Text("扣款守护", style = MaterialTheme.typography.labelSmall)
+            Text("订阅管理", style = MaterialTheme.typography.labelSmall)
             Text("钱花在哪，一眼看清", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 4.dp))
         }
 
@@ -219,7 +219,7 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                         // ── B8：线索徽章**退出 amber** ──
                         // 线索是「等你判断」，不是「时间紧」。它不该和「这笔明天就要扣了」
                         // 抢同一个警告色，否则用户分不清哪个必须现在处理。
-                        // 它是中性的待办：靠首屏位置 + 明确的「认得 / 以后别再提」引起注意。
+                        // 它是中性的待办：靠首屏位置 + 明确的「确认 / 忽略此商户」引起注意。
                         // amber 从此只表示「时间紧，该动手了」（见 theme.kt 的语义分工注释）。
                         IconBadge(LbIcons.bell, LbSurface2, LbInk2, size = 32.dp)
                         Column(
@@ -234,7 +234,7 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                 color = LbInk,
                             )
                             Text(
-                                "是订阅吗？你认了我才记账、才放进守护清单。签约的还没扣钱，金额留空不猜。",
+                                "确认后才记账并加入订阅清单；签约的还没扣钱，金额留空。",
                                 fontSize = 11.5.sp,
                                 color = LbInk3,
                                 modifier = Modifier.padding(top = 1.dp),
@@ -267,24 +267,24 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                 modifier = Modifier.padding(top = 1.dp),
                             )
                         }
-                        ClaimBtn("认得", primary = true) {
+                        ClaimBtn("确认", primary = true) {
                             store.confirmClaim(c.id)
                             lastDismissed = null
-                            notice = "已认下「${c.name}」，写进扣费记录并放进守护清单"
+                            notice = "已确认「${c.name}」，写进扣费记录并加入订阅清单"
                         }
                         Spacer(Modifier.size(6.dp))
-                        // 按钮上写「以后别再提」而不是「不是我的」：后者听起来只是「这条不是」，
+                        // 按钮上写「忽略此商户」而不是「不是我的」：后者听起来只是「这条不是」，
                         // 真实后果却是**这个商户永久不再自动加进来**。把后果说在按钮上，
                         // 并且给一次撤销（下面那条提示条）—— 原来这个名单只进不出（D2）。
-                        ClaimBtn("以后别再提", primary = false) {
+                        ClaimBtn("忽略此商户", primary = false) {
                             store.dismissClaim(c.id)
                             lastDismissed = c.name
-                            notice = "「${c.name}」以后不再自动加进来（可在「我的 → 不再提示的商户」改回来）"
+                            notice = "已忽略「${c.name}」，扫描不再自动添加（可在「我的 → 已忽略的商户」中恢复）"
                         }
                     }
                     Text(
                         if (rest > 0) "处理完这条会自动换成下一条 · 还有 $rest 条"
-                        else "处理完这条，就没有待认领的了",
+                        else "处理完这条，就没有待确认的了",
                         fontSize = 11.sp,
                         color = LbInk3,
                         modifier = Modifier.padding(top = 8.dp),
@@ -369,10 +369,10 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                     Text("一键扫描本机自动续费", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                     // 原来只写「读取扣费短信与已安装应用」—— 少说了两个来源,也完全没提
                     // v2.17 起才有的「代扣协议」(用户最难自己想到的那条路)。
-                    Text("短信 · 通知 · 已装应用 · 支付宝/微信代扣协议，四处一起找", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
+                    Text("短信 · 通知 · 已装应用 · 支付宝/微信自动扣款页，四处一起找", fontSize = 11.5.sp, color = LbInk3, modifier = Modifier.padding(top = 1.dp))
                     Text(
-                        if (store.lastScanAt > 0L) "能自动帮你翻进那两家的续费页 · 上次扫描 " + store.fmtCnAt(store.lastScanAt)
-                        else "能自动帮你翻进支付宝 / 微信的续费页，替你读那些忘关的",
+                        if (store.lastScanAt > 0L) "自动导航并读取 · 上次扫描 " + store.fmtCnAt(store.lastScanAt)
+                        else "自动打开支付宝 / 微信的自动扣款页并读取清单",
                         fontSize = 11.5.sp,
                         color = LbAccent,
                         modifier = Modifier.padding(top = 2.dp),
@@ -406,7 +406,7 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                         .weight(1f),
                 ) {
                     Text("「${s.name}」${store.daysText(s.nextDate)}扣费", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbAmber)
-                    Text("要关闭的话，现在还来得及", fontSize = 11.5.sp, color = LbAmber)
+                    Text("扣费前仍可在平台关闭", fontSize = 11.5.sp, color = LbAmber)
                 }
                 LbChip("处理", ChipTone.Amber)
             }
@@ -441,9 +441,9 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                     )
                     Text(
                         when {
-                            !canScan -> "短信里读「扣费 / 签约」要「读取短信」；读支付宝·微信那两页要「代扣协议读取」。开一路就能扫一路，不用全开。"
-                            store.lastScanAt == 0L -> "四处一起找：扣费短信 · 扣费通知 · 已安装应用 · 支付宝/微信代扣协议。后两家那两页我能替你翻进去读。"
-                            else -> "盖不到的地方我如实说：苹果 App Store 订阅、手机厂商商店（华为/小米等）、挂在话费里的代扣 —— 这三处只能你自己去看一眼。"
+                            !canScan -> "短信里读「扣费 / 签约」要「读取短信」；读支付宝·微信那两页要「自动扣款读取」。开一路就能扫一路，不用全开。"
+                            store.lastScanAt == 0L -> "四处一起找：扣费短信 · 扣费通知 · 已安装应用 · 支付宝/微信自动扣款页。"
+                            else -> "未覆盖：App Store 订阅、厂商应用商店、话费代扣，需自行查看。"
                         },
                         fontSize = 11.5.sp,
                         color = LbInk3,
@@ -652,9 +652,9 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                     .padding(start = 12.dp)
                     .weight(1f),
             ) {
-                Text("义务时间线", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                Text("到期时间线", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    if (pendingObligations > 0) "$pendingObligations 项到期事务已排好队" else "把要到期的事放进来，我帮你数日子",
+                    if (pendingObligations > 0) "$pendingObligations 项到期事项待处理" else "记下要到期的事，到时会提醒",
                     fontSize = 12.sp,
                     color = LbInk2,
                     modifier = Modifier.padding(top = 2.dp),
@@ -702,9 +702,9 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             // ⚠️ 「不再加回」那个副作用现在说成可撤销的 —— v2.18 之前它只进不出，
             // 而这句话写的是「之后也不会再自动加回」，等于把一次永久惩罚轻描淡写。
             text = if (sub != null && (sub.source == "扫描" || sub.source == "通知" || sub.source.startsWith("代扣页")))
-                "删除后不再提醒扣费。这一条来自「${sub.source}」，之后扫描再读到它也不会自动加回 —— 想改回来，去「我的 → 不再提示的商户」。"
+                "删除后，扫描不会再自动添加该商户，且无法撤销。"
             else
-                "删除后不再提醒扣费。这一笔是你手动记的，之后想恢复只能再记一次。",
+                "删除后如需恢复须重新添加，且无法撤销。",
             onDismiss = { deleteSubId = null },
             onConfirm = {
                 store.removeSub(id)
@@ -893,7 +893,7 @@ fun SubscriptionDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     if (sub.closing) {
-                        LbChip("关闭处理中", ChipTone.Green)
+                        LbChip("复核中", ChipTone.Green)
                     } else if (days != null) {
                         // 同上：`days == 0` 是「就是今天」，别说成「明天」
                         LbChip(
@@ -909,7 +909,7 @@ fun SubscriptionDetailScreen(
             }
             if (sub.source == "演示") {
                 Text(
-                    "这是演示数据，不是你的真实订阅；长按清单里的这一条可以删掉。",
+                    "当前为演示数据，长按可删除。",
                     fontSize = 11.5.sp,
                     color = LbAmber,
                     modifier = Modifier.padding(top = 8.dp),
@@ -928,7 +928,7 @@ fun SubscriptionDetailScreen(
                 // ── D11：缺的字段**点一下就补**，只弹这一个 ──
                 // 原来要「右上角编辑 → 在三字段弹窗里小心别改错名称」（C7）。
                 Text(
-                    "金额没识别出来 · 点这里补全",
+                    "金额未识别，点击补全",
                     fontSize = 11.5.sp,
                     color = LbAmber,
                     modifier = Modifier
@@ -964,15 +964,15 @@ fun SubscriptionDetailScreen(
                             .padding(start = 11.dp)
                             .weight(1f),
                     ) {
-                        Text("已标记为「关闭中」", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                        Text("已标记关闭 · 复核中", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                         // ── C6：把「怎样才算关干净了」说清楚 ──
                         // 用户真正的问题是「我关成功了没」，原来只说「之后若仍有扣费会提醒你复核」，
                         // 没说过了哪个日子就算停了 —— 那个日子才是他会等的那个信号。
                         Text(
                             if (days != null)
-                                "过了 ${store.fmtCn(sub.nextDate)} 这个扣费日、且之后没有新的扣费记录，就算停干净了；若还有扣费，扫描时会提醒你复核。要彻底移出清单，点页面最下面的「删除这条订阅」。"
+                                "扣费日后无新扣费即视为已关闭；若仍有扣费会提醒你。"
                             else
-                                "取消需在平台完成；之后若仍有扣费，扫描时会提醒你复核。补上下次扣费日，我才能告诉你「过了哪天就算停干净」。要彻底移出清单，点页面最下面的「删除这条订阅」。",
+                                "关闭需在平台完成，之后若仍有扣费会提醒你。设置扣费日后可判断是否已停止扣费；移出清单请删除本条订阅。",
                             fontSize = 11.5.sp,
                             color = LbInk3,
                             lineHeight = 17.sp,
@@ -982,7 +982,7 @@ fun SubscriptionDetailScreen(
                 // 「关闭中」是**可逆**的，所以给它一个明确的撤销，而不是弹确认框（D12）。
                 Row(Modifier.padding(top = 10.dp)) {
                     LbGhostButton(
-                        "撤销「关闭中」，放回在用清单",
+                        "撤销关闭标记，放回在用清单",
                         onClick = {
                             store.unmarkSubClosing(sub.id)
                             undoClosing = false
@@ -1000,7 +1000,7 @@ fun SubscriptionDetailScreen(
             Column {
                 Text("提醒", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                 Text(
-                    "这一笔提前几天进每日简报。「默认」= 跟随「我的 → 提醒与免打扰」里的设置。",
+                    "这一笔提前几天进今日概要。「默认」= 跟随「我的 → 提醒与免打扰」里的设置。",
                     fontSize = 11.5.sp,
                     color = LbInk3,
                     lineHeight = 17.sp,
@@ -1102,12 +1102,12 @@ fun SubscriptionDetailScreen(
                         smsGranted && notifGranted ->
                             "还没有这笔订阅的扣费记录。收到扣费短信或通知时这里会自动记下；也可以手动补记一笔。"
                         smsGranted ->
-                            "还没有扣费记录。开了「读取短信」，收到扣费短信时会记到这里；通知那条还没开。也可以手动补记一笔。"
+                            "还没有扣费记录。开启「读取短信」后会自动记录，也可手动补记。"
                         notifGranted ->
-                            "还没有扣费记录。开了「通知读取」，收到扣费通知时会记到这里；短信那条还没开。也可以手动补记一笔。"
+                            "还没有扣费记录。开启「通知读取」后会自动记录，也可手动补记。"
                         else ->
-                            "还没有扣费记录，而且现在一条都不会自动进来：「读取短信」和「通知读取」两处都没开。" +
-                                "去「守护 → 一键扫描」开一路，或先手动补记一笔。"
+                            "暂无扣费记录；读取短信和通知读取均未开启，不会自动记录。" +
+                                "去「订阅管理 → 一键扫描」开一路，或先手动补记一笔。"
                     },
                     fontSize = 12.sp,
                     color = LbInk3,
@@ -1163,7 +1163,7 @@ fun SubscriptionDetailScreen(
             Text("删除这条订阅", fontSize = 12.5.sp, color = LbRust, modifier = Modifier.padding(start = 6.dp))
         }
         Text(
-            "删除只是让管家不再盯着它（本机动作）。真要停止扣费，仍然得在支付宝 / 微信里关掉自动续费。",
+            "删除仅移出本清单，不会取消自动扣费；停止扣费请在支付宝 / 微信操作。",
             fontSize = 11.sp,
             color = LbInk3,
             lineHeight = 16.sp,
@@ -1177,9 +1177,9 @@ fun SubscriptionDetailScreen(
             LbConfirmDialog(
                 title = "删除「${sub.name}」？",
                 text = if (sub.source == "手动")
-                    "删除后不再提醒扣费。这一笔是你手动记的，之后想恢复只能再记一次。"
+                    "删除后如需恢复须重新添加，且无法撤销。"
                 else
-                    "删除后不再提醒扣费。这一条来自「${sub.source}」：删掉之后，扫描再读到它也不会自动加回 —— 这个「不再加回」是本机长期记住的，界面上没有撤销的地方。",
+                    "删除后，扫描不会再自动添加该商户，且无法撤销。",
                 onDismiss = { showDelSub = false },
                 onConfirm = {
                     val nm = sub.name
@@ -1341,7 +1341,7 @@ fun CancelGuide(
         modifier = Modifier.padding(top = 8.dp),
     )
     Text(
-        "取消只能由你在平台完成；管家做的是把步骤带到手，并在之后帮你复核是否真的停了。",
+        "关闭需在支付宝 / 微信完成；之后若仍有扣费，会提醒你复核。",
         fontSize = 11.5.sp,
         color = LbInk3,
         lineHeight = 17.sp,
@@ -1386,7 +1386,7 @@ fun CancelGuide(
                 .clickable {
                     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("关闭步骤", CANCEL_STEPS))
-                    tell("关闭步骤已复制，粘到备忘里照着做就行")
+                    tell("关闭步骤已复制")
                 }
                 .padding(horizontal = 6.dp, vertical = 8.dp),
         ) {
@@ -1442,7 +1442,7 @@ private fun SourceStatusBar(
     // 「被系统断开」的名单：授权在、服务不在。这是最该说破的一种状态。
     val broken = buildList {
         if (notifOn && !notifLive) add("通知读取")
-        if (a11yOn && !a11yLive) add("代扣协议读取")
+        if (a11yOn && !a11yLive) add("自动扣款读取")
     }
     Surface(
         Modifier
@@ -1476,9 +1476,9 @@ private fun SourceStatusBar(
                 )
             }
             Text(
-                if (!anyOn) "还没开启任何来源，所以这里可能一直是空的 —— 点上面的名字开一路就行，不用全开。"
+                if (!anyOn) "未开启扫描来源，开启后会自动记录。"
                 else if (lastScanAt > 0L) "上次扫描：$lastScanText"
-                else "还没扫描过 —— 开了上面的来源就能扫",
+                else "还没扫描过，开了上面的来源就能扫",
                 fontSize = 11.sp,
                 color = if (!anyOn || lastScanAt == 0L) LbAmber else LbInk3,
                 lineHeight = 16.sp,
@@ -1586,18 +1586,18 @@ fun ObligationsScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(LbIcons.chevronLeft, contentDescription = "返回", tint = LbInk2, modifier = Modifier.size(20.dp))
-                Text("义务时间线", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 6.dp))
+                Text("到期时间线", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 6.dp))
             }
             Spacer(Modifier.weight(1f))
-            LbPlusButton(onClick = { showAdd = true }, contentDescription = "添加义务")
+            LbPlusButton(onClick = { showAdd = true }, contentDescription = "添加到期事项")
         }
 
         HeroCard(
             painter = painterResource(R.drawable.archive_papers),
             height = 130.dp,
-            kicker = "义务时间线",
-            title = "该办的事，排好了队",
-            sub = if (nearestPending != null) "离最近的一件，还有 $nearestPending 天" else "都处理完了，享受当下",
+            kicker = "到期时间线",
+            title = "按到期日排列",
+            sub = if (nearestPending != null) "最近到期还有 $nearestPending 天" else "全部处理完毕",
             modifier = Modifier.padding(top = 10.dp),
         )
 
@@ -1729,7 +1729,7 @@ fun ObligationsScreen(
 
     if (showAdd) {
         LbInputDialog(
-            title = "添加义务",
+            title = "添加到期事项",
             fields = listOf(
                 LbField("事项", "如：驾照换证"),
                 LbField("到期日期", "点这里选择日期", isDate = true),
@@ -1758,7 +1758,7 @@ fun ObligationsScreen(
     menuId?.let { id ->
         val d = store.obligations.firstOrNull { it.id == id }
         LbTwoActionDialog(
-            title = d?.title ?: "这条义务",
+            title = d?.title ?: "这条到期事项",
             text = "要修改到期日或备注，还是删除？",
             actionA = "编辑",
             actionB = "删除",
@@ -1771,7 +1771,7 @@ fun ObligationsScreen(
     editId?.let { id ->
         val d = store.obligations.firstOrNull { it.id == id }
         LbInputDialog(
-            title = "编辑义务",
+            title = "编辑到期事项",
             fields = listOf(
                 LbField("事项", "如：驾照换证"),
                 LbField("到期日期", "点这里选择日期", isDate = true),
@@ -1800,7 +1800,7 @@ fun ObligationsScreen(
 
     deleteId?.let { id ->
         LbConfirmDialog(
-            title = "删除这条义务？",
+            title = "删除这条到期事项？",
             text = "删除后不再倒计时提醒。",
             onDismiss = { deleteId = null },
             onConfirm = {
@@ -1811,7 +1811,7 @@ fun ObligationsScreen(
     }
 }
 
-/** 待认领线索上的小按钮：认得 / 不是我的 */
+/** 待确认线索上的小按钮：确认 / 忽略此商户 */
 @Composable
 private fun ClaimBtn(text: String, primary: Boolean, onClick: () -> Unit) {
     Box(

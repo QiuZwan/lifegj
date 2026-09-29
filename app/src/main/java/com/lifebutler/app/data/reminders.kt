@@ -86,7 +86,7 @@ object Notifier {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "每日简报与提醒", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                NotificationChannel(CHANNEL_ID, "今日概要与提醒", NotificationManager.IMPORTANCE_DEFAULT).apply {
                     // 重要度**故意不写死成"紧急"**：每天一条都横幅+响铃会很烦，而 Android 的渠道
                     // 重要度一旦创建，App 之后就改不动了（只能用户自己在系统里调）。所以这里把
                     // 「去哪调、怎么调」直接写进描述，把选择权交给用户（渠道创建过一次就不再生效，
@@ -149,7 +149,7 @@ object Notifier {
      * 「今天要留意」的全部条目 —— **首页 / 每日简报 / 桌面小组件共用这一份**。
      *
      * 为什么要抽出来：原来这份汇总逻辑只活在 [buildDailyDigest] 里，于是桌面与通知
-     * 说「今天有 5 件要留意」，点开首页的「替你盯着的」却只列得出 2 条（订阅 + 义务），
+     * 说「今天有 5 件要留意」，点开首页的「近期到期」却只列得出 2 条（订阅 + 到期事项），
      * 剩下那 3 条里可能正好有他真正想看的（妈妈的复诊、结婚纪念日、试用到期）。
      * 两处口径不同源，用户就会同时不信这两个 —— 这正是小组件与通知共用一份数据的初衷。
      *
@@ -280,7 +280,7 @@ object Notifier {
             }
             if (watches.size > 3) append("；等 ${watches.size} 项")
         }
-        return Triple(title, text, if (watches.isNotEmpty()) "守护" else "今日")
+        return Triple(title, text, if (watches.isNotEmpty()) "订阅管理" else "今日")
     }
 
     fun postDailyDigest(context: Context) {

@@ -463,7 +463,7 @@ private fun lbNavLabelSize(): TextUnit {
 fun LbBottomBar(current: String, onSelect: (String) -> Unit) {
     val items = listOf(
         LbTab("今日", LbIcons.home2),
-        LbTab("守护", LbIcons.shieldCheck),
+        LbTab("订阅管理", LbIcons.shieldCheck),
         // 「智能管家」用 3D 小机器人位图(design/butler3d/make_nav_icon.py 生成)。
         // 线性图标那套 tint 对彩色位图没用,所以选中/未选中改成「全彩 / 去饱和压暗」来区分。
         LbTab("智能管家", LbIcons.messageCircle, R.drawable.lb_nav_butler),
