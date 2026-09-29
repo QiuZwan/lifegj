@@ -28,10 +28,13 @@ import org.json.JSONObject
  *
  * 1. **只点配置里写死的那些字，一律精确相等**（去空白后 `text` 或 `contentDescription`
  *    完全等于候选词）。不做 `contains`、不做模糊匹配 —— 模糊匹配正是"点到关闭按钮"的来源。
+ *    **唯一例外**是开屏广告的「跳过」控件（[findSkipControl]）：跳广告不涉及钱和协议，
+ *    匹配收得极紧（短文本 + 含"跳过" + 不含危险词 + 一次导航最多 2 次）。
  * 2. **[FORBIDDEN] 二次拦截**：哪怕是配置里写的候选词，只要含动作类词（关闭/解约/取消/付款…）
  *    也**拒绝点击**。这是防"以后有人往配置里加了一条危险路径"的保险。
  * 3. **只在前 N 步点导航**。一旦认出清单页就**立刻停手**，绝不在目标页上再点任何东西。
  * 4. **找不到就停**（滚 3 次还找不到 → 结束并给手动路径），**绝不碰运气乱点**。
+ *    唯一的"自救"动作是：目标 App 卡在无字窗太久时**重新拉起一次**（只是开 App，不点任何东西）。
  * 5. 全程有**总超时**（[TIMEOUT_MS]）和**步数上限**，超了自动收手。
  * 6. 只在目标包自己的窗口里动作（`pkg != payer.pkg` 直接返回）。
  *
@@ -74,6 +77,12 @@ object A11yNav {
 
     /** 一步最多滚几次去找入口 */
     private const val MAX_SCROLL_PER_STEP = 3
+
+    /** 一次导航最多点几次「跳过」（开屏广告的跳过控件；跳广告不碰钱，是配置外点击的唯一例外） */
+    private const val MAX_SKIPS = 2
+
+    /** 无字窗（广告/图片页）干等这么多秒后，把目标 App 重新拉起一次再等（广告位挂死时的自救） */
+    private const val RELAUNCH_AFTER_MS = 30_000L
 
     /**
      * 找不到入口时先别收工：按这个预算等真页面出来（开屏广告、转场都要时间）。
@@ -121,6 +130,9 @@ object A11yNav {
     private var steps: List<Step> = emptyList()
     private var index = 0
     private var scrolls = 0
+    private var skips = 0
+    private var relaunched = false
+    private var textlessSince = 0L
     private var toastedStep = -1
     private var stepDeadline = 0L
     private var deadline = 0L
@@ -206,6 +218,9 @@ object A11yNav {
         steps = payer.route
         index = 0
         scrolls = 0
+        skips = 0
+        relaunched = false
+        textlessSince = 0L
         lastPageDesc = "没看到它的页面"
         stepDeadline = SystemClock.uptimeMillis() + STEP_BUDGET_MS
         // 还没到位就开始点，等于没在清单页上乱点 —— 但这一步不会发生：下面是先开 App
@@ -239,6 +254,7 @@ object A11yNav {
         if (phase != Phase.RUNNING) return false
         if (pkg != p.pkg) return false          // 只在自己那家的窗口里动作
         if (SystemClock.uptimeMillis() > deadline) {
+            lastPageDesc = deepPageTexts(root)
             finish(false, timeoutNote())
             return false
         }
@@ -292,6 +308,18 @@ object A11yNav {
             return true
         }
 
+        // ②.5 开屏广告的「跳过」。找不到入口时，页面上若有明确的「跳过」控件就点掉它，
+        //     别让广告占着预算干等。跳广告不涉及钱和协议，是配置之外唯一允许的点击
+        //     （匹配收紧到「短文本 + 含跳过 + 不含危险词」，一次导航最多 [MAX_SKIPS] 次）。
+        if (skips < MAX_SKIPS) {
+            val skip = findSkipControl(root)
+            if (skip != null && click(ctx, skip)) {
+                skips++
+                armGrace()
+                return true
+            }
+        }
+
         // ③ 没找到 → 往下滚着找（有限次）
         if (scrolls < MAX_SCROLL_PER_STEP && scrollForward(root)) {
             scrolls++
@@ -302,11 +330,31 @@ object A11yNav {
         //    **一个字都没有**（开屏广告那种图片窗）不受 20 秒步预算管 —— 这种窗上没有任何
         //    可点的东西，等是唯一正确的动作，一路等到总超时为止（实测有的广告不止 20 秒，
         //    20 秒收工会把"广告还没放完"误判成"没入口"）；读得到字的页面才按步预算收工。
+        //    ⚠️ "有没有字"的判断必须和诊断（pageTexts）同一量级的预算：
+        //    实测支付宝的树又深又宽，小预算根本走不到底栏文字，会把真页面误判成无字窗，
+        //    白等 75 秒才报"等太久了"。
         val textless = !hasAnyText(root)
         lastPageDesc = pageTexts(root)
-        val budgetEnd = if (textless) deadline else stepDeadline
-        if (SystemClock.uptimeMillis() < budgetEnd) { armGrace(); return true }
-        finish(false, "在「${step.title}」这一步没找到入口；当页可见：${lastPageDesc}。请照下面的路径自己点")
+        if (textless) {
+            if (textlessSince == 0L) textlessSince = SystemClock.uptimeMillis()
+            // 干等 [RELAUNCH_AFTER_MS] 还是无字 → 把目标 App 重新拉起一次再等。
+            // 广告位挂死（一直出无字图片）时，重拉通常直接进正页；重拉只是开 App，不点任何东西。
+            if (!relaunched && SystemClock.uptimeMillis() - textlessSince > RELAUNCH_AFTER_MS) {
+                relaunched = true
+                textlessSince = 0L
+                SubScanner.launchPackage(ctx, p.pkg)
+                armGrace()
+                return true
+            }
+            if (SystemClock.uptimeMillis() < deadline) { armGrace(); return true }
+        } else {
+            textlessSince = 0L
+            if (SystemClock.uptimeMillis() < stepDeadline) { armGrace(); return true }
+        }
+        // 收工前做一次**深扫描**（和 findExact 同预算）：快扫看不到字可能只是树太深，
+        // 深扫还是只有底栏文字，才能坐实"正文是画出来的"。
+        lastPageDesc = deepPageTexts(root)
+        finish(false, "在「${step.title}」这一步没找到入口；当页可见：$lastPageDesc。请照下面的路径自己点")
         return false
     }
 
@@ -423,10 +471,15 @@ object A11yNav {
         } catch (e: Exception) { rootIn }
     }
 
+    /**
+     * 这一页有没有字。**预算必须和 pageTexts/deepPageTexts 同一量级**：
+     * 实测（真机支付宝）树又深又宽，早期的小预算（200 节点/15 层）连底部标签栏都走不到，
+     * 把读得到字的真页面误判成无字广告窗，白白等到总超时才收工。
+     */
     private fun hasAnyText(n: AccessibilityNodeInfo): Boolean {
-        var budget = 200
+        var budget = 1500
         fun walk(x: AccessibilityNodeInfo, d: Int): Boolean {
-            if (budget <= 0 || d > 15) return false
+            if (budget <= 0 || d > 30) return false
             budget--
             val t = x.text?.toString()
             val c = x.contentDescription?.toString()
@@ -470,7 +523,63 @@ object A11yNav {
         "服务", "钱包", "通讯录", "发现", "微信", "看一看", "听一听",
     )
 
+    /**
+     * 收工前的**一次性深扫描**：预算和 [findExact] 同级（4000 节点/60 层）。
+     * 快扫（[pageTexts]）看不到字可能只是树太深、预算走不到；深扫还是那个样子，
+     * 才能坐实"正文是画出来的，读屏看不见"。只在放弃的那一刻跑一次，不在轮询里跑。
+     */
+    private fun deepPageTexts(root: AccessibilityNodeInfo): String {
+        val seen = LinkedHashSet<String>()
+        var budget = 4000
+        var deepest = 0
+        fun walk(n: AccessibilityNodeInfo, depth: Int) {
+            if (seen.size >= 8 || budget <= 0 || depth > 60) return
+            budget--
+            if (depth > deepest) deepest = depth
+            val t = n.text?.toString()?.trim()
+            if (!t.isNullOrEmpty() && t.length <= 10) seen.add(t)
+            for (i in 0 until n.childCount) {
+                n.getChild(i)?.let { walk(it, depth + 1) }
+                if (seen.size >= 8) return
+            }
+        }
+        walk(root, 0)
+        val stats = "扫了 ${4000 - budget} 个节点、最深 $deepest 层"
+        if (seen.isEmpty()) return "深扫到底（$stats）也没读到文本 —— 这页正文基本是画出来的，读屏看不见"
+        val list = seen.joinToString("、")
+        return if (seen.all { it in TAB_WORDS || it.matches(Regex("\\d+")) })
+            "$list（只有底部标签栏读得到字，正文多半是画出来的，这条自动路走不通；$stats）"
+        else "$list（$stats）"
+    }
+
     private fun norm(s: String): String = s.trim().replace("\\s+".toRegex(), "").replace("\u00A0", "")
+
+    /**
+     * 找开屏广告的「跳过」控件。这是**配置之外**唯一允许点的目标，所以匹配故意收得极紧：
+     * 文本去空白后 ≤8 字、含「跳过」、不含任何危险词 —— 「跳过 3」「跳过广告」都算，
+     * 其他一律不算。跳过广告不产生任何钱和协议上的后果，这里的风险上限是"把引导页跳过"。
+     */
+    private fun findSkipControl(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var found: AccessibilityNodeInfo? = null
+        var budget = 300
+
+        fun walk(n: AccessibilityNodeInfo, depth: Int) {
+            if (found != null || budget <= 0 || depth > 20) return
+            budget--
+            val t = (n.text?.toString() ?: n.contentDescription?.toString())?.let { norm(it) }
+            if (!t.isNullOrEmpty() && t.length <= 8 && t.contains("跳过") && !FORBIDDEN.containsMatchIn(t)) {
+                found = clickableAncestor(n) ?: n
+                return
+            }
+            for (i in 0 until n.childCount) {
+                val c = n.getChild(i) ?: continue
+                walk(c, depth + 1)
+                if (found != null) return
+            }
+        }
+        walk(root, 0)
+        return found
+    }
 
     /** 命中文字的往往是行内的 TextView，真正能点的在它上面那一层 */
     private fun clickableAncestor(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
