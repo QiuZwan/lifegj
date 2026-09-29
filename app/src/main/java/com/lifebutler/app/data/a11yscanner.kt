@@ -465,8 +465,13 @@ class A11yScannerService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
         if (pkg !in A11yScanner.WATCHED_PKGS) return
-        val root = rootInActiveWindow ?: return
+        val rootIn = rootInActiveWindow ?: return
         try {
+            // ⓪ 先挑窗口：开屏广告是一扇无文字的图片窗，还可能恰好就是 rootInActiveWindow ——
+            //    换到同包名下有内容的窗口再判，别把真页面当广告扔掉。
+            //    ⚠️ 导航和解析必须用**同一个**窗口：只导航换窗、解析还拿广告窗，
+            //    就会出现"认出了清单页、读出来的却是广告"的错位。
+            val root = A11yNav.pick(pkg, rootIn)
             // ① 「帮我翻进去」优先：导航中这一步由它处理，我们就别去解析半路上的页面了。
             //    ⚠️ 它返回 false 有两种情况都要照常往下走：**没在导航**，以及**刚认出到位了**——
             //    后面那种正是我们要抓的那一页，必须让 handleWindow 去解析。

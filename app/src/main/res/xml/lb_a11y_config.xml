@@ -14,13 +14,19 @@
   canPerformGestures 只有「帮我翻进去」用得上：语义化点击
   （performAction(ACTION_CLICK)）失败时，兜底按节点中心发一次手势。
   点击范围仍然被 packageNames 锁在这两个包内 —— 它点不动别的 App，也点不动桌面。
+
+  flagRetrieveInteractiveWindows：没有它 service.getWindows() **恒为空列表**，
+  「换到广告窗后面那扇有内容的窗口」（A11yNav.pick）就永远落空 —— v2.22 那轮兜底
+  因此整轮没生效过。加了这个 flag 后 getWindows() 能**列出**所有窗口（包括别的 App 的），
+  但代码在碰任何窗口前都先按包名 == 收单方过滤（见 pick），别的包一个节点都不会读 ——
+  隐私口径和 packageNames 那条一致，没有放宽。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/lb_a11y_desc"
     android:summary="@string/lb_a11y_summary"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
     android:notificationTimeout="400"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"

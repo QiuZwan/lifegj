@@ -75,7 +75,13 @@ object A11yNav {
     /** 一步最多滚几次去找入口 */
     private const val MAX_SCROLL_PER_STEP = 3
 
-    /** 找不到入口时先别收工：开屏广告是一扇没有文字的图片窗，按时间预算等真页面出来 */
+    /**
+     * 找不到入口时先别收工：按这个预算等真页面出来（开屏广告、转场都要时间）。
+     *
+     * ⚠️ 只对「读得到字」的页面生效。**一个字都读不到的窗**（图片广告窗）不受它管：
+     * 那种窗上没有任何可点的东西，等是唯一正确的动作，所以一路等到总超时（[TIMEOUT_MS]）
+     * 才收工 —— 实测有的开屏广告不止 20 秒，20 秒收工会把"广告还没放完"误判成"没入口"。
+     */
     private const val STEP_BUDGET_MS = 20_000L
 
     /**
@@ -119,6 +125,13 @@ object A11yNav {
     private var stepDeadline = 0L
     private var deadline = 0L
 
+    /**
+     * 最近一次看过的页面的样子（[pageTexts] 的结果）。给超时文案用：
+     * 总超时收工时不带"当页长什么样"，用户（和我们）就只能猜是卡在哪。
+     */
+    @Volatile
+    private var lastPageDesc = "没看到它的页面"
+
     /** 到位后等外面解析一次，再由 [afterParse] 收尾 */
     private var awaitingParse = false
 
@@ -130,7 +143,11 @@ object A11yNav {
     private var svc: AccessibilityService? = null
 
     private val handler = Handler(Looper.getMainLooper())
-    private val watchdog = Runnable { finish(false, "等太久了，先停下（可能是页面没变化 / 被系统拦了）") }
+    private val watchdog = Runnable { finish(false, timeoutNote()) }
+
+    /** 总超时收工的统一说法：光说"等太久"没法定位，把最后看到的页面带上 */
+    private fun timeoutNote(): String =
+        "等太久了，先停下；当页可见：$lastPageDesc。请照下面的路径自己点"
 
     /**
      * 闭眼期结束后的补看。**必须把外面那条流程照抄一遍**：
@@ -140,9 +157,10 @@ object A11yNav {
      */
     private val recheck = Runnable {
         val s = svc ?: return@Runnable
-        val root = try { s.rootInActiveWindow } catch (e: Exception) { null } ?: return@Runnable
-        val pkg = try { root.packageName?.toString().orEmpty() } catch (e: Exception) { "" }
+        val rootIn = try { s.rootInActiveWindow } catch (e: Exception) { null } ?: return@Runnable
+        val pkg = try { rootIn.packageName?.toString().orEmpty() } catch (e: Exception) { "" }
         if (pkg != payer?.pkg) return@Runnable
+        val root = pick(pkg, rootIn)
         if (onWindow(s, pkg, root)) return@Runnable
         val n = A11yScanner.handleWindow(s, pkg, root)
         afterParse(s, n)
@@ -157,14 +175,17 @@ object A11yNav {
      *
      * @return null 表示已开始（或已结束）；非 null 是一句**给人看的原因**，界面直接显示。
      */
-    /** 自检：服务是不是带着最新配置在跑。XML 改了但服务没重开时，系统用的还是旧 flags（图标类入口全瞎） */
+    /** 自检：服务是不是带着最新配置在跑。XML 改了但服务没重开时，系统用的还是旧 flags
+     *  （图标类入口、广告窗后面的真页面全都读不到，而表现只是"找不到入口"，查起来没头绪） */
     private fun hasFreshConfig(): Boolean {
         val s = svc ?: return true
         return try {
             val am = s.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE) as? android.view.accessibility.AccessibilityManager ?: return true
             val enabled = am.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_GENERIC)
             val self = enabled.firstOrNull { it.id?.startsWith(s.packageName + "/") == true } ?: return true
-            (self.flags and android.accessibilityservice.AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) != 0
+            val need = android.accessibilityservice.AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            (self.flags and need) == need
         } catch (e: Exception) { true }
     }
 
@@ -179,12 +200,13 @@ object A11yNav {
         if (!A11yScanner.enabled(ctx)) return "需先开启「自动扣款读取」才能自动导航。"
         if (A11yScanner.connected == false) return "无障碍服务被系统断开了，去重开一下再试。"
         if (!SubScanner.isInstalled(ctx, payer.pkg)) return "这台机器上没装「${payer.title}」。"
-        if (!hasFreshConfig()) return "无障碍服务还在用旧配置跑（更新后没重开过）。到系统设置把这个服务关一次再开，否则图标类入口（比如支付宝的设置齿轮）读不到。"
+        if (!hasFreshConfig()) return "无障碍服务还在用旧配置跑（更新后没重开过）。到系统设置把这个服务关一次再开，否则广告窗后面的真页面和图标类入口都读不到。"
 
         this.payer = payer
         steps = payer.route
         index = 0
         scrolls = 0
+        lastPageDesc = "没看到它的页面"
         stepDeadline = SystemClock.uptimeMillis() + STEP_BUDGET_MS
         // 还没到位就开始点，等于没在清单页上乱点 —— 但这一步不会发生：下面是先开 App
         awaitingParse = false
@@ -209,18 +231,15 @@ object A11yNav {
     }
 
     /**
-     * 服务把每个窗口都送进来。返回 **true = 这一步我在处理**（外面就别去解析了），
+     * 服务把**已经挑好的窗口**（见 [pick]）递进来。返回 **true = 这一步我在处理**（外面就别去解析了），
      * false = 我没在管这一页（外面照常解析 —— 到位那一下正好走这条路）。
      */
-    fun onWindow(ctx: Context, pkg: String, rootIn: AccessibilityNodeInfo): Boolean {
-        // 开屏广告是一扇无文字的图片窗，还可能恰好就是 rootInActiveWindow（实测微信走到这里
-        // pageTexts 报"没读到文本"）。换成同包名下有内容的窗口接着判，别把真页面误判成失败。
-        val root = pickWindow(pkg, rootIn)
+    fun onWindow(ctx: Context, pkg: String, root: AccessibilityNodeInfo): Boolean {
         val p = payer ?: return false
         if (phase != Phase.RUNNING) return false
         if (pkg != p.pkg) return false          // 只在自己那家的窗口里动作
         if (SystemClock.uptimeMillis() > deadline) {
-            finish(false, "等太久了，先停下（可能是页面没变化 / 被系统拦了）")
+            finish(false, timeoutNote())
             return false
         }
 
@@ -279,11 +298,15 @@ object A11yNav {
             armGrace()
             return true
         }
-        // 一次没看到不算数：那可能只是开屏广告（一扇没有文字的图片窗，实测
-        // 微信走到这里 pageTexts 是"没读到文本"）。按步预算闭眼等真页面，
-        // 超了才带着"当页可见"认输 —— 原来这里当场收工，闪屏一过就误判失败。
-        if (SystemClock.uptimeMillis() < stepDeadline) { armGrace(); return true }
-        finish(false, "在「${step.title}」这一步没找到入口；当页可见：${pageTexts(root)}。请照下面的路径自己点")
+        // ④ 还找不到也不马上收工。先看清这一页有没有字：
+        //    **一个字都没有**（开屏广告那种图片窗）不受 20 秒步预算管 —— 这种窗上没有任何
+        //    可点的东西，等是唯一正确的动作，一路等到总超时为止（实测有的广告不止 20 秒，
+        //    20 秒收工会把"广告还没放完"误判成"没入口"）；读得到字的页面才按步预算收工。
+        val textless = !hasAnyText(root)
+        lastPageDesc = pageTexts(root)
+        val budgetEnd = if (textless) deadline else stepDeadline
+        if (SystemClock.uptimeMillis() < budgetEnd) { armGrace(); return true }
+        finish(false, "在「${step.title}」这一步没找到入口；当页可见：${lastPageDesc}。请照下面的路径自己点")
         return false
     }
 
@@ -379,13 +402,23 @@ object A11yNav {
         try { android.widget.Toast.makeText(ctx, "生活管家：$msg", android.widget.Toast.LENGTH_SHORT).show() } catch (e: Exception) {}
     }
 
-    private fun pickWindow(pkg: String, rootIn: AccessibilityNodeInfo): AccessibilityNodeInfo {
+    /**
+     * 挑一个值得看的窗口。开屏广告是一扇无文字的图片窗，还可能恰好就是 rootInActiveWindow
+     * （实测微信走到这里 pageTexts 报"没读到文本"）—— 换成同包名下有内容的窗口。
+     *
+     * 必须在 [onWindow] **和** 解析（[A11yScanner.handleWindow]）之前都做这件事：
+     * 只在导航里换窗、解析还拿原来的广告窗，会出现"认出了清单页、解析的却是广告"的错位。
+     *
+     * ⚠️ 挑选只在这一个函数里发生，且**只碰包名 == 传入包的窗口** —— getWindows() 会把
+     * 别的 App 的窗口也列出来，但这里一个节点都不会去读它们，隐私口径不变。
+     */
+    fun pick(pkg: String, rootIn: AccessibilityNodeInfo): AccessibilityNodeInfo {
         if (hasAnyText(rootIn)) return rootIn
         val s = svc ?: return rootIn
         return try {
             s.windows.asSequence()
                 .mapNotNull { w -> w.root }
-                .firstOrNull { w -> w.packageName?.toString() == pkg && w != rootIn && hasAnyText(w) }
+                .firstOrNull { w -> w.packageName?.toString() == pkg && hasAnyText(w) }
                 ?: rootIn
         } catch (e: Exception) { rootIn }
     }
@@ -422,8 +455,20 @@ object A11yNav {
             }
         }
         walk(root, 0)
-        return if (seen.isEmpty()) "没读到文本（扫过 ${600 - budget} 个节点，多半是图片广告窗）" else seen.joinToString("、")
+        if (seen.isEmpty()) return "没读到文本（扫过 ${600 - budget} 个节点，多半是图片广告窗）"
+        val list = seen.joinToString("、")
+        // 实测签名：一页读到的字**全是**底部标签栏（外加未读数这种纯数字角标），
+        // 说明正文是自绘/图片渲染，读屏根本看不到入口 —— 这不是"再等等"能解决的，
+        // 要在失败那一刻就说破，别让用户以为换个时机再试就行。
+        val onlyTabs = seen.all { it in TAB_WORDS || it.matches(Regex("\\d+")) }
+        return if (onlyTabs) "$list（只有底部标签栏读得到字，正文多半是画出来的，这条自动路走不通）" else list
     }
+
+    /** 两家底部标签栏的文字，给「只剩底栏可读」的判定用 */
+    private val TAB_WORDS = setOf(
+        "首页", "理财", "视频", "消息", "我的", "生活", "我",
+        "服务", "钱包", "通讯录", "发现", "微信", "看一看", "听一听",
+    )
 
     private fun norm(s: String): String = s.trim().replace("\\s+".toRegex(), "").replace("\u00A0", "")
 
