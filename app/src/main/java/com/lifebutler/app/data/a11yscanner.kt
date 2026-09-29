@@ -319,6 +319,9 @@ object A11yScanner {
      */
     fun handleWindow(ctx: Context, pkg: String, root: AccessibilityNodeInfo): Int {
         val payer = payerOf(pkg) ?: return 0
+        // 隐私底线：只读目标包自己的窗口。活动窗被别的程序占着时（系统弹层等）一个字都不读。
+        val rootPkg = try { root.packageName?.toString().orEmpty() } catch (e: Exception) { "" }
+        if (rootPkg != pkg) return 0
         // ⚠️ 节流**要在走树之前**：滚动/刷新一秒钟能触发几十次事件，而走一遍无障碍树
         // （最多 1500 个节点）比判断"是不是同一页"贵得多。原来把 lastAtMs 放在解析成功
         // 之后才更新，等于"页面不是我想要的"时完全不节流 —— 微信聊天列表那种场景会白烧 CPU。

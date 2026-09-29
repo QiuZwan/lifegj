@@ -155,8 +155,11 @@ object A11yNav {
     private var stepDeadline = 0L
     private var deadline = 0L
 
-    /**
-     * 最近一次看过的页面的样子（[pageTexts] 的结果）。给超时文案用：
+    /** 最近一次 [pick] 是否换过窗（换过来的节点在背景窗口里，点击只能语义化，见 [click]） */
+    @Volatile
+    private var switchedWindow = false
+
+    /** 最近一次看过的页面的样子（[pageTexts] 的结果）。给超时文案用：
      * 总超时收工时不带"当页长什么样"，用户（和我们）就只能猜是卡在哪。
      */
     @Volatile
@@ -175,9 +178,9 @@ object A11yNav {
     private val handler = Handler(Looper.getMainLooper())
     private val watchdog = Runnable { finish(false, timeoutNote()) }
 
-    /** 总超时收工的统一说法：光说"等太久"没法定位，把最后看到的页面带上 */
+    /** 总超时收工的统一说法：光说"等太久"没法定位，把最后看到的页面和窗口清单带上 */
     private fun timeoutNote(): String =
-        "等太久了，先停下；当页可见：$lastPageDesc。请照下面的路径自己点"
+        "等太久了，先停下；当页可见：$lastPageDesc（${windowSnapshot()}）。请照下面的路径自己点"
 
     /**
      * 闭眼期结束后的补看。**必须把外面那条流程照抄一遍**：
@@ -281,6 +284,15 @@ object A11yNav {
         val p = payer ?: return false
         if (phase != Phase.RUNNING) return false
         if (pkg != p.pkg) return false          // 只在自己那家的窗口里动作
+        // 活动窗不是目标包（系统弹层/别家窗占着焦点，pick 又没找到目标包自己的窗）：
+        // 一个字都不读、什么都不点，等它消失。它是谁，收工时的窗口清单会交代。
+        val rootPkg = try { root.packageName?.toString().orEmpty() } catch (e: Exception) { "" }
+        if (rootPkg != p.pkg) {
+            if (SystemClock.uptimeMillis() < deadline) { armGrace(); return true }
+            lastPageDesc = "前台窗口属于别的程序（$rootPkg）"
+            finish(false, timeoutNote())
+            return false
+        }
         if (SystemClock.uptimeMillis() > deadline) {
             lastPageDesc = deepPageTexts(root)
             finish(false, timeoutNote())
@@ -322,7 +334,7 @@ object A11yNav {
                 finish(false, "安全规则拦下了「$label」这一步，请照下面的路径自己点")
                 return false
             }
-            if (!click(ctx, hit.node)) {
+            if (!click(ctx, hit.node, semanticOnly = switchedWindow)) {
                 finish(false, "点不动「${hit.text.ifEmpty { step.title }}」（找不到可点的位置）")
                 return false
             }
@@ -341,7 +353,7 @@ object A11yNav {
         //     （匹配收紧到「短文本 + 含跳过 + 不含危险词」，一次导航最多 [MAX_SKIPS] 次）。
         if (skips < MAX_SKIPS) {
             val skip = findSkipControl(root)
-            if (skip != null && click(ctx, skip)) {
+            if (skip != null && click(ctx, skip, semanticOnly = switchedWindow)) {
                 skips++
                 armGrace()
                 return true
@@ -396,7 +408,10 @@ object A11yNav {
         // 深扫还是只有底栏文字，才能坐实"正文是画出来的"。
         lastPageDesc = deepPageTexts(root)
         val iconHint = if (step.iconTopRight) "（这一步要找的是右上角图标，也落空了）" else ""
-        finish(false, "在「${step.title}」这一步没找到入口$iconHint；当页可见：$lastPageDesc。请照下面的路径自己点")
+        finish(
+            false,
+            "在「${step.title}」这一步没找到入口$iconHint；当页可见：$lastPageDesc（${windowSnapshot()}）。请照下面的路径自己点",
+        )
         return false
     }
 
@@ -494,24 +509,56 @@ object A11yNav {
     }
 
     /**
-     * 挑一个值得看的窗口。开屏广告是一扇无文字的图片窗，还可能恰好就是 rootInActiveWindow
-     * （实测微信走到这里 pageTexts 报"没读到文本"）—— 换成同包名下有内容的窗口。
+     * 挑一个值得看的窗口。两种情况都要换成目标包自己的窗口：
+     * ① 活动窗一个字都读不到（开屏广告的图片窗，实测微信走到这里 pageTexts 报"没读到文本"）；
+     * ② **活动窗根本不是目标包**（真机排障发现：微信打开后用户看得见主界面和底栏，
+     *    引擎盯着的活动窗却是一扇 1 节点的无字空壳 —— 事件是目标包的、窗口不是）。
+     * 两种情况的解法一样：去窗口列表里找**目标包自己的、有内容的**窗口 —— 用户看得见的
+     * 页面就在那儿。
      *
      * 必须在 [onWindow] **和** 解析（[A11yScanner.handleWindow]）之前都做这件事：
-     * 只在导航里换窗、解析还拿原来的广告窗，会出现"认出了清单页、解析的却是广告"的错位。
+     * 只在导航里换窗、解析还拿原窗口，会出现"认出了清单页、解析的却是空壳"的错位。
      *
      * ⚠️ 挑选只在这一个函数里发生，且**只碰包名 == 传入包的窗口** —— getWindows() 会把
      * 别的 App 的窗口也列出来，但这里一个节点都不会去读它们，隐私口径不变。
      */
     fun pick(pkg: String, rootIn: AccessibilityNodeInfo): AccessibilityNodeInfo {
-        if (hasAnyText(rootIn)) return rootIn
-        val s = svc ?: return rootIn
+        val rootPkg = try { rootIn.packageName?.toString().orEmpty() } catch (e: Exception) { "" }
+        if (rootPkg == pkg && hasAnyText(rootIn)) {
+            switchedWindow = false
+            return rootIn
+        }
+        val s = svc ?: run { switchedWindow = false; return rootIn }
         return try {
-            s.windows.asSequence()
+            val chosen = s.windows.asSequence()
                 .mapNotNull { w -> w.root }
                 .firstOrNull { w -> w.packageName?.toString() == pkg && hasAnyText(w) }
-                ?: rootIn
-        } catch (e: Exception) { rootIn }
+            switchedWindow = chosen != null
+            chosen ?: rootIn
+        } catch (e: Exception) {
+            switchedWindow = false
+            rootIn
+        }
+    }
+
+    /**
+     * 失败时把「系统里到底有哪些窗、各自属于谁、有没有字」报出来 —— 只报包名和有无字，
+     * 不报任何内容。真机排障就靠这个：活动窗的包不是目标包、或窗口列表是空的，
+     * 这一行字立刻见分晓。
+     */
+    private fun windowSnapshot(): String {
+        val s = svc ?: return ""
+        return try {
+            val parts = s.windows.mapNotNull { w ->
+                val r = w.root ?: return@mapNotNull null
+                val p = try { r.packageName?.toString() ?: "?" } catch (e: Exception) { "?" }
+                "${if (hasAnyText(r)) "有字" else "无字"}·$p"
+            }
+            when {
+                parts.isEmpty() -> "窗口列表是空的（服务的窗口读取 flag 可能没生效，去重开一次无障碍服务）"
+                else -> "共 ${parts.size} 个窗：${parts.joinToString("、")}"
+            }
+        } catch (e: Exception) { "窗口列表读取失败" }
     }
 
     /**
@@ -696,13 +743,20 @@ object A11yNav {
         return null
     }
 
-    /** 点。先语义化点击，不行再按坐标发手势（需要 canPerformGestures）。 */
-    private fun click(ctx: Context, node: AccessibilityNodeInfo): Boolean {
+    /**
+     * 点。先语义化点击，不行再按坐标发手势（需要 canPerformGestures）。
+     *
+     * [semanticOnly] = 这个节点在**被别的窗盖住的背景窗口**里（[pick] 换窗换过来的）——
+     * 这时按坐标发手势会点到盖在上面的那扇窗（真机就是一扇透明空壳），所以只做
+     * performAction；语义点击失败就如实报"点不动"，绝不隔着盖子盲点。
+     */
+    private fun click(ctx: Context, node: AccessibilityNodeInfo, semanticOnly: Boolean = false): Boolean {
         val target = clickableAncestor(node) ?: node
         try {
             if (target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         } catch (e: Exception) {
         }
+        if (semanticOnly) return false
         // 兜底：按节点（或其可点祖先）的中心发一次点按手势
         val r = android.graphics.Rect()
         try {
