@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""创建 GitHub Release v2.21 并上传签名 APK。"""
+"""创建 GitHub Release v2.22 并上传签名 APK。"""
 import io, sys, json, subprocess, urllib.request, urllib.error, os
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -29,20 +29,21 @@ def api(url, data=None, raw=None, ctype=None):
     except urllib.error.HTTPError as e:
         print("HTTP", e.code, e.read().decode("utf-8")[:500]); raise
 
-body = """v2.21 · 2026-09-29
+body = """v2.22 · 2026-09-29
 
-自动导航（支付宝/微信替你翻进去）第二轮修复：
+自动导航（支付宝/微信替你翻进去）第三轮修复：
 
-- 修「打开就没下文」的第二种死法：开屏广告是一扇没有文字的图片窗（实测 pageTexts 报「没读到文本」），原来重试 6 次约 5 秒就收工，广告还没播完。现在按时间预算等，每步 20 秒内持续等真页面出来。
-- 失败诊断增强：当页可见文本为空时，会报「扫过 N 个节点」，能区分「整窗无文字（广告图）」和「真的没这个入口」。
+- 配置自检：无障碍服务若还在用旧配置跑（更新后没重开过，系统会一直用启用那一刻缓存的 flags），点「自动导航并读取」会直接提示去重开，不再黑盒失败。支付宝的设置齿轮图标能否读到，取决于这一条。
+- 广告窗兜底：开屏广告是一扇无文字的图片窗，且可能恰好是系统认定的活动窗口（实测微信报「当页可见：没读到文本」）。现在自动换成同包名下有内容的窗口接着判断。
+- 找不到入口按时间预算等（每步 20 秒），不再被闪屏页误判。
 
-注：如果上一版（2.20）装完后没有重开过无障碍服务，请务必到系统设置把「自动扣款读取」关一次再开 —— 否则新配置（不过滤不重要节点等）不生效，支付宝的齿轮图标读不到。"""
+判定方法：装好 v2.22 后到系统设置把「自动扣款读取」关一次再开。若没重开，App 会拦下导航并明说；若重开了还失败，失败提示里的「当页可见」会给出那页的真实文字，照它改候选词即可。"""
 
 rel = api("https://api.github.com/repos/QiuZwan/lifegj/releases",
-          data={"tag_name": "v2.21", "target_commitish": "main",
-                "name": "v2.21 自动导航修复二轮（时间预算等待）", "body": body})
+          data={"tag_name": "v2.22", "target_commitish": "main",
+                "name": "v2.22 自动导航三轮：配置自检 + 广告窗兜底", "body": body})
 up = rel["upload_url"].split("{")[0]
 apk = os.path.join(ROOT, "app", "build", "outputs", "apk", "release", "app-release.apk")
-api(up + "?name=lifebutler-v2.21.apk", raw=open(apk, "rb").read(),
+api(up + "?name=lifebutler-v2.22.apk", raw=open(apk, "rb").read(),
     ctype="application/vnd.android.package-archive")
 print("release ok:", rel["html_url"])

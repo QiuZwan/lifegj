@@ -157,6 +157,17 @@ object A11yNav {
      *
      * @return null 表示已开始（或已结束）；非 null 是一句**给人看的原因**，界面直接显示。
      */
+    /** 自检：服务是不是带着最新配置在跑。XML 改了但服务没重开时，系统用的还是旧 flags（图标类入口全瞎） */
+    private fun hasFreshConfig(): Boolean {
+        val s = svc ?: return true
+        return try {
+            val am = s.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE) as? android.view.accessibility.AccessibilityManager ?: return true
+            val enabled = am.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_GENERIC)
+            val self = enabled.firstOrNull { it.id?.startsWith(s.packageName + "/") == true } ?: return true
+            (self.flags and android.accessibilityservice.AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) != 0
+        } catch (e: Exception) { true }
+    }
+
     fun start(ctx: Context, payer: A11yScanner.Payer): String? {
         if (payer.route.isEmpty()) return "「${payer.title}」还没配好自动路径，请照下面的路径自己点。"
         // 配置自检：任何一个候选词被 FORBIDDEN 拦住，这条路就是**走不通**的。
@@ -168,6 +179,7 @@ object A11yNav {
         if (!A11yScanner.enabled(ctx)) return "需先开启「自动扣款读取」才能自动导航。"
         if (A11yScanner.connected == false) return "无障碍服务被系统断开了，去重开一下再试。"
         if (!SubScanner.isInstalled(ctx, payer.pkg)) return "这台机器上没装「${payer.title}」。"
+        if (!hasFreshConfig()) return "无障碍服务还在用旧配置跑（更新后没重开过）。到系统设置把这个服务关一次再开，否则图标类入口（比如支付宝的设置齿轮）读不到。"
 
         this.payer = payer
         steps = payer.route
@@ -200,7 +212,10 @@ object A11yNav {
      * 服务把每个窗口都送进来。返回 **true = 这一步我在处理**（外面就别去解析了），
      * false = 我没在管这一页（外面照常解析 —— 到位那一下正好走这条路）。
      */
-    fun onWindow(ctx: Context, pkg: String, root: AccessibilityNodeInfo): Boolean {
+    fun onWindow(ctx: Context, pkg: String, rootIn: AccessibilityNodeInfo): Boolean {
+        // 开屏广告是一扇无文字的图片窗，还可能恰好就是 rootInActiveWindow（实测微信走到这里
+        // pageTexts 报"没读到文本"）。换成同包名下有内容的窗口接着判，别把真页面误判成失败。
+        val root = pickWindow(pkg, rootIn)
         val p = payer ?: return false
         if (phase != Phase.RUNNING) return false
         if (pkg != p.pkg) return false          // 只在自己那家的窗口里动作
@@ -362,6 +377,34 @@ object A11yNav {
     private fun toast(ctx: Context?, msg: String) {
         if (ctx == null) return
         try { android.widget.Toast.makeText(ctx, "生活管家：$msg", android.widget.Toast.LENGTH_SHORT).show() } catch (e: Exception) {}
+    }
+
+    private fun pickWindow(pkg: String, rootIn: AccessibilityNodeInfo): AccessibilityNodeInfo {
+        if (hasAnyText(rootIn)) return rootIn
+        val s = svc ?: return rootIn
+        return try {
+            s.windows.asSequence()
+                .mapNotNull { w -> w.root }
+                .firstOrNull { w -> w.packageName?.toString() == pkg && w != rootIn && hasAnyText(w) }
+                ?: rootIn
+        } catch (e: Exception) { rootIn }
+    }
+
+    private fun hasAnyText(n: AccessibilityNodeInfo): Boolean {
+        var budget = 200
+        fun walk(x: AccessibilityNodeInfo, d: Int): Boolean {
+            if (budget <= 0 || d > 15) return false
+            budget--
+            val t = x.text?.toString()
+            val c = x.contentDescription?.toString()
+            if (!t.isNullOrEmpty() || !c.isNullOrEmpty()) return true
+            for (i in 0 until x.childCount) {
+                val ch = x.getChild(i) ?: continue
+                if (walk(ch, d + 1)) return true
+            }
+            return false
+        }
+        return walk(n, 0)
     }
 
     /** 失败诊断：摘出当页前几条短文本。有了它，"翻不进去"不用再猜是哪个词没匹配上 */
