@@ -75,8 +75,8 @@ object A11yNav {
     /** 一步最多滚几次去找入口 */
     private const val MAX_SCROLL_PER_STEP = 3
 
-    /** 找不到入口时先别收工：开屏广告 / 闪屏页既点不动也滚不动，等真页面出来再说 */
-    private const val MAX_NOFIND_LOOKS = 6
+    /** 找不到入口时先别收工：开屏广告是一扇没有文字的图片窗，按时间预算等真页面出来 */
+    private const val STEP_BUDGET_MS = 20_000L
 
     /**
      * 点完 / 滚完之后的**闭眼期**。
@@ -116,7 +116,7 @@ object A11yNav {
     private var index = 0
     private var scrolls = 0
     private var toastedStep = -1
-    private var noFinds = 0
+    private var stepDeadline = 0L
     private var deadline = 0L
 
     /** 到位后等外面解析一次，再由 [afterParse] 收尾 */
@@ -173,7 +173,7 @@ object A11yNav {
         steps = payer.route
         index = 0
         scrolls = 0
-        noFinds = 0
+        stepDeadline = SystemClock.uptimeMillis() + STEP_BUDGET_MS
         // 还没到位就开始点，等于没在清单页上乱点 —— 但这一步不会发生：下面是先开 App
         awaitingParse = false
         deadline = SystemClock.uptimeMillis() + TIMEOUT_MS
@@ -250,7 +250,7 @@ object A11yNav {
             }
             index++
             scrolls = 0
-            noFinds = 0
+            stepDeadline = SystemClock.uptimeMillis() + STEP_BUDGET_MS
             handler.removeCallbacks(watchdog)
             handler.postDelayed(watchdog, TIMEOUT_MS)
             live = Live(p.title, index, steps.size, steps.getOrNull(index)?.title ?: "等页面出来")
@@ -264,11 +264,10 @@ object A11yNav {
             armGrace()
             return true
         }
-        // 一次没看到不算数：那可能只是开屏页。闭眼等下一个窗口事件再看，
-        // 连续 MAX_NOFIND_LOOKS 次都没有才认输 —— 原来这里当场收工，
-        // 微信"打开就没下文"正是死在这一下：第一扇窗是闪屏，「我」当然不在。
-        noFinds++
-        if (noFinds < MAX_NOFIND_LOOKS) { armGrace(); return true }
+        // 一次没看到不算数：那可能只是开屏广告（一扇没有文字的图片窗，实测
+        // 微信走到这里 pageTexts 是"没读到文本"）。按步预算闭眼等真页面，
+        // 超了才带着"当页可见"认输 —— 原来这里当场收工，闪屏一过就误判失败。
+        if (SystemClock.uptimeMillis() < stepDeadline) { armGrace(); return true }
         finish(false, "在「${step.title}」这一步没找到入口；当页可见：${pageTexts(root)}。请照下面的路径自己点")
         return false
     }
@@ -328,7 +327,7 @@ object A11yNav {
         // 失败必须当场弹出来，这是唯一能穿过前台 App 的反馈通道。
         if (!ok) toast(svc, note)
         toastedStep = -1
-        noFinds = 0
+        stepDeadline = 0L
     }
 
     /* ── 树操作 ── */
@@ -380,7 +379,7 @@ object A11yNav {
             }
         }
         walk(root, 0)
-        return if (seen.isEmpty()) "（没读到文本，可能这一页是自绘的）" else seen.joinToString("、")
+        return if (seen.isEmpty()) "没读到文本（扫过 ${600 - budget} 个节点，多半是图片广告窗）" else seen.joinToString("、")
     }
 
     private fun norm(s: String): String = s.trim().replace("\\s+".toRegex(), "").replace("\u00A0", "")
