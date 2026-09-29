@@ -28,13 +28,18 @@ import org.json.JSONObject
  *
  * 1. **只点配置里写死的那些字，一律精确相等**（去空白后 `text` 或 `contentDescription`
  *    完全等于候选词）。不做 `contains`、不做模糊匹配 —— 模糊匹配正是"点到关闭按钮"的来源。
- *    **唯一例外**是开屏广告的「跳过」控件（[findSkipControl]）：跳广告不涉及钱和协议，
- *    匹配收得极紧（短文本 + 含"跳过" + 不含危险词 + 一次导航最多 2 次）。
+ *    **两个例外**，都是真机踩出来的、且碰不到钱和协议：
+ *    ① 开屏广告的「跳过」控件（[findSkipControl]）：短文本 + 含"跳过" + 不含危险词，
+ *       一次导航最多 2 次；
+ *    ② 配置声明为图标入口的那一步（[Step.iconTopRight]，如支付宝「我的」页右上角的
+ *       设置齿轮，无文字无描述，按字找永远落空）：按「右上角 + 图标尺寸 + 无文字」找，
+ *       认错了也只是点开角落里另一个导航图标，下一步照常诚实收工。
  * 2. **[FORBIDDEN] 二次拦截**：哪怕是配置里写的候选词，只要含动作类词（关闭/解约/取消/付款…）
  *    也**拒绝点击**。这是防"以后有人往配置里加了一条危险路径"的保险。
  * 3. **只在前 N 步点导航**。一旦认出清单页就**立刻停手**，绝不在目标页上再点任何东西。
  * 4. **找不到就停**（滚 3 次还找不到 → 结束并给手动路径），**绝不碰运气乱点**。
- *    唯一的"自救"动作是：目标 App 卡在无字窗太久时**重新拉起一次**（只是开 App，不点任何东西）。
+ *    对卡死的无字窗（广告位挂死）有两个**不点任何控件**的自救：重新拉起目标 App 一次、
+ *    按系统 BACK 试探退出开屏广告（[MAX_BACKS] 次；若被退到桌面，[afterBack] 会把它拉回来）。
  * 5. 全程有**总超时**（[TIMEOUT_MS]）和**步数上限**，超了自动收手。
  * 6. 只在目标包自己的窗口里动作（`pkg != payer.pkg` 直接返回）。
  *
@@ -48,12 +53,21 @@ import org.json.JSONObject
  */
 object A11yNav {
 
-    /** 一步导航：走到某个入口，靠"点这几个字里的某一个"完成 */
+    /**
+     * 一步导航：走到某个入口，靠"点这几个字里的某一个"完成
+     */
     data class Step(
         /** 给人看的这一步在干什么，如「进入「设置」」 */
         val title: String,
         /** 候选文字，任一**精确命中**即点击（多写几个是为了兼容不同版本的说法） */
         val candidates: List<String>,
+        /**
+         * 这一步的入口是**没有文字的图标**（真机确认：支付宝「我的」页的设置是右上角
+         * 一个齿轮图标，无文字也无描述，按字找永远落空）。开了这个开关，候选词落空后
+         * 再按「屏幕右上角 + 图标尺寸 + 无文字」找一遍。识别错了也只是走错一个导航页，
+         * 下一步找不到入口照常诚实收工 —— 那个角落里没有任何钱和协议相关的东西。
+         */
+        val iconTopRight: Boolean = false,
     )
 
     /**
@@ -83,6 +97,9 @@ object A11yNav {
 
     /** 无字窗（广告/图片页）干等这么多秒后，把目标 App 重新拉起一次再等（广告位挂死时的自救） */
     private const val RELAUNCH_AFTER_MS = 30_000L
+
+    /** 重拉也救不回来之后，按系统 BACK 试探退出开屏广告，最多这么多次 */
+    private const val MAX_BACKS = 2
 
     /**
      * 找不到入口时先别收工：按这个预算等真页面出来（开屏广告、转场都要时间）。
@@ -132,6 +149,7 @@ object A11yNav {
     private var scrolls = 0
     private var skips = 0
     private var relaunched = false
+    private var backCount = 0
     private var textlessSince = 0L
     private var toastedStep = -1
     private var stepDeadline = 0L
@@ -180,6 +198,15 @@ object A11yNav {
 
     val running: Boolean get() = phase == Phase.RUNNING
 
+    /** BACK 之后看一眼：目标 App 若被整个退到桌面（活动窗口不是它了），就再拉起来 */
+    private val afterBack = Runnable {
+        val s = svc ?: return@Runnable
+        val p = payer ?: return@Runnable
+        if (phase != Phase.RUNNING) return@Runnable
+        val pkg = try { s.rootInActiveWindow?.packageName?.toString().orEmpty() } catch (e: Exception) { "" }
+        if (pkg != p.pkg) SubScanner.launchPackage(s, p.pkg)
+    }
+
     /* ── 对外 ── */
 
     /**
@@ -220,6 +247,7 @@ object A11yNav {
         scrolls = 0
         skips = 0
         relaunched = false
+        backCount = 0
         textlessSince = 0L
         lastPageDesc = "没看到它的页面"
         stepDeadline = SystemClock.uptimeMillis() + STEP_BUDGET_MS
@@ -285,17 +313,17 @@ object A11yNav {
         }
         live = Live(p.title, index, steps.size, step.title)
 
-        // ② 找这一步要点的那个字
-        val hit = findExact(root, step.candidates)
+        // ② 找这一步要点的那个字；声明了图标入口的步骤，字没命中再按图标找
+        val hit = findExact(root, step.candidates) ?: findIconHit(root, step)
         if (hit != null) {
             val label = step.candidates.firstOrNull { it == hit.text } ?: hit.text
-            if (FORBIDDEN.containsMatchIn(label)) {
+            if (label.isNotEmpty() && FORBIDDEN.containsMatchIn(label)) {
                 // 配置里写了危险词 —— 宁可翻不进去也不点
                 finish(false, "安全规则拦下了「$label」这一步，请照下面的路径自己点")
                 return false
             }
             if (!click(ctx, hit.node)) {
-                finish(false, "点不动「$label」（找不到可点的位置）")
+                finish(false, "点不动「${hit.text.ifEmpty { step.title }}」（找不到可点的位置）")
                 return false
             }
             index++
@@ -337,12 +365,25 @@ object A11yNav {
         lastPageDesc = pageTexts(root)
         if (textless) {
             if (textlessSince == 0L) textlessSince = SystemClock.uptimeMillis()
+            val stuckFor = SystemClock.uptimeMillis() - textlessSince
             // 干等 [RELAUNCH_AFTER_MS] 还是无字 → 把目标 App 重新拉起一次再等。
             // 广告位挂死（一直出无字图片）时，重拉通常直接进正页；重拉只是开 App，不点任何东西。
-            if (!relaunched && SystemClock.uptimeMillis() - textlessSince > RELAUNCH_AFTER_MS) {
+            if (!relaunched && stuckFor > RELAUNCH_AFTER_MS) {
                 relaunched = true
                 textlessSince = 0L
                 SubScanner.launchPackage(ctx, p.pkg)
+                armGrace()
+                return true
+            }
+            // 重拉也救不回来（真机：微信的无字窗能挂满 75 秒）→ 按系统 BACK 试探。
+            // 开屏广告页的 BACK 多半就是"跳过/退出广告"；万一退了整个 App，[afterBack]
+            // 会把它再拉起来。BACK 是系统级返回，不点击任何控件，最多 [MAX_BACKS] 次。
+            if (relaunched && stuckFor > RELAUNCH_AFTER_MS && backCount < MAX_BACKS) {
+                backCount++
+                textlessSince = 0L
+                try { svc?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK) } catch (e: Exception) {}
+                handler.removeCallbacks(afterBack)
+                handler.postDelayed(afterBack, 2500)
                 armGrace()
                 return true
             }
@@ -354,7 +395,8 @@ object A11yNav {
         // 收工前做一次**深扫描**（和 findExact 同预算）：快扫看不到字可能只是树太深，
         // 深扫还是只有底栏文字，才能坐实"正文是画出来的"。
         lastPageDesc = deepPageTexts(root)
-        finish(false, "在「${step.title}」这一步没找到入口；当页可见：$lastPageDesc。请照下面的路径自己点")
+        val iconHint = if (step.iconTopRight) "（这一步要找的是右上角图标，也落空了）" else ""
+        finish(false, "在「${step.title}」这一步没找到入口$iconHint；当页可见：$lastPageDesc。请照下面的路径自己点")
         return false
     }
 
@@ -408,6 +450,7 @@ object A11yNav {
         handler.removeCallbacks(watchdog)
         // 补看也要撤 —— 不收掉的话，收工之后那一次补看会拿着 payer=null 又跑一遍
         handler.removeCallbacks(recheck)
+        handler.removeCallbacks(afterBack)
         if (p != null) storeNote(p, ok, note)
         // 进度与失败原来只写在自家界面里，而此刻屏幕在对方 App 手里 —— 用户看到的就是"没下文"。
         // 失败必须当场弹出来，这是唯一能穿过前台 App 的反馈通道。
@@ -579,6 +622,66 @@ object A11yNav {
         }
         walk(root, 0)
         return found
+    }
+
+    /** 图标步的命中包装：只在配置声明了 [Step.iconTopRight] 时生效 */
+    private fun findIconHit(root: AccessibilityNodeInfo, step: Step): Hit? =
+        if (step.iconTopRight) findTopRightIcon(root)?.let { Hit(it, "") } else null
+
+    /**
+     * 找**右上角**的图标入口（无文字的齿轮那一类）。真机确认：支付宝「我的」页的设置
+     * 是一个不带文字/描述的齿轮图标，纯按字找永远落空。
+     *
+     * 判据故意收得很死：中心点落在窗口右上角（右 28% × 顶部 14%）内、
+     * 尺寸是图标量级（16px ~ 屏宽 15%）、自身没有任何文字和描述。
+     * 同一片角落里有图标和包着它的容器时，取更靠右的那个（角落最深处）。
+     *
+     * 风险上限：认错了也只是点开右上角另一个导航图标（客服/相机之类），
+     * 下一步找不到入口照常诚实收工 —— 那个角落里没有任何钱和协议相关的东西。
+     */
+    private fun findTopRightIcon(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val win = android.graphics.Rect()
+        try { root.getBoundsInScreen(win) } catch (e: Exception) { return null }
+        if (win.width() <= 0 || win.height() <= 0) return null
+        val w = win.width()
+        val maxIcon = (w * 0.15).toInt()
+        var best: AccessibilityNodeInfo? = null
+        var bestCx = Int.MIN_VALUE
+        var bestArea = Int.MAX_VALUE
+        var budget = 4000
+
+        fun consider(n: AccessibilityNodeInfo, r: android.graphics.Rect) {
+            val cx = r.exactCenterX().toInt()
+            val cy = r.exactCenterY().toInt()
+            val inRegion = cx >= win.left + w * 0.72 &&
+                cy >= win.top + win.height() * 0.01 && cy <= win.top + win.height() * 0.14
+            val iconSize = r.width() in 16..maxIcon && r.height() in 16..maxIcon
+            val noText = n.text.isNullOrEmpty() && n.contentDescription.isNullOrEmpty()
+            if (!inRegion || !iconSize || !noText) return
+            // 更靠右优先；同样靠右选更小的（图标本体，不是容器）
+            if (cx > bestCx || (cx == bestCx && r.width() * r.height() < bestArea)) {
+                bestCx = cx
+                bestArea = r.width() * r.height()
+                best = n
+            }
+        }
+
+        fun walk(n: AccessibilityNodeInfo, depth: Int) {
+            if (budget <= 0 || depth > 60) return
+            budget--
+            try {
+                val r = android.graphics.Rect()
+                n.getBoundsInScreen(r)
+                consider(n, r)
+            } catch (e: Exception) {
+            }
+            for (i in 0 until n.childCount) {
+                val c = n.getChild(i) ?: continue
+                walk(c, depth + 1)
+            }
+        }
+        walk(root, 0)
+        return best
     }
 
     /** 命中文字的往往是行内的 TextView，真正能点的在它上面那一层 */

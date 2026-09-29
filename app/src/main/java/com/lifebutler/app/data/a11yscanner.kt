@@ -71,7 +71,9 @@ object A11yScanner {
             manualPath = "我的 → 设置 → 支付设置 → 免密支付/自动扣款",
             route = listOf(
                 A11yNav.Step("打开「我的」", listOf("我的")),
-                A11yNav.Step("进入「设置」", listOf("设置")),
+                // 真机（2026-09）确认：这一步的入口是右上角的齿轮图标，无文字也无描述，
+                // 纯按字找永远落空 —— iconTopRight 让候选词落空后改按「右上角图标」找。
+                A11yNav.Step("进入「设置」", listOf("设置"), iconTopRight = true),
                 A11yNav.Step("进入「支付设置」", listOf("支付设置")),
                 A11yNav.Step(
                     "进入「免密支付/自动扣款」",
