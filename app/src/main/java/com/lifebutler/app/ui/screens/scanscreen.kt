@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.lifebutler.app.data.A11yNav
 import com.lifebutler.app.data.A11yScanner
 import com.lifebutler.app.data.ButlerStore
@@ -71,6 +75,7 @@ import com.lifebutler.app.ui.theme.LbRust
 import com.lifebutler.app.ui.theme.LbRustSoft
 import com.lifebutler.app.ui.theme.LbSurface
 import com.lifebutler.app.ui.theme.LbSurface2
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -82,7 +87,7 @@ fun ScanScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
     val scope = rememberCoroutineScope()
-    var step by remember { mutableStateOf(0) } // 0=说明 1=扫描中 2=结果
+    var step by remember { mutableStateOf(0) } // 0=说明 1=扫描中 2=结果 3=扫描出错
     var smsGranted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED)
     }
@@ -90,6 +95,12 @@ fun ScanScreen(onBack: () -> Unit) {
     var apps by remember { mutableStateOf<List<String>>(emptyList()) }
     var scannedWithSms by remember { mutableStateOf(false) }
     var addedNow by remember { mutableStateOf(0) }
+    // 各来源「翻了什么」：0 条线索时，用户得能区分"翻过了确实没有"和"压根没读到"。
+    var smsRead by remember { mutableStateOf(0) }
+    var smsReadFailed by remember { mutableStateOf(false) }
+    var notifRead by remember { mutableStateOf(0) }
+    var notifReadFailed by remember { mutableStateOf(false) }
+    var a11yRead by remember { mutableStateOf(0) }
     var notifEnabled by remember { mutableStateOf(SubScanner.notificationsEnabled(ctx)) }
     // 只读「授权在不在」会假阳性：系统省电策略会把监听服务断开，而授权那条仍然在。
     // 所以把两件事都拿出来，界面才能如实说清是"没开"还是"开了但没在工作"。
@@ -119,6 +130,21 @@ fun ScanScreen(onBack: () -> Unit) {
         navLast = A11yNav.lastNote(ctx)
     }
 
+    // 授权状态回来自动刷新：用户去系统设置开完权限回到本页 —— 原来必须手动点那两行小字，
+    // 大多数人根本不知道要点，回来看到"未开启"只会以为开了没用。ON_RESUME 时三处一起刷。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                smsGranted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
+                refreshNotif()
+                refreshA11y()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // 点「帮我翻进去」之后：一直盯到导航结束（或满 90 秒兜底），再把结果留痕读回来。
     // ⚠️ 这期间用户在看支付宝，我们的界面在后台 —— LaunchedEffect 不会因为退到后台被取消
     // （Activity 只是 stopped，composition 还在），所以回来时能立刻看到结果。
@@ -141,56 +167,86 @@ fun ScanScreen(onBack: () -> Unit) {
     fun startScan() {
         step = 1
         scope.launch {
-            delay(450)
-            val sms = if (smsGranted) withContext(Dispatchers.IO) { SubScanner.scanSms(ctx) } else emptyList()
-            scannedWithSms = smsGranted
-            delay(350)
-            val a = withContext(Dispatchers.IO) { SubScanner.installedSubApps(ctx) }
-            val notif = withContext(Dispatchers.IO) { SubScanner.notificationFindings(ctx) }
-            val a11y = withContext(Dispatchers.IO) { A11yScanner.findings(ctx) }
-            val merged = withContext(Dispatchers.IO) {
-                SubScanner.mergeCandidates(SubScanner.mergeCandidates(sms, notif), a11y)
-            }
-            var added = 0
-            merged.forEach { c ->
-                // ⚠️ 签约类（原文里读不出金额）**不自动落库**。
-                // 它只说明"你和这个商户签了自动扣款协议"，不代表这笔已经在扣钱；替用户
-                // 把一条"还没花出去的钱"塞进守护清单，他只会觉得"我没让你加啊"。
-                // 界面照样把它列出来，由他自己点「加入」。读得到金额的（真扣过钱）才自动加。
-                //
-                // ⚠️ **代扣页来的也一律不自动落库**，理由同上：那张清单证明的是"已签约"，
-                // 不是"这笔钱已经扣了"。而且它是**用户自己翻进去**才被读到的 —— 我们更该
-                // 把判断权还给他，而不是替他往守护清单里塞东西。
-                val pureSignup = c.signup && c.amount == null
-                val fromAgreementPage = c.source.contains("代扣页")
-                if (!pureSignup && !fromAgreementPage &&
-                    store.subs.none { it.name == c.name } && !store.isDismissed(c.name)
-                ) {
-                    val src = when {
-                        c.source.contains("代扣页") -> "自动扣款页"
-                        c.source.contains("通知") -> "通知"
-                        else -> "扫描"
-                    }
-                    store.addScannedSub(c.name, c.amount ?: 0.0, src, c.nextDate)
-                    added++
+            // 兜底：扫描里任何一处炸了（厂商 ROM 的短信库读崩、存档 JSON 损坏…），
+            // 原来会把整个协程悄悄杀死，界面永远停在「正在扫描…」，用户只能杀 App 重开。
+            // 捕下来置成失败态（step=3），给一句人话和「重试」按钮。
+            try {
+                delay(450)
+                val smsRes = if (smsGranted) {
+                    withContext(Dispatchers.IO) { SubScanner.scanSms(ctx) }
+                } else {
+                    SubScanner.SourceResult(emptyList(), 0)
                 }
-                // 短信本身就是一条真实的扣费凭证 → 写进真实扣费流水。
-                // 条件里的 `amount > 0` 一并挡住签约类：签约没扣钱，不许凭空造出一笔流水。
-                // ⚠️ 代扣页**只证明"签了协议"，不证明"扣过钱"**，所以这里也不给它写流水。
-                if (c.source.contains("短信") && (c.amount ?: 0.0) > 0) {
-                    val iso = SubScanner.fmtIso(c.dateMs)
-                    if (store.charges.none { it.subName == c.name && it.date == iso }) {
-                        store.addCharge(c.name, c.amount ?: 0.0, iso, "短信")
+                scannedWithSms = smsGranted
+                smsRead = smsRes.readCount
+                smsReadFailed = smsRes.failed
+                delay(350)
+                val a = withContext(Dispatchers.IO) { SubScanner.installedSubApps(ctx) }
+                val notifRes = withContext(Dispatchers.IO) { SubScanner.notificationFindings(ctx) }
+                notifRead = notifRes.readCount
+                notifReadFailed = notifRes.failed
+                val a11y = withContext(Dispatchers.IO) { A11yScanner.findings(ctx) }
+                a11yRead = a11y.size
+                val merged = withContext(Dispatchers.IO) {
+                    SubScanner.mergeCandidates(SubScanner.mergeCandidates(smsRes.candidates, notifRes.candidates), a11y)
+                }
+                var added = 0
+                merged.forEach { c ->
+                    // ⚠️ 签约类（原文里读不出金额）**不自动落库**。
+                    // 它只说明"你和这个商户签了自动扣款协议"，不代表这笔已经在扣钱；替用户
+                    // 把一条"还没花出去的钱"塞进守护清单，他只会觉得"我没让你加啊"。
+                    // 界面照样把它列出来，由他自己点「加入」。
+                    //
+                    // ⚠️ **代扣页来的也一律不自动落库**，理由同上：那张清单证明的是"已签约"，
+                    // 不是"这笔钱已经扣了"。而且它是**用户自己翻进去**才被读到的 —— 我们更该
+                    // 把判断权还给他，而不是替他往守护清单里塞东西。
+                    //
+                    // ⚠️ **金额待补的（读到了但越界被降级）同样不自动落库**：连金额都拿不准，
+                    // 更不该替用户做主，列出来让他自己判断。
+                    val pureSignup = c.signup && c.amount == null
+                    val fromAgreementPage = c.source.contains("代扣页")
+                    // 带金额的签约短信：语义是"刚开了自动扣款"（金额只是首期），不是"一直在扣费" ——
+                    // 不再自动建订阅 + 写流水，改走守护页「待确认」，用户点了「认得」才算数。
+                    val signupSms = c.source.contains("短信") && c.signupHit && (c.amount ?: 0.0) > 0
+                    if (!pureSignup && !fromAgreementPage && !signupSms && c.amount != null &&
+                        store.subs.none { it.name == c.name } && !store.isDismissed(c.name)
+                    ) {
+                        // 「自动扣款页」分支已删：fromAgreementPage 在上面把代扣页拦死，
+                        // 原来那个 when 里的代扣页分支是永远走不到的死代码。
+                        val src = if (c.source.contains("通知")) "通知" else "扫描"
+                        store.addScannedSub(c.name, c.amount, src, c.nextDate)
+                        added++
+                    }
+                    // 短信本身就是一条真实的扣费凭证 → 写进真实扣费流水。两类例外：
+                    // 带金额的签约短信（上面已进「待确认」，认领时才记账）；金额待补的 ——
+                    // 没有可靠金额就不许造流水。条件里的 `amount > 0` 一并挡住纯签约类：
+                    // 签约没扣钱，不许凭空造出一笔流水。
+                    if (c.source.contains("短信") && !signupSms && (c.amount ?: 0.0) > 0) {
+                        val iso = SubScanner.fmtIso(c.dateMs)
+                        if (store.charges.none { it.subName == c.name && it.date == iso }) {
+                            store.addCharge(c.name, c.amount ?: 0.0, iso, "短信")
+                        }
+                    }
+                    // 带金额的签约短信 → 守护页「待确认」卡。金额未知(null)先记 0，
+                    // 认领时不会写扣费流水 —— 那些口径 ButlerStore.addClaim 已经管好。
+                    if (signupSms) {
+                        store.addClaim(c.name, c.amount, c.dateMs, c.snippet, "短信")
                     }
                 }
+                addedNow = added
+                candidates = merged
+                apps = a
+                // 记下「跑过一次扫描」。守护页的空态要靠它区分「还没扫过」与「扫过确实没有发现」——
+                // 少了这个状态，用户刚扫完看到的还是「还没扫过」，只会以为功能坏了。
+                runCatching { store.markScanned() }
+                step = 2
+            } catch (e: CancellationException) {
+                // 离开页面会取消协程，这是正常流程，不是"扫描出错" —— 原样抛回去让取消生效。
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("ScanScreen", "扫描协程失败", e)
+                step = 3
             }
-            addedNow = added
-            candidates = merged
-            apps = a
-            // 记下「跑过一次扫描」。守护页的空态要靠它区分「还没扫过」与「扫过确实没有发现」——
-            // 少了这个状态，用户刚扫完看到的还是「还没扫过」，只会以为功能坏了。
-            runCatching { store.markScanned() }
-            step = 2
         }
     }
 
@@ -233,7 +289,8 @@ fun ScanScreen(onBack: () -> Unit) {
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     Text(
-                        "短信里读到的「扣费」会作为凭证直接记账；「签约」类不会自动加进订阅清单：签约当下不扣钱，原文里没有金额，所以留空不猜，由你点「加入」。" +
+                        "短信里读到的「扣费」会作为凭证直接记账；「签约」类不会自动加进订阅清单：" +
+                            "没写金额的由你点「加入」，带了金额的（比如签约首期）会放进守护页的「待确认」，你确认了才算数。" +
                             "通知里的线索一律先进「待确认」，你在订阅管理页点「确认」之后才落库；关键词判不出是不是订阅，不自动做主。" +
                             "自动扣款页读到的只说明已签约，不会写成扣费记录。",
                         fontSize = 11.5.sp,
@@ -538,10 +595,61 @@ fun ScanScreen(onBack: () -> Unit) {
                 }
             }
 
+            3 -> {
+                // 扫描出错的兜底态：给一句人话 + 重试，别让一次异常长得像"功能坏了"。
+                LbCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconBadge(LbIcons.scan, LbRustSoft, LbRust, size = 38.dp)
+                        Column(Modifier.padding(start = 11.dp)) {
+                            Text("扫描出了错，可以重试", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                            Text(
+                                "不是你操作的问题 —— 本机数据读到一半失败了。" +
+                                    "重新扫一次通常就能过；还是不行的话，过一会儿再试。",
+                                fontSize = 12.sp,
+                                color = LbInk2,
+                                lineHeight = 17.sp,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    LbPrimaryButton(
+                        "重试扫描",
+                        onClick = { startScan() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp),
+                    )
+                }
+            }
+
             else -> {
-                if (scannedWithSms && candidates.isEmpty()) {
+                // 来源读取量：把「翻了什么」亮出来 —— 0 条线索时，用户才知道是"翻过了确实没有"
+                // 而不是"压根没翻"；短信/通知读失败这件事也要有处可说。
+                Text(
+                    buildList {
+                        if (scannedWithSms) add("翻了 $smsRead 条短信" + (if (smsReadFailed) "（没读出来）" else ""))
+                        add("通知池 $notifRead 条" + (if (notifReadFailed) "（没读出来）" else ""))
+                        add("代扣页 $a11yRead 条")
+                    }.joinToString("、"),
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                if (scannedWithSms && (smsReadFailed || candidates.isEmpty())) {
                     LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 12.dp) {
-                        Text("短信里没有发现扣费或签约线索（已翻近一年的收件箱）。", fontSize = 12.5.sp, color = LbInk3)
+                        Text(
+                            // 「没读到」和「真没有」必须分开说：权限被系统收回时被当成"没有线索"，
+                            // 用户会以为自己没有订阅，从此不再用这个功能。
+                            if (smsReadFailed) {
+                                "短信没能读出来（可能被系统限制了）。短信是唯一能回头看一年的来源 —— " +
+                                    "到系统设置确认「短信」权限后，回来点「重新扫描」。"
+                            } else {
+                                "短信里没有发现扣费或签约线索（已翻近一年的收件箱）。"
+                            },
+                            fontSize = 12.5.sp,
+                            color = LbInk3,
+                            lineHeight = 19.sp,
+                        )
                     }
                 }
                 if (addedNow > 0) {
@@ -572,6 +680,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     LbCard(contentPadding = 8.dp) {
                         candidates.forEach { c ->
                             val existing = store.subs.firstOrNull { it.name == c.name }
+                            val dismissed = store.isDismissed(c.name)
                             val warn = existing?.closing == true && c.dateMs > existing.closingAt
                             Row(
                                 Modifier
@@ -599,6 +708,12 @@ fun ScanScreen(onBack: () -> Unit) {
                                             Spacer(Modifier.size(5.dp))
                                             LbChip("关闭后仍有扣费", ChipTone.Rust)
                                         }
+                                        // 已经忽略过的商户要一眼认出来：不加标记的话，它和"新线索"长得一样，
+                                        // 用户会奇怪"这条我不是点过不是我的吗"。
+                                        if (dismissed && existing == null) {
+                                            Spacer(Modifier.size(5.dp))
+                                            LbChip("已忽略", ChipTone.Soft)
+                                        }
                                     }
                                     Text(
                                         (if (c.signup) "签约 · " else "") +
@@ -607,8 +722,9 @@ fun ScanScreen(onBack: () -> Unit) {
                                             " · " +
                                             // 代扣页那条时间戳是「读到的时间」，不是扣费时间；
                                             // 直接摆一个日期紧跟在金额后面，会被读成"这天扣了这笔钱"。
-                                            (if (c.source.contains("代扣页")) "读到于 " + SubScanner.fmtDate(c.dateMs)
-                                            else SubScanner.fmtDate(c.dateMs)) +
+                                            (if (c.source.contains("代扣页")) "读到于 " else "") +
+                                            // 跨了年的老线索把年份带上：「12-30」在 1 月看会被读成"上个月"。
+                                            SubScanner.fmtScanDate(c.dateMs) +
                                             " · 来源:" + c.source,
                                         fontSize = 11.5.sp,
                                         color = LbInk2,
@@ -629,6 +745,15 @@ fun ScanScreen(onBack: () -> Unit) {
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.padding(top = 2.dp),
                                     )
+                                    if (dismissed && existing == null) {
+                                        Text(
+                                            "你之前忽略过这个商户 —— 留在这里只是给你核对；点「加入」可重新收进守护清单。",
+                                            fontSize = 11.sp,
+                                            color = LbInk3,
+                                            lineHeight = 16.sp,
+                                            modifier = Modifier.padding(top = 2.dp),
+                                        )
+                                    }
                                 }
                                 when {
                                     existing != null && (existing.source == "扫描" || existing.source == "通知" || existing.source == "代扣页") -> MiniAction("移除") {
@@ -636,6 +761,18 @@ fun ScanScreen(onBack: () -> Unit) {
                                         store.dismissName(existing.name)
                                     }
                                     existing != null -> LbChip("已加入", ChipTone.Green)
+                                    // 忽略过的商户保留「加入」，但视觉弱化：重新收进来是允许的（加入会
+                                    // 顺手撤销忽略），只是不该和"新线索"一样显眼，更不该被误当成新发现。
+                                    dismissed -> Text(
+                                        "加入",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = LbInk3,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .clickable { addAsSub(c.name, c.amount ?: 0.0, c.nextDate) }
+                                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                                    )
                                     else -> MiniAction("加入") { addAsSub(c.name, c.amount ?: 0.0, c.nextDate) }
                                 }
                             }
@@ -678,8 +815,15 @@ fun ScanScreen(onBack: () -> Unit) {
                 if (candidates.isEmpty() && apps.isEmpty()) {
                     LbCard(modifier = Modifier.padding(top = 10.dp), contentPadding = 12.dp) {
                         Text(
-                            "没有发现线索。可以这样想：\n" +
-                                "· 没给短信权限的话，App 就没有任何历史可翻 —— 短信是唯一能回头看一年的来源；\n" +
+                            // 「没读到」不等于「真没有」：短信这一路失败时先说清这件事，
+                            // 免得用户把"权限被收回"当成"我没有订阅"。
+                            (if (scannedWithSms && smsReadFailed) {
+                                "没有发现线索，而且短信这一路没读成（可能被系统限制了）。可以这样想：\n" +
+                                    "· 到系统设置确认「短信」权限后回来点「重新扫描」—— 短信是唯一能回头看一年的来源；\n"
+                            } else {
+                                "没有发现线索。可以这样想：\n" +
+                                    "· 没给短信权限的话，App 就没有任何历史可翻 —— 短信是唯一能回头看一年的来源；\n"
+                            }) +
                                 "· 「通知读取」只在开启之后才开始积累，装 App 之前的历史通知系统不会补发；\n" +
                                 "· 「自动扣款读取」要那两页真的显示在屏幕上才读得到；可自己打开，也可点「自动导航并读取」；\n" +
                                 "· 也可以稍后再试，或在「订阅管理」页手动添加。",

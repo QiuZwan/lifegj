@@ -69,6 +69,14 @@ private val LB_SEARCH_ORDER = listOf(
 private const val LB_SEARCH_DEBOUNCE_MS = 180L
 
 /**
+ * 一页最多画多少条结果。
+ *
+ * 全部画出来在极端数据下（比如搜个「的」字命中上千条）会把这一页的组合开销拉爆。
+ * 超出的不丢：类目计数与总数照报，末尾提示缩小关键词。
+ */
+private const val LB_SEARCH_RENDER_LIMIT = 200
+
+/**
  * 跨模块搜索页（overlay key = "search"）。
  *
  * 空查询**什么都不显示**（只给提示），不是把全部记录铺出来 ——
@@ -97,11 +105,17 @@ fun SearchScreen(
         settled = q
     }
     // 缓存键 = 关键字 + 「本机数据动过没有」。少了后面那个，边搜边改会给出过期结果。
-    val hits = remember(settled, store.dataStamp()) { store.searchAll(settled) }
+    val stamp = store.dataStamp()
+    val hits = remember(settled, stamp) { store.searchAll(settled) }
     val pending = q != settled
-    val grouped = hits.groupBy { it.kind }
-    val kinds = LB_SEARCH_ORDER.filter { grouped.containsKey(it) } +
-        grouped.keys.filter { it !in LB_SEARCH_ORDER }.sorted()
+    // 分组与类目排序跟着 hits 一起 remember：敲一个字只该付一次「分组」的钱，
+    // 不能之后每一帧重组（防抖、计数条变化）都重新 groupBy 一遍。
+    val (grouped, kinds) = remember(settled, stamp) {
+        val g = hits.groupBy { it.kind }
+        val order = LB_SEARCH_ORDER.filter { g.containsKey(it) } +
+            g.keys.filter { it !in LB_SEARCH_ORDER }.sorted()
+        g to order
+    }
     val focus = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -200,8 +214,12 @@ fun SearchScreen(
                     color = LbInk3,
                     modifier = Modifier.padding(top = 10.dp, start = 4.dp, bottom = 2.dp),
                 )
+                var rendered = 0
                 kinds.forEach { kind ->
+                    if (rendered >= LB_SEARCH_RENDER_LIMIT) return@forEach
                     val list = grouped[kind] ?: return@forEach
+                    val visible = list.take(LB_SEARCH_RENDER_LIMIT - rendered)
+                    rendered += visible.size
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -217,7 +235,7 @@ fun SearchScreen(
                         )
                     }
                     LbCard(contentPadding = 6.dp) {
-                        list.forEachIndexed { i, h ->
+                        visible.forEachIndexed { i, h ->
                             if (i > 0) {
                                 Box(
                                     Modifier
@@ -270,6 +288,15 @@ fun SearchScreen(
                             }
                         }
                     }
+                }
+                // 渲染兜底：类目计数与总数仍按全量报，超出的不画、末尾说清楚
+                if (hits.size > rendered) {
+                    Text(
+                        "还有 ${hits.size - rendered} 条，请缩小关键词",
+                        fontSize = 11.5.sp,
+                        color = LbInk3,
+                        modifier = Modifier.padding(top = 12.dp, start = 4.dp),
+                    )
                 }
             }
         }

@@ -34,6 +34,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -153,7 +156,8 @@ fun ChatScreen(
 ) {
     val ctx = LocalContext.current
     val store = remember { ButlerStore.get(ctx) }
-    val listState = rememberScrollState()
+    // 对话列表改成 LazyColumn 了(见下面那块),滚动定位也换成 LazyListState
+    val listState = rememberLazyListState()
     var draft by remember { mutableStateOf("") }
     var typing by remember { mutableStateOf(false) }
     // 每次进入这一页都重新问一次配置:刚在「我的」里填完 Key、或关掉内置额度,回来就能看到变化
@@ -300,14 +304,21 @@ fun ChatScreen(
             }
         }
 
-        Column(
-            Modifier
+        // pendingFix 原来在滚动列里现读;提到外面是因为「一共几条 item」(滚动定位要用)也得算上它
+        val pendingFix = store.pendingFix.value
+
+        // 为什么必须 Lazy:对话是全 App 唯一会一直长的列表,原来 Column+verticalScroll
+        // 每一帧都要把**每一条**气泡(连同图片解码)组装出来,几百条之后进页面就卡。
+        // 改 Lazy 之后只组装看得见的几条;代价是滚出屏幕的气泡会被回收,
+        // 所以图片解码必须带缓存(见 LocalImage / LocalImageCache),否则滚回去就要重解一遍。
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
                 .weight(1f)
-                .verticalScroll(listState)
                 .padding(top = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            store.chat.forEach { m ->
+            items(store.chat, key = { it.id }) { m ->
                 // 搜索跳过来的一条对话：滚进来 + 亮一下。
                 // 整条包一个 Box，左右对齐仍由里面的 Row 决定，所以底色会横跨整行 ——
                 // 对话页本来就是一问一答地竖着看，横着亮一条反而更清楚「是这一句」。
@@ -359,7 +370,7 @@ fun ChatScreen(
             }
 
             // 刚才这一句真正写进去的东西,单独列出来,不和模型的客套话混在一起
-            if (lastActions.isNotEmpty()) {
+            if (lastActions.isNotEmpty()) item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                     Column(
                         Modifier
@@ -382,7 +393,7 @@ fun ChatScreen(
             }
 
             // 管家说要带你去某一页时,给一个真能点的按钮(它自己跳不了,得由这一层办)
-            lastNav?.let { route ->
+            lastNav?.let { route -> item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                     Box(
                         Modifier
@@ -400,12 +411,12 @@ fun ChatScreen(
                     }
                 }
             }
+            }
 
             // AI 提出来、但**还没落库**的改 / 删：这里给一张确认卡。
             // 这一步不能省 —— 改删动的是已有记录，模型认错对象（「网易云」看成「网易严选」）
             // 就直接毁掉正确数据，而本机没有云端可以回捞。
-            val pendingFix = store.pendingFix.value
-            if (pendingFix.isNotBlank()) {
+            if (pendingFix.isNotBlank()) item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                     Column(
                         Modifier
@@ -457,14 +468,14 @@ fun ChatScreen(
                 }
             }
 
-            if (typing) {
+            if (typing) item {
                 Row(Modifier.fillMaxWidth()) {
                     TypingBubble()
                 }
             }
 
             // 头一回打开,先给一张图 + 几句能直接点的话
-            if (store.chat.size <= 1 && !typing) {
+            if (store.chat.size <= 1 && !typing) item {
                 Column(
                     Modifier.padding(top = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
@@ -501,10 +512,19 @@ fun ChatScreen(
                     }
                 }
             }
-        }
+            }
 
-        LaunchedEffect(store.chat.size, typing, lastActions.size) {
-            listState.animateScrollTo(listState.maxValue)
+        // LazyColumn 没有 maxValue 可以滚到底,改按「最后一条 item 的下标」定位。
+        // 尾巴上还有动作卡/导航卡/确认卡/打字气泡/首次引导这些非对话 item,
+        // 总数在组合期按同样条件算出来,不依赖 layoutInfo(那一帧可能还没把新条目排进去)。
+        val tailCount = (if (lastActions.isNotEmpty()) 1 else 0) +
+            (if (lastNav != null) 1 else 0) +
+            (if (pendingFix.isNotBlank()) 1 else 0) +
+            (if (typing) 1 else 0) +
+            (if (store.chat.size <= 1 && !typing) 1 else 0)
+        LaunchedEffect(store.chat.size, typing, lastActions.size, tailCount) {
+            val last = store.chat.size + tailCount - 1
+            if (last >= 0) listState.animateScrollToItem(last)
         }
 
         Surface(
@@ -656,6 +676,9 @@ fun FamilyScreen(
     var memberMenu by remember { mutableStateOf<ButlerMember?>(null) }
     var deleteKeyId by remember { mutableStateOf<String?>(null) }
     var memberEdit by remember { mutableStateOf<ButlerMember?>(null) }
+    // 待确认的删除目标:删除是会真动数据的动作,先弹确认再做(全 App 惯例)
+    var memberRemoveTarget by remember { mutableStateOf<ButlerMember?>(null) }
+    var albumDeleteTarget by remember { mutableStateOf<ButlerPhoto?>(null) }
     var photoTargetId by remember { mutableStateOf<String?>(null) }
     val memberPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val id = photoTargetId
@@ -711,7 +734,8 @@ fun FamilyScreen(
             )
             if (nearestMember != null) {
                 Box(Modifier.align(Alignment.TopEnd).padding(12.dp)) {
-                    LbChip("已记录", ChipTone.OnDark)
+                    // 「已记录」是对自己说的空话 —— 这一眼该看到的是家里记了几位
+                    LbChip("${store.members.size} 位家人", ChipTone.OnDark)
                 }
             }
         }
@@ -975,11 +999,27 @@ fun FamilyScreen(
                 memberMenu = null
             },
             onRemove = {
-                store.removeMember(m.id)
+                // 不直接删:先把确认弹窗叫出来,确认之后才动 store(撤销条仍由 store 那层负责)
+                memberRemoveTarget = m
                 memberMenu = null
-                Toast.makeText(ctx, "已从家人列表移除", Toast.LENGTH_SHORT).show()
             },
             onDismiss = { memberMenu = null },
+        )
+    }
+
+    // 移除家人的确认。store.removeMember 自带 5 秒撤销(头像文件要等撤销期过了才真删),
+    // 这里加一道确认不会把撤销弄丢,只是让「移除」从手滑一下就发生变成想清楚再发生
+    memberRemoveTarget?.let { m ->
+        LbConfirmDialog(
+            title = "从家人列表移除「${m.name}」？",
+            text = "这条记录会从家人列表里删掉，5 秒内可以在屏幕下方点「撤销」找回来。",
+            confirmText = "移除",
+            onDismiss = { memberRemoveTarget = null },
+            onConfirm = {
+                store.removeMember(m.id)
+                memberRemoveTarget = null
+                Toast.makeText(ctx, "已从家人列表移除", Toast.LENGTH_SHORT).show()
+            },
         )
     }
 
@@ -1045,9 +1085,8 @@ fun FamilyScreen(
             archives = store.archive,
             photoName = store.fileOf(p.path).name,
             onDelete = {
-                store.removeAlbumPhoto(p.id)
-                albumViewer = null
-                Toast.makeText(ctx, "已从相册删除", Toast.LENGTH_SHORT).show()
+                // 不直接删:先弹确认;看大图的弹窗留在原地,确认/取消回来都还在这一张上
+                albumDeleteTarget = p
             },
             onAddToArchive = { aid ->
                 val t = store.addPhotoToArchive(aid, p.path)
@@ -1058,6 +1097,21 @@ fun FamilyScreen(
                 ).show()
             },
             onDismiss = { albumViewer = null },
+        )
+    }
+
+    // 删相册照片的确认。store.removeAlbumPhoto 自带 5 秒撤销,文件本体会推迟到撤销期结束才删
+    albumDeleteTarget?.let { p ->
+        LbConfirmDialog(
+            title = "从相册删除这张照片？",
+            text = "5 秒内可以在屏幕下方点「撤销」找回来；撤销期过了,本机这份文件才会真正删除。",
+            onDismiss = { albumDeleteTarget = null },
+            onConfirm = {
+                store.removeAlbumPhoto(p.id)
+                albumViewer = null
+                albumDeleteTarget = null
+                Toast.makeText(ctx, "已从相册删除", Toast.LENGTH_SHORT).show()
+            },
         )
     }
 }
@@ -1428,6 +1482,11 @@ fun MineScreen(
     var showAi by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
     var showRestore by remember { mutableStateOf(false) }
+    // 备份导出/导入的「进行中」标记:导出要把照片逐个 base64 进备份文本、导入要整体改写本机,
+    // 大档案都要好几秒。期间相关入口禁用并显示进度文案,完成或失败后恢复 ——
+    // 原来这些活直接在点击回调里主线程一口气跑完,档案一大页面就冻住。
+    var backupBusy by remember { mutableStateOf(false) }
+    val mineScope = rememberCoroutineScope()
     // 「不再提示的商户」管理页。
     // 为什么必须有：点一次「以后别再提」，那个商户就**永久不再自动加进来**，
     // 而 v2.18 之前界面上没有任何撤销的地方 —— 一次误点没法回头。
@@ -1440,32 +1499,60 @@ fun MineScreen(
         ActivityResultContracts.CreateDocument(BackupIO.MIME),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val exp = store.exportAll()
-        val err = BackupIO.write(ctx, uri, exp.text)
-        val msg = when {
-            err != null -> "没能存成文件：$err"
-            // 备份内嵌图片的总额度是共享的，用光了后面的照片/档案会被跳过。
-            // 原来这里只说"备份已存成文件"，用户会一路以为全备好了 —— 必须如实说缺了什么。
-            exp.hasSkipped -> "备份已存成文件，但有 ${exp.skippedTotal} 个文件因体积上限没进去" +
-                "（${exp.skippedText()}），换机恢复时这些不在里面"
-            else -> "备份已存成文件，换机时用「从文件恢复」选回来"
+        // 导出要读盘、逐文件 base64,大档案要好几秒;包进协程,导出与落盘放 IO
+        // (exportAll 只读列表、write 只碰内容提供器,都不跟界面抢写),完了回主线程报结果
+        backupBusy = true
+        mineScope.launch {
+            try {
+                val exp = withContext(Dispatchers.IO) { store.exportAll() }
+                val err = withContext(Dispatchers.IO) { BackupIO.write(ctx, uri, exp.text) }
+                val msg = when {
+                    err != null -> "没能存成文件：$err"
+                    // 备份内嵌图片的总额度是共享的，用光了后面的照片/档案会被跳过。
+                    // 原来这里只说"备份已存成文件"，用户会一路以为全备好了 —— 必须如实说缺了什么。
+                    exp.hasSkipped -> "备份已存成文件，但有 ${exp.skippedTotal} 个文件因体积上限没进去" +
+                        "（${exp.skippedText()}），换机恢复时这些不在里面"
+                    else -> "备份已存成文件，换机时用「从文件恢复」选回来"
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 页面退出时作用域被取消:不是导出失败,原样放行,别吞掉取消信号
+                throw e
+            } catch (e: Exception) {
+                // exportAll/write 内部已各自兜错,这里只兜真正抛出来的意外,不让 busy 卡在「进行中」
+                Toast.makeText(ctx, "没能存成文件：${e.message ?: "出了点问题"}", Toast.LENGTH_LONG).show()
+            } finally {
+                backupBusy = false
+            }
         }
-        Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
     }
     val backupOpenLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        // 文件通道现在会先看体积：太大的直接不读（原来是一口气读进内存，误选大文件就 OOM）
-        when (val r = BackupIO.read(ctx, uri)) {
-            is BackupIO.ReadResult.Fail ->
-                Toast.makeText(ctx, r.message, Toast.LENGTH_LONG).show()
-            is BackupIO.ReadResult.Ok ->
-                if (!store.isValidBackup(r.text)) {
-                    Toast.makeText(ctx, "这个文件不像生活管家的备份，已取消", Toast.LENGTH_SHORT).show()
-                } else {
-                    restorePending = r.text
+        // 文件通道现在会先看体积：太大的直接不读（原来是一口气读进内存，误选大文件就 OOM）。
+        // 读文件本身也是盘上的活,放 IO;读完的校验与恢复流程回主线程
+        backupBusy = true
+        mineScope.launch {
+            try {
+                val r = withContext(Dispatchers.IO) { BackupIO.read(ctx, uri) }
+                when (r) {
+                    is BackupIO.ReadResult.Fail ->
+                        Toast.makeText(ctx, r.message, Toast.LENGTH_LONG).show()
+                    is BackupIO.ReadResult.Ok ->
+                        if (!store.isValidBackup(r.text)) {
+                            Toast.makeText(ctx, "这个文件不像生活管家的备份，已取消", Toast.LENGTH_SHORT).show()
+                        } else {
+                            restorePending = r.text
+                        }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(ctx, "没能读出备份文件：${e.message ?: "出了点问题"}", Toast.LENGTH_LONG).show()
+            } finally {
+                backupBusy = false
+            }
         }
     }
     val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -1583,7 +1670,8 @@ fun MineScreen(
                     val allDone = totalOpen > 0 && store.tasks.all { it.done } && store.obligations.all { it.done }
                     LbChip(
                         when {
-                            totalOpen == 0 -> "还没开始"
+                            // 「还没开始」听着像在催人;这里只是如实说「还没有记录」,中性一点
+                            totalOpen == 0 -> "尚未记录"
                             allDone -> "都处理完了"
                             else -> "进行中"
                         },
@@ -1689,8 +1777,8 @@ fun MineScreen(
                         if (store.dismissedNames().isEmpty()) "没有 · 点「忽略此商户」会加进来"
                         else "${store.dismissedNames().size} 个 · 可以改回来",
                     ),
-                    Triple(LbIcons.download, "导出家庭档案", "一键整理成文本"),
-                    Triple(LbIcons.deviceFloppy, "备份与恢复", "换机不丢数据"),
+                    Triple(LbIcons.download, "导出家庭档案", if (backupBusy) "正在处理…" else "一键整理成文本"),
+                    Triple(LbIcons.deviceFloppy, "备份与恢复", if (backupBusy) "正在处理…" else "换机不丢数据"),
                     Triple(LbIcons.eye, "载入演示数据", "用示例内容预览"),
                     Triple(LbIcons.trash, "清空全部数据", "从零开始记录"),
                     Triple(LbIcons.settings, "关于管家", "版本 · 帮助 · 协议 · 反馈"),
@@ -1742,13 +1830,25 @@ fun MineScreen(
                                     "载入演示数据" -> showDemo = true
                                     "清空全部数据" -> showClear = true
                                     "关于管家" -> onOpenAbout()
-                                    "备份与恢复" -> showBackup = true
+                                    "备份与恢复" -> if (!backupBusy) showBackup = true
                                     "导出家庭档案" -> {
-                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_TEXT, buildExport(store))
+                                        // 导出是纯字符串拼接(在 IO 上拼),完事才拉分享面板;
+                                        // 期间入口禁用,副标题就是「正在处理…」,不让用户以为点了没反应
+                                        if (!backupBusy) {
+                                            backupBusy = true
+                                            mineScope.launch {
+                                                try {
+                                                    val text = withContext(Dispatchers.IO) { buildExport(store) }
+                                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                                        type = "text/plain"
+                                                        putExtra(Intent.EXTRA_TEXT, text)
+                                                    }
+                                                    ctx.startActivity(Intent.createChooser(sendIntent, "导出家庭档案"))
+                                                } finally {
+                                                    backupBusy = false
+                                                }
+                                            }
                                         }
-                                        ctx.startActivity(Intent.createChooser(sendIntent, "导出家庭档案"))
                                     }
                                     else -> { }
                                 }
@@ -2121,49 +2221,69 @@ fun MineScreen(
 
     if (showBackup) {
         BackupDialog(
+            busy = backupBusy,
             onSaveFile = {
-                showBackup = false
-                backupSaveLauncher.launch(BackupIO.suggestedName())
+                if (!backupBusy) {
+                    showBackup = false
+                    backupSaveLauncher.launch(BackupIO.suggestedName())
+                }
             },
             onRestoreFile = {
-                showBackup = false
-                backupOpenLauncher.launch(BackupIO.PICK_MIMES)
+                if (!backupBusy) {
+                    showBackup = false
+                    backupOpenLauncher.launch(BackupIO.PICK_MIMES)
+                }
             },
             onCopy = {
                 // 剪贴板要经 Binder 跨进程送到 system_server，几 MB 的文本塞不进去。
                 // 这里如实报「装不下 / 偏大」，绝不让用户以为备份成功了 —— 那是丢数据的开始。
-                val exp = store.exportAll()
-                val text = exp.text
-                val kb = (text.length + 1023) / 1024
-                // 剪贴板这条也走同一个导出逻辑，所以同样可能漏文件；漏了就得说，不能只报"已复制"
-                val tail = if (exp.hasSkipped)
-                    "。注意：${exp.skippedTotal} 个文件因体积上限没进去（${exp.skippedText()}）" else ""
-                try {
-                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("生活管家备份", text))
-                    Toast.makeText(
-                        ctx,
-                        (if (kb > 900) "已复制（约 ${kb}KB）。内容偏大，建议改用「存成文件」" else "备份已复制（约 ${kb}KB），存到安全的地方即可") + tail,
-                        Toast.LENGTH_LONG,
-                    ).show()
-                } catch (e: Exception) {
-                    Toast.makeText(
-                        ctx,
-                        "内容太大，剪贴板放不下（约 ${kb}KB）—— 请改用「存成文件」",
-                        Toast.LENGTH_LONG,
-                    ).show()
+                // 导出还要把照片逐个 base64 进来,大档案要好几秒:包进协程,导出放 IO,
+                // 弹窗保持打开、按钮禁用并显示「正在打包…」,做完回主线程写剪贴板、报结果
+                if (!backupBusy) {
+                    backupBusy = true
+                    mineScope.launch {
+                        try {
+                            val exp = withContext(Dispatchers.IO) { store.exportAll() }
+                            val text = exp.text
+                            val kb = (text.length + 1023) / 1024
+                            // 剪贴板这条也走同一个导出逻辑，所以同样可能漏文件；漏了就得说，不能只报"已复制"
+                            val tail = if (exp.hasSkipped)
+                                "。注意：${exp.skippedTotal} 个文件因体积上限没进去（${exp.skippedText()}）" else ""
+                            try {
+                                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("生活管家备份", text))
+                                Toast.makeText(
+                                    ctx,
+                                    (if (kb > 900) "已复制（约 ${kb}KB）。内容偏大，建议改用「存成文件」" else "备份已复制（约 ${kb}KB），存到安全的地方即可") + tail,
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    ctx,
+                                    "内容太大，剪贴板放不下（约 ${kb}KB）—— 请改用「存成文件」",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } finally {
+                            backupBusy = false
+                        }
+                    }
                 }
             },
             onRestore = {
-                restoreInitial = try {
-                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val t = cm.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
-                    if (t.contains("\"tasks\"") || t.length > 80) t else ""
-                } catch (e: Exception) {
-                    ""
+                if (!backupBusy) {
+                    restoreInitial = try {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val t = cm.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                        if (t.contains("\"tasks\"") || t.length > 80) t else ""
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    showBackup = false
+                    showRestore = true
                 }
-                showBackup = false
-                showRestore = true
             },
             onDismiss = { showBackup = false },
         )
@@ -2216,23 +2336,43 @@ fun MineScreen(
             confirmText = "覆盖恢复",
             onDismiss = { restorePending = null },
             onConfirm = {
-                val ok = store.importState(raw)
+                // 导入要解 base64、重写文件并整体替换内存里的数据,大备份要好几秒。
+                // 先关预览弹窗、亮出「正在导入…」,期间备份相关入口都禁用,做完如实报结果。
+                // 注意 importState 会改写内存列表,必须留在主线程跑,与界面的读写同一条队 ——
+                // 它本体快不快归 butlerstore 那边管,调用侧只负责不装死、有话说。
                 restorePending = null
-                if (ok) {
-                    ReminderScheduler.ensureScheduled(ctx)
-                    Toast.makeText(ctx, "备份已恢复", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(ctx, "恢复失败，备份内容可能已损坏", Toast.LENGTH_SHORT).show()
+                backupBusy = true
+                Toast.makeText(ctx, "正在导入…", Toast.LENGTH_SHORT).show()
+                mineScope.launch {
+                    val ok = try {
+                        store.importState(raw)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        false
+                    }
+                    backupBusy = false
+                    if (ok) {
+                        ReminderScheduler.ensureScheduled(ctx)
+                        Toast.makeText(ctx, "备份已恢复", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(ctx, "恢复失败，备份内容可能已损坏", Toast.LENGTH_SHORT).show()
+                    }
                 }
             },
         )
     }
 }
 
+/** 头像/成员卡这类小图的目标尺寸:显示就是 54~56dp,256px 已有两倍多余量 */
+private const val PHOTO_THUMB_DIM = 256
+
 @Composable
 private fun LocalPhoto(path: String, fallbackRes: Int, modifier: Modifier = Modifier) {
+    // 原来这里是一次全尺寸 decodeFile —— 一张四千万像素的头像照进来就是上百 MB 的位图。
+    // 显示尺寸只有 56dp,按目标尺寸降采样 + 缓存,又快又省
     val bmp = remember(path) {
-        if (path.isEmpty()) null else android.graphics.BitmapFactory.decodeFile(path)?.asImageBitmap()
+        decodeLocalCached(path, PHOTO_THUMB_DIM)?.asImageBitmap()
     }
     if (bmp != null) {
         Image(bitmap = bmp, contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop)
@@ -2241,7 +2381,13 @@ private fun LocalPhoto(path: String, fallbackRes: Int, modifier: Modifier = Modi
     }
 }
 
-/** 按需要的尺寸解码本机图片,避免把整张原图读进内存(缩略图只解到 maxDim) */
+/**
+ * 按需要的尺寸解码本机图片,避免把整张原图读进内存(缩略图只解到 maxDim)。
+ *
+ * inSampleSize 按**较长边**估:原来的写法要求「两边都缩到 maxDim 附近才降采样」,
+ * 竖图/横图会一路放行 —— 一张 4000x3000 的照片配 maxDim=560 也只降 2 倍,
+ * 出来还是十几 MB 的位图。按较长边算,任何朝向都能压到目标附近。
+ */
 private fun decodeLocal(path: String, maxDim: Int): android.graphics.Bitmap? {
     return try {
         if (maxDim <= 0) {
@@ -2249,13 +2395,55 @@ private fun decodeLocal(path: String, maxDim: Int): android.graphics.Bitmap? {
         } else {
             val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeFile(path, bounds)
+            val longSide = maxOf(bounds.outWidth, bounds.outHeight)
             var sample = 1
-            while (bounds.outWidth / (sample * 2) >= maxDim && bounds.outHeight / (sample * 2) >= maxDim) sample *= 2
+            while (longSide / (sample * 2) >= maxDim) sample *= 2
             android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
         }
     } catch (e: Exception) {
         null
     }
+}
+
+/**
+ * 解码结果的缓存:键 = 路径 + 文件最后修改时间 + 目标尺寸。
+ *
+ * 为什么必须有:对话列表改成 LazyColumn 之后,气泡滚出屏幕就被回收,
+ * composable 里的 remember(path) 也跟着丢 —— 没有这层缓存,每滚回去一次就重解一次。
+ * 修改时间进键,文件被覆盖或替换后旧位图不会赖着不放;容量按堆的 1/8 封顶,
+ * 挤出去的位图交给系统回收,不额外持有。
+ */
+private object LocalImageCache {
+    private val cache = object : android.util.LruCache<String, android.graphics.Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 8 / 1024).toInt().coerceAtLeast(4 * 1024),
+    ) {
+        override fun sizeOf(key: String, value: android.graphics.Bitmap): Int = value.byteCount / 1024
+    }
+
+    fun get(path: String, mtime: Long, maxDim: Int): android.graphics.Bitmap? =
+        cache.get("$path|$mtime|$maxDim")
+
+    fun put(path: String, mtime: Long, maxDim: Int, bmp: android.graphics.Bitmap) {
+        cache.put("$path|$mtime|$maxDim", bmp)
+    }
+}
+
+/** 文件的当前修改时间,读不到就当 0 —— 它是缓存键的一部分 */
+private fun fileMtime(path: String): Long =
+    try {
+        java.io.File(path).lastModified()
+    } catch (e: Exception) {
+        0L
+    }
+
+/** 降采样解码 + 缓存一步到位:同一路径、同一份内容、同一目标尺寸只解一次 */
+private fun decodeLocalCached(path: String, maxDim: Int): android.graphics.Bitmap? {
+    if (path.isEmpty()) return null
+    val mtime = fileMtime(path)
+    LocalImageCache.get(path, mtime, maxDim)?.let { return it }
+    val bmp = decodeLocal(path, maxDim) ?: return null
+    LocalImageCache.put(path, mtime, maxDim, bmp)
+    return bmp
 }
 
 /** 只渲染本机真实存在的图片;取不到就什么都不画,不拿占位图顶替 */
@@ -2267,7 +2455,7 @@ internal fun LocalImage(
     maxDim: Int = 0,
 ) {
     val bmp = remember(path, maxDim) {
-        if (path.isEmpty()) null else decodeLocal(path, maxDim)?.asImageBitmap()
+        decodeLocalCached(path, maxDim)?.asImageBitmap()
     }
     if (bmp != null) {
         Image(bitmap = bmp, contentDescription = null, modifier = modifier, contentScale = contentScale)
@@ -2312,6 +2500,33 @@ private fun AiField(label: String, value: String, hint: String, onChange: (Strin
     }
 }
 
+/** AI 脱敏的一行开关:左边说不让看什么,右边沿用全 App 的胶囊;「已屏蔽」= 这一类不再发送 */
+@Composable
+private fun AiRedactRow(label: String, on: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 12.sp, color = LbInk, modifier = Modifier.weight(1f))
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(if (on) LbAccentSoft else LbSurface2)
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+        ) {
+            Text(
+                if (on) "已屏蔽" else "会发送",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (on) LbAccent else LbInk3,
+            )
+        }
+    }
+}
+
 /**
  * 配置 AI 管家。三件事分开管:
  * 1. 内置共享额度(默认开)——开箱就能用,不用填任何东西;
@@ -2340,6 +2555,13 @@ private fun AiManagerDialog(
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val hadConfig = initialBase.isNotBlank() || initialKey.isNotBlank() || initialModel.isNotBlank()
+    // 四类脱敏开关:进弹窗读一次当初始值,拨动时立刻写回本机(与内置额度的开关同一套路)。
+    // 读写契约在 AiConfig(另一文件):redactMemos/redactSpends/redactFamily/redactFiles 读,
+    // setRedactMemos/setRedactSpends/setRedactFamily/setRedactFiles 写,名字与 useBuiltin 一族对齐
+    var redactMemosOn by remember { mutableStateOf(AiConfig.redactMemos(ctx)) }
+    var redactSpendsOn by remember { mutableStateOf(AiConfig.redactSpends(ctx)) }
+    var redactFamilyOn by remember { mutableStateOf(AiConfig.redactFamily(ctx)) }
+    var redactFilesOn by remember { mutableStateOf(AiConfig.redactFiles(ctx)) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
@@ -2411,6 +2633,42 @@ private fun AiManagerDialog(
                         }
                     }
                 }
+
+                /* ── AI 脱敏:不让某一类本机内容跟着问题一起发出去 ── */
+                Text(
+                    "AI 能看到什么（可逐类屏蔽）",
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = LbInk2,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+                AiRedactRow("不让 AI 看到备忘内容", redactMemosOn) {
+                    redactMemosOn = !redactMemosOn
+                    AiConfig.setRedactMemos(ctx, redactMemosOn)
+                }
+                AiRedactRow("不让 AI 看到消费备注", redactSpendsOn) {
+                    redactSpendsOn = !redactSpendsOn
+                    AiConfig.setRedactSpends(ctx, redactSpendsOn)
+                }
+                AiRedactRow("不让 AI 看到家人信息", redactFamilyOn) {
+                    redactFamilyOn = !redactFamilyOn
+                    AiConfig.setRedactFamily(ctx, redactFamilyOn)
+                }
+                AiRedactRow("不让 AI 看到档案与相册", redactFilesOn) {
+                    redactFilesOn = !redactFilesOn
+                    AiConfig.setRedactFiles(ctx, redactFilesOn)
+                }
+                // 把「默认会发什么」摆在开关正下方:这四类就是请求里带的全部本机内容,
+                // 屏蔽哪类就少发哪类,关掉后 AI 只凭你说出口的那句话回答
+                Text(
+                    "接了 AI 之后，为了让它答得上话，每次提问会带上：备忘正文摘录、近 30 天的消费备注、" +
+                        "家人称呼与标签、档案组名。上面的开关打开后，对应那一类就不再发送；" +
+                        "四类全开时，AI 只凭你当面打出的那句话回答。",
+                    fontSize = 11.sp,
+                    color = LbInk3,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
 
                 Text(
                     "或者用你自己的接口（三项都填了就以你自己的为准，内置额度自动让位）",
@@ -3031,6 +3289,8 @@ fun LbRemindAheadSection(
 
 @Composable
 private fun BackupDialog(
+    /** 导出/导入进行中:主按钮换进度文案并禁用,四个入口的回调那边也各自有守卫 */
+    busy: Boolean = false,
     onSaveFile: () -> Unit,
     onRestoreFile: () -> Unit,
     onCopy: () -> Unit,
@@ -3056,7 +3316,12 @@ private fun BackupDialog(
                         .padding(top = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    LbPrimaryButton("存成文件", onSaveFile, Modifier.weight(1f))
+                    LbPrimaryButton(
+                        if (busy) "正在打包…" else "存成文件",
+                        onSaveFile,
+                        Modifier.weight(1f),
+                        enabled = !busy,
+                    )
                     LbGhostButton("从文件恢复", onRestoreFile, Modifier.weight(1f))
                 }
                 Row(
@@ -3067,6 +3332,15 @@ private fun BackupDialog(
                 ) {
                     LbGhostButton("复制到剪贴板", onCopy, Modifier.weight(1f))
                     LbGhostButton("从剪贴板恢复", onRestore, Modifier.weight(1f))
+                }
+                if (busy) {
+                    // 进度就写在这一行:打包要几秒,不说一句,用户只会以为应用卡了
+                    Text(
+                        "正在打包备份…（完成后会自动提示）",
+                        fontSize = 11.sp,
+                        color = LbInk3,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                 }
                 Box(
                     Modifier
@@ -3218,29 +3492,49 @@ fun VaultScreen(
     var deleteFile by remember { mutableStateOf<Pair<String, String>?>(null) }
     var uploadTarget by remember { mutableStateOf("") }
     var albumPickTarget by remember { mutableStateOf<String?>(null) }
+    // 导入进行中:多选一次进来,每个文件都要复制/压图,可能好几秒,期间入口禁用
+    var importBusy by remember { mutableStateOf(false) }
+    val vaultScope = rememberCoroutineScope()
 
     fun importUris(uris: List<android.net.Uri>) {
         val id = uploadTarget
         if (id.isEmpty() || uris.isEmpty()) return
-        val ok = ArrayList<String>()
-        var bad = 0
-        var reason: String? = null
-        uris.forEach { u ->
-            val (n, why) = store.importArchiveFile(u, id, displayNameOf(ctx, u))
-            if (n != null) ok.add(n) else {
-                bad++
-                // 只报第一个原因就够了：多选一次性失败时，原因基本是同一个
-                if (reason == null) reason = why
+        if (importBusy) return
+        // 文件搬运(读提供器、压图、落盘)放 IO —— importArchiveFile 本身不改内存列表;
+        // 真正改列表的 addArchiveFiles 留在主线程,列表的读写仍然只发生在主线程这一条队上
+        importBusy = true
+        vaultScope.launch {
+            try {
+                val ok = ArrayList<String>()
+                var bad = 0
+                var reason: String? = null
+                uris.forEach { u ->
+                    val (n, why) = withContext(Dispatchers.IO) {
+                        store.importArchiveFile(u, id, displayNameOf(ctx, u))
+                    }
+                    if (n != null) ok.add(n) else {
+                        bad++
+                        // 只报第一个原因就够了：多选一次性失败时，原因基本是同一个
+                        if (reason == null) reason = why
+                    }
+                }
+                if (ok.isNotEmpty()) store.addArchiveFiles(id, ok)
+                val msg = when {
+                    // 「没能存入」这四个字对用户毫无用处 —— 把具体原因（多大、读不到、什么权限）说出来
+                    ok.isEmpty() -> reason ?: "没能存入：文件读不到"
+                    bad > 0 -> "已存入 ${ok.size} 个；另有 $bad 个没进来：${reason ?: "读不到"}"
+                    else -> "已存入 ${ok.size} 个文件"
+                }
+                Toast.makeText(ctx, msg, if (ok.isEmpty() || bad > 0) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 单个文件的失败在上面已兜成 reason;这里只兜真正的意外,别让 busy 卡死
+                Toast.makeText(ctx, "存入失败：${e.message ?: "出了点问题"}", Toast.LENGTH_LONG).show()
+            } finally {
+                importBusy = false
             }
         }
-        if (ok.isNotEmpty()) store.addArchiveFiles(id, ok)
-        val msg = when {
-            // 「没能存入」这四个字对用户毫无用处 —— 把具体原因（多大、读不到、什么权限）说出来
-            ok.isEmpty() -> reason ?: "没能存入：文件读不到"
-            bad > 0 -> "已存入 ${ok.size} 个；另有 $bad 个没进来：${reason ?: "读不到"}"
-            else -> "已存入 ${ok.size} 个文件"
-        }
-        Toast.makeText(ctx, msg, if (ok.isEmpty() || bad > 0) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
     }
 
     // 照片走系统相册选择器;文件走文档选择器(可多选)
@@ -3432,7 +3726,7 @@ fun VaultScreen(
                                         .padding(top = 8.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(LbAccentSoft)
-                                        .clickable {
+                                        .clickable(enabled = !importBusy) {
                                             uploadTarget = v.id
                                             filePicker.launch("*/*")
                                         }
@@ -3442,7 +3736,10 @@ fun VaultScreen(
                                 ) {
                                     Icon(LbIcons.plus, contentDescription = null, tint = LbAccent, modifier = Modifier.size(13.dp))
                                     Text(
-                                        "上传照片 / 文件",
+                                        // 这个入口拉的是系统文件选择器（任意类型），从来不是相册选照片；
+                                        // 叫「上传照片 / 文件」会让人以为能从相册挑 —— 照片入口一直在详情页的「加照片」里。
+                                        // 名字跟着行为走;正在导入时禁用并如实说「正在导入…」。
+                                        if (importBusy) "正在导入…" else "添加文件",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Medium,
                                         color = LbAccent,
@@ -3571,6 +3868,8 @@ fun VaultScreen(
                                             Modifier
                                                 .size(46.dp)
                                                 .clip(RoundedCornerShape(10.dp)),
+                                            // 同上:小缩略图必须带目标尺寸,不能把原图整张读进来
+                                            maxDim = 160,
                                         )
                                         Column(
                                             Modifier
@@ -3768,6 +4067,8 @@ private fun ArchiveDetailDialog(
                                         Modifier
                                             .size(42.dp)
                                             .clip(RoundedCornerShape(10.dp)),
+                                        // 行内小缩略图,不给 maxDim 就是全尺寸解码 —— 必须带目标尺寸
+                                        maxDim = 160,
                                     )
                                 } else {
                                     IconBadge(LbIcons.fileText, LbSurface, LbInk2, size = 42.dp)
@@ -3861,7 +4162,8 @@ fun StatesScreen(onBack: () -> Unit, onOpenScan: () -> Unit) {
     val scope = rememberCoroutineScope()
     var tick by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
-    var sizeText by remember { mutableStateOf("结算中…") }
+    // 统计的是文件占用,不是账单;「结算中」是口误,老实说「计算中」
+    var sizeText by remember { mutableStateOf("计算中…") }
 
     val smsOk = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
     val notifOk = ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED

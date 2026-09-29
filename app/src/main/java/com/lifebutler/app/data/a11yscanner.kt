@@ -124,7 +124,14 @@ object A11yScanner {
             "|已签约|签约成功|扣费方式|连续包月|连续包年)",
     )
 
-    private val AMT = Regex("(?:[¥￥]\\s*(\\d+(?:\\.\\d{1,2})?))|(?:(\\d+(?:\\.\\d{1,2})?)\\s*元)")
+    /**
+     * 金额。**必须认千分位**：那两页的年费单会写「¥2,180.00」——
+     * 不认逗号会把 2,180 截成 2，金额全错。
+     */
+    private val AMT = Regex(
+        "(?:[¥￥]\\s*(\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?))" +
+            "|(?:(\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s*元)",
+    )
 
     /** 明显不是商户名的行 */
     private val NAME_BAD = Regex(
@@ -137,9 +144,14 @@ object A11yScanner {
 
     /* ── 解析器 ── */
 
+    /**
+     * 金额解析：千分位先去逗号再转数。
+     * 出界（<=0 或 >3000）返回 null —— 但调用方（[extract]）只把 null 当「金额待补」，
+     * **不再整条丢行**：大额也可能是真的（年费 / 学费类），丢了用户只会以为没读到。
+     */
     private fun amountOf(s: String): Double? {
         val m = AMT.find(s) ?: return null
-        val raw = m.groupValues[1].ifEmpty { m.groupValues[2] }
+        val raw = m.groupValues[1].ifEmpty { m.groupValues[2] }.replace(",", "")
         val v = raw.toDoubleOrNull() ?: return null
         return if (v > 0 && v <= 3000) v else null
     }
@@ -178,7 +190,9 @@ object A11yScanner {
             val name = g.firstOrNull { isName(it) } ?: return@forEach
             val detail = g.filter { it != name }.joinToString(" · ").trim()
             if (detail.isEmpty()) return@forEach
-            if (!CYCLE.containsMatchIn(detail) && amountOf(detail) == null) return@forEach
+            // 门槛看「有没有金额字样」而不是「金额合不合格」：越界（>3000）的行降级成
+            // 金额待补保留，不该在这一关整条丢掉。
+            if (!CYCLE.containsMatchIn(detail) && !AMT.containsMatchIn(detail)) return@forEach
             val r = Row(name.trim(), detail, amountOf(detail), SubScanner.parseDueDate(detail))
             out.putIfAbsent(r.name, r)
         }
@@ -189,7 +203,7 @@ object A11yScanner {
             val t = texts[i].trim()
             if (isName(t)) {
                 val d = texts.getOrNull(i + 1)?.trim().orEmpty()
-                if (CYCLE.containsMatchIn(d) || amountOf(d) != null) {
+                if (CYCLE.containsMatchIn(d) || AMT.containsMatchIn(d)) {
                     out.putIfAbsent(t, Row(t, d, amountOf(d), SubScanner.parseDueDate(d)))
                     i += 2
                     continue

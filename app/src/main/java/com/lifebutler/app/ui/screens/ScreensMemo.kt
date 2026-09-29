@@ -12,6 +12,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +22,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +35,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,6 +97,12 @@ private val LB_MEMO_SORTS = listOf(
     MemoSort.Created to "创建时间",
     MemoSort.Remind to "提醒时间",
 )
+
+/**
+ * 备忘卡片在 LazyColumn 里的起始下标：前面固定是标题行 / 搜索框 / 分类筛选 / 排序行
+ * 4 个 item。在前面加/删一个 item，这里就要跟着改 —— 改错了只是「跳过去差几屏」。
+ */
+private const val LB_MEMO_LIST_START = 4
 
 private val LB_WEEK_CN = listOf("日", "一", "二", "三", "四", "五", "六")
 
@@ -166,17 +177,39 @@ fun MemoScreen(
     }
 
     val categories = store.memoCategories.value
-    val counts = store.memos.groupingBy { it.category }.eachCount()
-    val all = store.searchMemos(query)
-    val shown = store.sortedMemos(all.filter { cat == MEMO_ALL || it.category == cat }, sort)
+    // 下面三步都是全表扫（搜索、计数、排序）。不 remember 的话，每次重组 —— 打个字、
+    // 开个弹窗、高亮退场 —— 都要把整张表重来一遍。以「搜索词 + 筛选 + 排序 + 数据版本」
+    // 为键：数据没动（任何增删改都会推进 dataStamp）就继续用上一帧的结果。
+    val stamp = store.dataStamp()
+    val counts = remember(stamp) { store.memos.groupingBy { it.category }.eachCount() }
+    val all = remember(query, stamp) { store.searchMemos(query) }
+    val shown = remember(query, cat, sort, stamp) {
+        store.sortedMemos(all.filter { cat == MEMO_ALL || it.category == cat }, sort)
+    }
     val isSearching = query.trim().isNotEmpty() || cat != MEMO_ALL
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
+    val listState = rememberLazyListState()
+    // 搜索跳过来的那一条：LazyColumn 不组装屏幕外的内容，卡片里的 bringIntoView 够不着，
+    // 只能先算出它在第几个 item、按下标滚过去（跟记账页同一套做法）。
+    LaunchedEffect(highlightId, shown) {
+        val id = highlightId ?: return@LaunchedEffect
+        val i = shown.indexOfFirst { it.id == id }
+        if (i >= 0) {
+            listState.animateScrollToItem(LB_MEMO_LIST_START + i)
+        } else {
+            // 找不到（这条备忘可能刚好被删了）：别把「待定位」一直挂着
+            onHighlightConsumed()
+        }
+    }
+
+    // 整页换成 LazyColumn：备忘攒到几百条时，Column + verticalScroll 会一口气把每张卡片
+    // （连同文字、图标）全组装出来，这页就越滚越涩；一条一个 item，滚到哪儿才组装哪儿。
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 16.dp),
     ) {
+        item {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -199,8 +232,10 @@ fun MemoScreen(
                 contentDescription = "新建备忘",
             )
         }
+        }
 
         // 关键词搜索:标题与正文一起找
+        item {
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -232,8 +267,10 @@ fun MemoScreen(
             ),
             textStyle = TextStyle(fontSize = 13.5.sp, color = LbInk),
         )
+        }
 
         // 分类筛选 + 分类管理入口
+        item {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -273,8 +310,10 @@ fun MemoScreen(
                 }
             }
         }
+        }
 
         // 排序方式 + 结果条数
+        item {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -290,10 +329,11 @@ fun MemoScreen(
             Spacer(Modifier.width(2.dp))
             Text("共 ${shown.size} 条", fontSize = 11.sp, color = LbInk3)
         }
-
-        Spacer(Modifier.height(12.dp))
+        }
 
         if (shown.isEmpty()) {
+            item {
+            Spacer(Modifier.height(12.dp))
             LbCard(contentPadding = 14.dp) {
                 Text(
                     if (isSearching) {
@@ -306,9 +346,13 @@ fun MemoScreen(
                     lineHeight = 19.sp,
                 )
             }
+            }
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                shown.forEach { m ->
+            // 一条一个 item：滚到哪儿才组装哪儿。key 用备忘 id，置顶/编辑后列表重排时
+            // 每一项的状态（高亮、滚动位置）能对上号，不会串到别的卡片上。
+            itemsIndexed(shown, key = { _, m -> m.id }) { i, m ->
+                // 首张卡上面原来是 Spacer(12)，其余沿用原来 spacedBy(10) 的间距
+                Box(Modifier.padding(top = if (i == 0) 12.dp else 10.dp)) {
                     MemoCard(
                         memo = m,
                         onOpen = { editId = m.id; editing = true },
@@ -319,7 +363,6 @@ fun MemoScreen(
                 }
             }
         }
-        Spacer(Modifier.height(16.dp))
     }
 
     if (editing) {

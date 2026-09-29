@@ -148,7 +148,11 @@ fun ButlerFloat(
     var navOffer by remember { mutableStateOf<String?>(null) }
     var panelH by remember { mutableIntStateOf(0) }
 
-    val aiSource = remember { AiConfig.source(ctx) }
+    // ⚠️ AI 有没有接上,这里不能 remember 缓存:这个悬浮层是常驻组合,remember 只在第一次组合算一次,
+    // 之后用户去设置里关掉 AI,这里还攥着旧值,面板会继续把话发给已经关掉的模型。
+    // 改成每次重组现读(读的是 prefs 内存缓存,开销可忽略):点开面板必然重组一次,
+    // 所以关掉 AI 后下一次点开面板就走离线路径,底部那行提示也同步换成离线文案。
+    val aiSource = AiConfig.source(ctx)
     val aiReady = aiSource != AiConfig.Source.NONE
     val focusRequester = remember { FocusRequester() }
 

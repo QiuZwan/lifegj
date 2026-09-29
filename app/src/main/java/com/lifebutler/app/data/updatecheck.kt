@@ -86,7 +86,7 @@ object UpdateCheck {
         val (code, body) = try {
             httpGet("https://api.github.com/repos/$REPO/releases/latest")
         } catch (e: Exception) {
-            return CheckResult.Failed("网络不通，连不上 GitHub。（${e.javaClass.simpleName}）")
+            return CheckResult.Failed("网络不通，连不上 GitHub，检查一下网络再试。")
         }
         when (code) {
             200 -> Unit
@@ -101,6 +101,10 @@ object UpdateCheck {
             val tag = o.optString("tag_name").ifBlank { o.optString("name") }.trim()
             if (tag.isBlank()) return CheckResult.Failed("发布页里没有版本号，读不出来。")
             val version = tag.trimStart('v', 'V')
+            // 预发布(tag 带「-」,如 v2.14-rc1)不当作新版推:自动更新通道只跟稳定版。
+            // releases/latest 接口默认就不返回预发布,这里再兜一道 —— 万一哪天发布时忘了勾
+            // Pre-release,也不能把没验证完的版本推给所有人。
+            if (tag.contains('-')) return CheckResult.Latest(version)
             val page = o.optString("html_url").ifBlank { RELEASES_PAGE }
             if (compare(tag, localVersion) <= 0) return CheckResult.Latest(version)
             var apk: String? = null
@@ -115,7 +119,7 @@ object UpdateCheck {
             }
             CheckResult.Newer(version, o.optString("body").trim(), apk, page)
         } catch (e: Exception) {
-            CheckResult.Failed("发布页的内容读不出来（${e.javaClass.simpleName}）。")
+            CheckResult.Failed("发布页的内容读不出来，过一会儿再试；还不行到『上传日志』发我看看。")
         }
     }
 

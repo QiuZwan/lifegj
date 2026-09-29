@@ -82,6 +82,10 @@ object UpdateDownload {
             // 服务端说这个 Range 它不认 —— 把半截删掉,下一次调用会自然从 0 重来
             runCatching { part.delete() }
             return Result.Failed("上次没下完的那一截接不上了,已经清掉,请再点一次「更新」。")
+        } catch (e: UntrustedRedirect) {
+            // 白名单校验没过:这条地址不会再被信任,半截文件留着没有意义,清掉
+            runCatching { part.delete() }
+            return Result.Failed(e.message ?: "下载地址跳到了陌生主机,已中止。可以点「打开发布页」自己下。")
         } catch (e: Exception) {
             return Result.Failed(
                 "连不上下载地址(${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""})。" +
@@ -154,6 +158,34 @@ object UpdateDownload {
     /** 服务端不接受我们给的 Range(回了 416)。 */
     private class RangeRejected : Exception("range rejected")
 
+    /** 重定向跳出了可信主机白名单(或地址本身就不对)。message 是直接给用户看的话。 */
+    private class UntrustedRedirect(message: String) : Exception(message)
+
+    /**
+     * 下载链路只认 GitHub 的这两个主机:发布页给的下载地址在 github.com 上,
+     * 它会 302 到 objects.githubusercontent.com 的签名地址 —— 除此之外没有第三站。
+     */
+    private val TRUSTED_HOSTS = setOf("github.com", "objects.githubusercontent.com")
+
+    /**
+     * 每一跳都校验「https + 可信主机」,不过就中止。
+     *
+     * 为什么每一跳都查:第一跳的地址来自发布页接口的资产字段,之后的每一跳来自响应头的
+     * Location —— **没有一跳是我们能保证的东西**。既然选择手动跟重定向,就得自己收口:
+     * 白名单把「从哪儿拿字节」钉死在 GitHub 的域名上,链路中间怎么被动手脚都出不了这个圈。
+     */
+    private fun requireTrusted(url: String) {
+        val u = runCatching { URL(url) }.getOrNull()
+        // orEmpty():解析失败时留空串,后面统一按「不在白名单」处理
+        val host = u?.host?.lowercase().orEmpty()
+        if (u == null || u.protocol != "https" || host !in TRUSTED_HOSTS) {
+            throw UntrustedRedirect(
+                "下载已中止：地址要跳到「" + host.ifEmpty { "无法识别的地址" } + "」，不是 GitHub 的域名" +
+                    "（只从 github.com 下载）。可以点「打开发布页」自己下。",
+            )
+        }
+    }
+
     private class Conn(val conn: HttpURLConnection, val resumed: Boolean)
 
     /**
@@ -170,6 +202,8 @@ object UpdateDownload {
         var cur = url
         var hop = 0
         while (true) {
+            // 第一跳与之后每一跳都过白名单:跟着重定向走等于把「从哪儿下」交给对面
+            requireTrusted(cur)
             val c = URL(cur).openConnection() as HttpURLConnection
             c.connectTimeout = 15000
             c.readTimeout = 30000
@@ -218,7 +252,16 @@ object UpdateDownload {
         }
         val mine = runCatching { pm.getPackageInfo(ctx.packageName, flags).signatures?.firstOrNull() }.getOrNull()
         val his = runCatching { info.signatures?.firstOrNull() }.getOrNull()
-        if (mine != null && his != null && mine.toCharsString() != his.toCharsString()) {
+        // 签名读不出来就判失败,**不放行**:这道自检的意义就是「拿不准就不给装」。
+        // 以前「读不出来 = 继续往下走」等于给最关键的一关留了个默认通过的后门 ——
+        // 一个能解析、包名也对、唯独签名被抹掉的包,恰恰是最值得防的那种东西。
+        if (his == null) {
+            return Result.Failed(
+                "这份安装包的签名读不出来，没法确认它出自发布页，已经丢弃。\n\n" +
+                    "点「打开发布页」重新下载一次；反复出现的话，请到「上传日志」发我看。",
+            )
+        }
+        if (mine != null && mine.toCharsString() != his.toCharsString()) {
             return Result.Failed(
                 "这份安装包的签名和当前版本不一样,系统会拒绝覆盖安装。\n\n" +
                     "通常是因为现在装的这份不是从发布页下的(比如自己编译的 debug 包)。" +

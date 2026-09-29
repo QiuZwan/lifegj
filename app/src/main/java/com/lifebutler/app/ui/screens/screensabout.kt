@@ -221,7 +221,9 @@ fun AboutScreen(
         } catch (e: ActivityNotFoundException) {
             updateErr = "这台设备上没有能打开安装包的界面（系统可能精简掉了）。请点「打开发布页」手动下载。"
         } catch (e: Exception) {
-            updateErr = "没能打开系统安装界面（${e.javaClass.simpleName}）。请点「打开发布页」手动下载。"
+            // 异常类名是给工程师看的,不拼进给用户的话里;debug 包在 logcat 留一行足够定位
+            logDebug(ctx, "更新", "打开系统安装界面失败: ${e.javaClass.simpleName} ${e.message}")
+            updateErr = "没能打开系统安装界面，再试一次；还不行就点「打开发布页」手动下载。"
         }
     }
 
@@ -629,7 +631,7 @@ fun AboutScreen(
 /* ────────────────────────── 管家帮助 ────────────────────────── */
 
 @Composable
-fun HelpScreen(onBack: () -> Unit) {
+fun HelpScreen(onBack: () -> Unit, onReplayGuide: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
@@ -737,6 +739,19 @@ fun HelpScreen(onBack: () -> Unit) {
                 "换了手机数据没了？→ 本机存储，没有云端备份。这就是为什么建议定期导出。",
             ),
         )
+
+        /* 重看引导:首启那套三步引导只在「没走过 + 本机没记录」时自动弹,
+         * 老用户想再看一遍只能靠这个入口 —— 放在帮助页末尾,不抢常用内容的位子 */
+        SectionHeader("新手引导")
+        LbCard {
+            LbListRow(
+                leading = { IconBadge(LbIcons.listCheck, LbAccentSoft, LbAccent, size = 34.dp) },
+                title = "重看新手引导",
+                sub = "首启那套「三步就能用起来」，随时可以再看一遍",
+                trailing = { Chevron() },
+                onClick = onReplayGuide,
+            )
+        }
 
         Box(Modifier.height(14.dp))
     }
@@ -866,7 +881,9 @@ fun FeedbackScreen(onBack: () -> Unit) {
             // 那时收件方才来读这些 content:// —— 面板一弹出就把文件删掉 = 附件时有时无的幽灵 bug。
             // 清理放在**下一次**进这个页面时（上面的 LaunchedEffect），跟诊断日志那只 .txt 一个路子。
         } catch (e: Exception) {
-            Toast.makeText(ctx, "分享失败：" + e.javaClass.simpleName, Toast.LENGTH_SHORT).show()
+            // 类名只进 debug 日志;给用户的话要说清下一步能干什么
+            logDebug(ctx, "反馈", "分享失败: ${e.javaClass.simpleName} ${e.message}")
+            Toast.makeText(ctx, "分享没成功，再试一次；还不行到「上传日志」发我看看。", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1066,6 +1083,18 @@ fun FeedbackScreen(onBack: () -> Unit) {
 
 /* ────────────────────────── 小零件 ────────────────────────── */
 
+/**
+ * 只在 debug 包才打的日志。异常的类名、message 这类给工程师看的东西**不拼进给用户的话里**
+ * （用户看到 "SocketTimeoutException" 只会觉得是天书），但排问题时又不能没有 —— 走 logcat，
+ * release 包第一行就 return，不会把用户数据写进系统日志（与 aibutler.kt 的 logDebug 同一门控）。
+ */
+private fun logDebug(ctx: Context, label: String, text: String) {
+    val debuggable = (ctx.applicationInfo.flags and
+        android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    if (!debuggable) return
+    android.util.Log.d("LbUI", "[$label] $text")
+}
+
 @Composable
 private fun BackHeader(title: String, onBack: () -> Unit) {
     Row(
@@ -1255,7 +1284,8 @@ private fun shareDiagnostics(ctx: Context, question: String, withChat: Boolean) 
         val f = Diagnostics.write(ctx, text)
         ctx.startActivity(Intent.createChooser(Diagnostics.shareIntent(ctx, f, "生活管家 · 诊断日志"), "发送诊断日志"))
     } catch (e: Exception) {
-        Toast.makeText(ctx, "导出日志失败：" + e.javaClass.simpleName, Toast.LENGTH_SHORT).show()
+        logDebug(ctx, "诊断", "导出日志失败: ${e.javaClass.simpleName} ${e.message}")
+        Toast.makeText(ctx, "日志没能导出来，再试一次；还不行重启应用后再来。", Toast.LENGTH_SHORT).show()
     }
 }
 

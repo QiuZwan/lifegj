@@ -26,9 +26,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,10 +49,13 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.lifebutler.app.R
 import com.lifebutler.app.data.A11yScanner
@@ -62,6 +68,7 @@ import com.lifebutler.app.ui.components.IconBadge
 import com.lifebutler.app.ui.components.LbCard
 import com.lifebutler.app.ui.components.LbChip
 import com.lifebutler.app.ui.components.LbConfirmDialog
+import com.lifebutler.app.ui.components.LbDatePickerDialog
 import com.lifebutler.app.ui.components.LbField
 import com.lifebutler.app.ui.components.LbGhostButton
 import com.lifebutler.app.ui.components.LbInputDialog
@@ -120,6 +127,9 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     // 不用「进详情 → 编辑 → 在三字段弹窗里小心别改错名称」（C7）。
     var fixSubId by remember { mutableStateOf<String?>(null) }
     var fixField by remember { mutableStateOf("") }
+    // 扣费日已过期的订阅：给的不是「去关闭」（早扣完了），而是「把日期改对」。
+    // 点横幅/行上的入口弹日期选择器，走既有 updateSub 更新 nextDate。
+    var renewSubId by remember { mutableStateOf<String?>(null) }
 
     // ⚠️ 全页的口径就是这三个:
     //   active  = 清单里列的、合计里算的、右上角数的「在用订阅」；
@@ -129,9 +139,16 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     val active = store.subs.filter { !it.closing }
     val closingList = store.subs.filter { it.closing }
     val total = active.sumOf { it.amount }
+    // 「时间紧」只看**还没扣**的（daysUntil >= 0）。已经过了扣费日的（< 0）单独归到 expired：
+    // 原来负数天数会在 minByOrNull 里抢到最小值，横幅对着过期项喊「N 天前扣费 / 扣费前仍可关闭」
+    // —— 钱早扣完了，这 remedy 是错的；过期项该做的是更新扣费日（见下面那条横幅）。
     val nearest = active
-        .mapNotNull { s -> store.daysUntil(s.nextDate)?.let { s to it } }
+        .mapNotNull { s -> store.daysUntil(s.nextDate)?.takeIf { it >= 0 }?.let { s to it } }
         .minByOrNull { it.second }
+    val expired = active
+        .mapNotNull { s -> store.daysUntil(s.nextDate)?.takeIf { it < 0 }?.let { s to it } }
+        // 负数里取最大 = 刚过期不久的那笔，最接近「现在就该去改」。
+        .maxByOrNull { it.second }
     val closingCount = closingList.size
     val pendingObligations = store.obligations.count { !it.done }
     // 空态要说清是哪一种「空」:没开权限 / 开了没扫过 / 扫过确实没有。
@@ -322,7 +339,10 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                         buildString {
                             append("本月已扣 ¥").append(store.fmtMoney(chargedThisMonth))
                             append(" · 在用 ").append(active.size).append(" 笔")
-                            if (due.first <= 0 && total > 0) append(" · 都还没填下次扣费日")
+                            // 「都还没填下次扣费日」按字面判：在用订阅里**没有任何一个**填了 nextDate
+                            // 才说。原来用 `due.first <= 0` 猜 —— 只要没有一笔落在下月底之前
+                            // （比如日期都填到了明年），这句就会跟着「接下来要扣 ¥0」一起误报。
+                            if (total > 0 && active.none { it.nextDate.isNotBlank() }) append(" · 都还没填下次扣费日")
                         },
                         fontSize = 11.5.sp,
                         color = LbOnDark2,
@@ -412,6 +432,33 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
             }
         }
 
+        // 「已过期」横幅：和「时间紧」分开说（amber 只留给还没扣的）。过期不是急事，
+        // 是「日期旧了」—— 该做的动作只有一个：把 nextDate 改到真会扣的那天，提醒才准。
+        // 点击弹日期选择器（走既有 updateSub），不引去详情页多绕一步。
+        expired?.let { (s, _) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(LbSurface2)
+                    .clickable { renewSubId = s.id }
+                    .padding(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconBadge(LbIcons.calendarEvent, LbAccentSoft, LbAccent, size = 34.dp)
+                Column(
+                    Modifier
+                        .padding(start = 11.dp)
+                        .weight(1f),
+                ) {
+                    Text("「${s.name}」${store.daysText(s.nextDate)}", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk2)
+                    Text("扣费日已经过了？点这里改到下次真会扣的那天", fontSize = 11.5.sp, color = LbInk3)
+                }
+                LbChip("更新扣费日", ChipTone.Soft)
+            }
+        }
+
         SectionHeader("订阅清单") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -489,7 +536,19 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                 // （store.dateLabel）本来就写「待补全」,两个一模一样的词会并排出现,
                                 // 看上去像坏了（第一次实测的截图里就是「待补全 ¥25 待补全」）。
                                 val d = store.daysUntil(s.nextDate)
-                                if (d != null && d <= 3) {
+                                if (d != null && d < 0) {
+                                    // 过期项不进「时间紧」chip：amber 只留给「还没扣、快扣了」。
+                                    // 原来负数天数会落进 `d <= 0` 说成「今天扣」—— 过了 5 天还喊今天。
+                                    // 这里给的是入口：点一下弹日期选择器，把 nextDate 改对。
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .clickable { renewSubId = s.id },
+                                    ) {
+                                        LbChip("已过期 · 更新扣费日", ChipTone.Soft)
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                } else if (d != null && d <= 3) {
                                     // ⚠️ `d == 0` 是「就是今天」，别把它并进 `d <= 1` 说成「明天扣」——
                                     // 实测就出了这个错：日期是今天，chip 却写着「明天扣」，两处各说各话。
                                     LbChip(
@@ -666,25 +725,22 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     }
 
     if (showAdd) {
-        LbInputDialog(
+        // 订阅的扣费节奏不都是每月：视频会员按月、保险按年、健身房按季，还有按周的。
+        // 周期在这一起选掉，金额标签跟着改口 —— 「每月金额」对周付/年付是错的。
+        SubFormDialog(
             title = "添加订阅",
-            fields = listOf(
-                LbField("名称", "如：视频会员"),
-                LbField("每月金额（元）", "如：25", numeric = true),
-                LbField("下次扣费日期", "点这里选择日期", isDate = true),
-            ),
+            showName = true,
+            showDate = true,
             onDismiss = { showAdd = false },
-            onConfirm = { v ->
-                val name = v.getOrElse(0) { "" }
-                val amountStr = v.getOrElse(1) { "" }
-                val dateStr = v.getOrElse(2) { "" }
+            onConfirm = { name, amountStr, dateStr, cycle ->
                 val amount = amountStr.toDoubleOrNull()
                 when {
                     name.isEmpty() -> "写下订阅名称吧"
                     amount == null || amount <= 0 -> "金额填数字，比如 25"
                     dateStr.isEmpty() -> "选个下次扣费日期吧"
                     else -> {
-                        store.addSub(name, amount, dateStr)
+                        // cycle 跟着提交：它决定「每期」是多少天，也决定合计的月度折算
+                        store.addSub(name, amount, dateStr, cycle = cycle)
                         showAdd = false
                         null
                     }
@@ -696,20 +752,25 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     deleteSubId?.let { id ->
         val sub = store.subs.firstOrNull { it.id == id }
         val name = sub?.name ?: "这笔订阅"
+        // 自动来源删除时会顺手把商户记进「不再自动添加」名单 —— 这个副作用必须说出口。
+        // 但不再说「无法撤销」：删除本身有 5 秒撤销窗口（mainactivity 的 UNDO_WINDOW_MS），
+        // 窗口后才真的回不来 —— 原来的文案把能反悔的事说死了。
+        val autoSource = sub != null && (sub.source == "扫描" || sub.source == "通知" || sub.source.startsWith("代扣页"))
         LbConfirmDialog(
             title = "删除「$name」？",
-            // 删除是**不可逆**的，所以保留确认框（D12 的分级：不可逆才弹框）。
-            // ⚠️ 「不再加回」那个副作用现在说成可撤销的 —— v2.18 之前它只进不出，
-            // 而这句话写的是「之后也不会再自动加回」，等于把一次永久惩罚轻描淡写。
-            text = if (sub != null && (sub.source == "扫描" || sub.source == "通知" || sub.source.startsWith("代扣页")))
-                "删除后，扫描不会再自动添加该商户，且无法撤销。"
+            text = if (autoSource)
+                "删除并记下不再自动添加该商户；5 秒内可在屏幕下方撤销，之后不可恢复。"
             else
-                "删除后如需恢复须重新添加，且无法撤销。",
+                "删除后 5 秒内可在屏幕下方撤销，之后不可恢复。",
             onDismiss = { deleteSubId = null },
             onConfirm = {
-                store.removeSub(id)
-                if (sub != null && (sub.source == "扫描" || sub.source == "通知" || sub.source.startsWith("代扣页"))) {
-                    store.dismissName(sub.name)
+                when {
+                    // 删除 + 拉黑打包成一个动作（契约 API）：原来分两步调 removeSub + dismissName，
+                    // 撤销只摘得掉拉黑、订阅回不来 —— 后悔药只有半颗。
+                    autoSource && sub != null -> store.removeSubAndDismiss(sub.id)
+                    // 手动记的不拉黑：名字是用户自己起的，之后扫描命中同名商户仍该自动加进来。
+                    sub != null -> store.removeSub(sub.id)
+                    else -> store.removeSub(id)
                 }
                 deleteSubId = null
                 notice = "已删除「$name」"
@@ -722,20 +783,23 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
     fixSubId?.let { id ->
         val s = store.subs.firstOrNull { it.id == id }
         if (s != null && fixField == "amount") {
-            LbInputDialog(
+            // 补金额时周期一起确认：金额说的是「每期多少」，不说清周期就没法折算月均/年累计。
+            SubFormDialog(
                 title = "补全「${s.name}」的金额",
-                fields = listOf(LbField("每月金额（元）", "如：25", numeric = true)),
-                initial = listOf(if (s.amount > 0) store.fmtMoney(s.amount) else ""),
+                showName = false,
+                showDate = false,
+                initialAmount = if (s.amount > 0) store.fmtMoney(s.amount) else "",
+                initialCycle = s.cycle,
                 onDismiss = { fixSubId = null },
-                onConfirm = { v ->
-                    val a = v.getOrElse(0) { "" }.toDoubleOrNull()
+                onConfirm = { _, amountStr, _, cycle ->
+                    val a = amountStr.toDoubleOrNull()
                     if (a == null || a <= 0) {
                         "金额填数字，比如 25"
                     } else {
-                        // trialUntil / remindAhead 传 null = 这两项不动（updateSub 的约定）
-                        store.updateSub(s.id, s.name, a, s.nextDate)
+                        // trialUntil / remindAhead 不传 = 这两项不动（updateSub 的约定）
+                        store.updateSub(s.id, s.name, a, s.nextDate, cycle = cycle)
                         fixSubId = null
-                        notice = "已补上「${s.name}」的金额：每月 ¥${store.fmtMoney(a)}"
+                        notice = "已补上「${s.name}」的金额：${perCycleMoney(store, a, cycle)}"
                         null
                     }
                 },
@@ -751,9 +815,35 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                     if (d.isBlank()) {
                         "选个日期吧"
                     } else {
-                        store.updateSub(s.id, s.name, s.amount, d)
+                        store.updateSub(s.id, s.name, s.amount, d, cycle = s.cycle)
                         fixSubId = null
                         notice = "已补上「${s.name}」的下次扣费日：${store.fmtCn(d)}"
+                        null
+                    }
+                },
+            )
+        }
+    }
+
+    // 「已过期，更新扣费日」的日期弹窗：过期项的下一步就这一个动作 —— 把 nextDate
+    // 改到真会扣的那天。走既有 updateSub，名称/金额/周期都不动。
+    renewSubId?.let { id ->
+        val s = store.subs.firstOrNull { it.id == id }
+        if (s != null) {
+            LbInputDialog(
+                title = "更新「${s.name}」的扣费日",
+                fields = listOf(LbField("下次扣费日期", "点这里选择日期", isDate = true)),
+                initial = listOf(s.nextDate),
+                onDismiss = { renewSubId = null },
+                onConfirm = { v ->
+                    val d = v.getOrElse(0) { "" }
+                    if (d.isBlank()) {
+                        "选个日期吧"
+                    } else {
+                        store.updateSub(s.id, s.name, s.amount, d, cycle = s.cycle)
+                        renewSubId = null
+                        lastDismissed = null
+                        notice = "已把「${s.name}」的下次扣费日更新到 ${store.fmtCn(d)}"
                         null
                     }
                 },
@@ -794,6 +884,8 @@ fun SubscriptionDetailScreen(
     var undoClosing by remember { mutableStateOf(false) }
     // D11：金额没识别出来时**点一下就补**，只弹这一个字段，不进「编辑」那个三字段弹窗。
     var fixAmount by remember { mutableStateOf(false) }
+    // 扣费日已过期的更新入口：点「更新扣费日」弹日期选择器，走既有 updateSub。
+    var showRenewDate by remember { mutableStateOf(false) }
 
     // 订阅命中时 highlightId 就是**本订阅自己**的 id：整页就是它，没有「某一行」要滚，
     // 直接算定位完成 —— 不然这个待定位状态会一直挂着，下次再进来还会亮一下。
@@ -863,11 +955,13 @@ fun SubscriptionDetailScreen(
                     // 原来「每月 ¥25」是个 chip、日期又是一个 chip，一行最多挤 3 个，
                     // 2.0× 大字号必定折行。判据用 `days != null`（日期真的解析出来了），
                     // 只判非空会渲染成「每月 null 日」。
+                    // 周期口径（perCycleMoney/rhythmWord）：月付保持「每月 ¥25 · 每月 15 日扣」
+                    // 原样；其他周期改说「每期 ¥X（周付）· 下次 15 日扣」，不再把周付说成每月。
                     Text(
                         if (sub.amount <= 0 && days == null) "金额待补 · 扣费日待补全"
-                        else if (sub.amount <= 0) "金额待补 · 每月 ${dayOfMonth} 日扣"
-                        else if (days == null) "每月 ¥${store.fmtMoney(sub.amount)} · 扣费日待补全"
-                        else "每月 ¥${store.fmtMoney(sub.amount)} · 每月 $dayOfMonth 日扣",
+                        else if (sub.amount <= 0) "金额待补 · ${rhythmWord(sub.cycle)} ${dayOfMonth} 日扣"
+                        else if (days == null) perCycleMoney(store, sub.amount, sub.cycle) + " · 扣费日待补全"
+                        else perCycleMoney(store, sub.amount, sub.cycle) + " · ${rhythmWord(sub.cycle)} $dayOfMonth 日扣",
                         fontSize = 12.sp,
                         color = if (sub.amount <= 0 || days == null) LbAmber else LbInk3,
                         modifier = Modifier.padding(top = 2.dp),
@@ -891,9 +985,16 @@ fun SubscriptionDetailScreen(
                 Row(
                     Modifier.padding(top = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (sub.closing) {
                         LbChip("复核中", ChipTone.Green)
+                    } else if (days != null && days < 0L) {
+                        // 过期不再说「今天自动扣费」—— 原来负数天数落进 `days <= 0`，
+                        // 过了 5 天也喊今天。amber 的「快扣了」留给还没扣的；
+                        // 过期给的是「把日期改对」的入口（弹日期选择器，走 updateSub）。
+                        LbChip("扣费日已过期", ChipTone.Soft)
+                        MiniGhost("更新扣费日") { showRenewDate = true }
                     } else if (days != null) {
                         // 同上：`days == 0` 是「就是今天」，别说成「明天」
                         LbChip(
@@ -994,6 +1095,8 @@ fun SubscriptionDetailScreen(
             }
         }
 
+        // 扣费记录提前取好：下面「涨价一键更新」要取最近一笔，再下面的列表也要用同一份。
+        val subCharges = store.chargesOf(sub.name)
         // 单条提醒设置。订阅之间金额差得远（6 元的 iCloud 和 200 多的会员），
         // 统一阈值总有人不合适，所以每条都能自己定提前量。
         LbCard(contentPadding = 16.dp, modifier = Modifier.padding(top = 10.dp)) {
@@ -1047,6 +1150,22 @@ fun SubscriptionDetailScreen(
                         lineHeight = 17.sp,
                         modifier = Modifier.padding(top = 10.dp),
                     )
+                    // 涨价一键更新：新价取**最近一笔实际扣到**的金额（和 priceJumpOf 同源，
+                    // 不另推算）。原来只提示不给动作，改价要自己进编辑弹窗手改 ——
+                    // 大多数人不会去做，清单从此一直按旧价算合计。
+                    val latest = subCharges.firstOrNull()
+                    if (latest != null && latest.amount > sub.amount + 0.004) {
+                        Row(Modifier.padding(top = 8.dp)) {
+                            ClaimBtn(
+                                "按新价更新（${perCycleMoney(store, latest.amount, sub.cycle)}）",
+                                primary = true,
+                            ) {
+                                store.updateSub(sub.id, sub.name, latest.amount, sub.nextDate, cycle = sub.cycle)
+                                undoClosing = false
+                                notice = "已按新价更新「${sub.name}」：${perCycleMoney(store, latest.amount, sub.cycle)}"
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1069,9 +1188,17 @@ fun SubscriptionDetailScreen(
                         color = LbOnDark,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                    // 周期口径：年累计 = 月度折算 × 12。原来写死 amount × 12 ——
+                    // 季付被夸大 3 倍、年付 12 倍、周付缩成 1/13；周付另给「每期」，
+                    // 因为 ¥15/周 和 ¥65/月 差得太远，只给一个数必被误读。
                     Text(
-                        if (hasDate) "${store.fmtCn(sub.nextDate)} · 每年累计 ¥${store.fmtMoney(sub.amount * 12)}"
-                        else "扣费日还没补全 · 每年累计 ¥${store.fmtMoney(sub.amount * 12)}",
+                        buildString {
+                            if (hasDate) append("${store.fmtCn(sub.nextDate)} · ") else append("扣费日还没补全 · ")
+                            val monthly = ButlerStore.monthlyEquivalent(sub.amount, sub.cycle)
+                            if (sub.cycle == "week") append("每期 ¥${store.fmtMoney(sub.amount)} · ")
+                            if (sub.cycle != "month") append("月均 ¥${store.fmtMoney(monthly)} · ")
+                            append("每年累计 ¥${store.fmtMoney(monthly * 12)}")
+                        },
                         fontSize = 11.5.sp,
                         color = LbOnDark2,
                         modifier = Modifier.padding(top = 4.dp),
@@ -1081,7 +1208,6 @@ fun SubscriptionDetailScreen(
             }
         }
 
-        val subCharges = store.chargesOf(sub.name)
         SectionHeader("扣费记录") {
             Text(
                 if (subCharges.isEmpty()) "暂无记录" else "共 ${subCharges.size} 笔",
@@ -1174,19 +1300,21 @@ fun SubscriptionDetailScreen(
         )
 
         if (showDelSub) {
+            // 自动来源删除会顺手把商户记进「不再自动添加」名单 —— 副作用说出口，但不再说
+            // 「无法撤销」：删除有 5 秒撤销窗口，窗口后才真的回不来。用 startsWith 对齐
+            // 守护页和 sourceHint 的口径：代扣页来源可能带后缀。
+            val autoSource = sub.source == "扫描" || sub.source == "通知" || sub.source.startsWith("代扣页")
             LbConfirmDialog(
                 title = "删除「${sub.name}」？",
-                text = if (sub.source == "手动")
-                    "删除后如需恢复须重新添加，且无法撤销。"
+                text = if (autoSource)
+                    "删除并记下不再自动添加该商户；5 秒内可在屏幕下方撤销，之后不可恢复。"
                 else
-                    "删除后，扫描不会再自动添加该商户，且无法撤销。",
+                    "删除后 5 秒内可在屏幕下方撤销，之后不可恢复。",
                 onDismiss = { showDelSub = false },
                 onConfirm = {
-                    val nm = sub.name
-                    val src = sub.source
-                    store.removeSub(sub.id)
-                    // 与「守护页清单长按删除」同一套规则：只有自动来源才记进「不再加回」。
-                    if (src == "扫描" || src == "通知" || src == "代扣页") store.dismissName(nm)
+                    // 与「守护页清单长按删除」同一套规则：只有自动来源才记进「不再加回」，
+                    // 且删除 + 拉黑走同一个打包动作（手动记的不拉黑，见守护页同处）。
+                    if (autoSource) store.removeSubAndDismiss(sub.id) else store.removeSub(sub.id)
                     showDelSub = false
                     // 不手动 onBack()：sub 立刻变 null，composable 开头那段
                     // `if (sub == null) { LaunchedEffect { onBack() } }` 会自动退回去。
@@ -1196,19 +1324,23 @@ fun SubscriptionDetailScreen(
 
         // ── D11 内联补全：只补缺的那一个字段 ──
         if (fixAmount) {
-            LbInputDialog(
+            // 补金额时周期一起确认：金额说的是「每期多少」，不说清周期就没法折算月均/年累计。
+            SubFormDialog(
                 title = "补全「${sub.name}」的金额",
-                fields = listOf(LbField("每月金额（元）", "如：25", numeric = true)),
-                initial = listOf(if (sub.amount > 0) store.fmtMoney(sub.amount) else ""),
+                showName = false,
+                showDate = false,
+                initialAmount = if (sub.amount > 0) store.fmtMoney(sub.amount) else "",
+                initialCycle = sub.cycle,
                 onDismiss = { fixAmount = false },
-                onConfirm = { v ->
-                    val a = v.getOrElse(0) { "" }.toDoubleOrNull()
+                onConfirm = { _, amountStr, _, cycle ->
+                    val a = amountStr.toDoubleOrNull()
                     if (a == null || a <= 0) {
                         "金额填数字，比如 25"
                     } else {
-                        store.updateSub(sub.id, sub.name, a, sub.nextDate)
+                        store.updateSub(sub.id, sub.name, a, sub.nextDate, cycle = cycle)
                         fixAmount = false
-                        notice = "已补上金额：每月 ¥${store.fmtMoney(a)}"
+                        undoClosing = false
+                        notice = "已补上金额：${perCycleMoney(store, a, cycle)}"
                         null
                     }
                 },
@@ -1216,32 +1348,53 @@ fun SubscriptionDetailScreen(
         }
 
         if (showEdit) {
-        LbInputDialog(
-            title = "编辑订阅",
-            fields = listOf(
-                LbField("名称", "如：视频会员"),
-                LbField("每月金额（元）", "如：25", numeric = true),
-                LbField("下次扣费日期", "点这里选择日期", isDate = true),
-            ),
-            initial = listOf(sub.name, if (sub.amount > 0) store.fmtMoney(sub.amount) else "", sub.nextDate),
-            onDismiss = { showEdit = false },
-            onConfirm = { v ->
-                val name = v.getOrElse(0) { "" }
-                val amountStr = v.getOrElse(1) { "" }
-                val amount = if (amountStr.isEmpty()) 0.0 else (amountStr.toDoubleOrNull() ?: -1.0)
-                val date = v.getOrElse(2) { "" }
-                when {
-                    name.isEmpty() -> "写下名称吧"
-                    amount < 0 -> "金额填数字，比如 25（可留空）"
-                    else -> {
-                        store.updateSub(sub.id, name, amount, date.ifEmpty { sub.nextDate })
-                        showEdit = false
+            // 编辑时周期一起改：金额说的是「每期多少」，周期变了月均/年累计的折算也跟着变。
+            SubFormDialog(
+                title = "编辑订阅",
+                showName = true,
+                showDate = true,
+                initialName = sub.name,
+                initialAmount = if (sub.amount > 0) store.fmtMoney(sub.amount) else "",
+                initialDate = sub.nextDate,
+                initialCycle = sub.cycle,
+                onDismiss = { showEdit = false },
+                onConfirm = { name, amountStr, date, cycle ->
+                    val amount = if (amountStr.isEmpty()) 0.0 else (amountStr.toDoubleOrNull() ?: -1.0)
+                    when {
+                        name.isEmpty() -> "写下名称吧"
+                        amount < 0 -> "金额填数字，比如 25（可留空）"
+                        else -> {
+                            store.updateSub(sub.id, name, amount, date.ifEmpty { sub.nextDate }, cycle = cycle)
+                            showEdit = false
+                            null
+                        }
+                    }
+                },
+            )
+        }
+
+        // 「更新扣费日」的日期弹窗（详情页入口在过期 chip 旁）：走既有 updateSub，
+        // 名称/金额/周期都不动。
+        if (showRenewDate) {
+            LbInputDialog(
+                title = "更新「${sub.name}」的扣费日",
+                fields = listOf(LbField("下次扣费日期", "点这里选择日期", isDate = true)),
+                initial = listOf(sub.nextDate),
+                onDismiss = { showRenewDate = false },
+                onConfirm = { v ->
+                    val d = v.getOrElse(0) { "" }
+                    if (d.isBlank()) {
+                        "选个日期吧"
+                    } else {
+                        store.updateSub(sub.id, sub.name, sub.amount, d, cycle = sub.cycle)
+                        showRenewDate = false
+                        undoClosing = false
+                        notice = "已把下次扣费日更新到 ${store.fmtCn(d)}"
                         null
                     }
-                }
-            },
-        )
-    }
+                },
+            )
+        }
 
         // （关闭入口原来在这里 —— 已前置到主卡下面，见上面那段注释）
         if (showAddCharge) {
@@ -1846,5 +1999,224 @@ private fun HeroScanChip(text: String, onClick: () -> Unit) {
             .padding(horizontal = 11.dp, vertical = 8.dp),
     ) {
         Text(text, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = LbOnDark)
+    }
+}
+
+/* ── 扣费周期的口径 ──
+ * 取值与 butlerstore.ButlerSub.cycle 一致："week"/"month"/"quarter"/"year"。
+ * 「月」排最前并作默认：旧数据没有 cycle 字段，JSON 反序列化落到默认值 "month"，
+ * 对老用户来说「月」既是习惯也是兜底 —— 这里 chip 的默认和 store 的默认必须是同一个。
+ */
+private val CYCLE_OPTIONS = listOf(
+    "month" to "月",
+    "quarter" to "季",
+    "year" to "年",
+    "week" to "周",
+)
+
+/** chip / 标签上用的单字：月、季、年、周；未知值兜底成「月」（与 store 的默认一致） */
+private fun cycleUnit(cycle: String): String =
+    CYCLE_OPTIONS.firstOrNull { it.first == cycle }?.second ?: "月"
+
+/** 说法里的全称：月付、季付、年付、周付 */
+private fun cycleZh(cycle: String): String = when (cycle) {
+    "week" -> "周付"
+    "quarter" -> "季付"
+    "year" -> "年付"
+    else -> "月付"
+}
+
+/**
+ * 「每月 ¥25」这类**把周期写死成月**的老文案统一从这里出：
+ * 月付（含旧数据）保持「每月 ¥25」原样 —— 老用户看到的字一个都不用变；
+ * 其他周期改说「每期 ¥25（周付）」，不再把周付/年付说成每月。
+ */
+private fun perCycleMoney(store: ButlerStore, amount: Double, cycle: String): String =
+    if (cycle == "month") "每月 ¥${store.fmtMoney(amount)}"
+    else "每期 ¥${store.fmtMoney(amount)}（${cycleZh(cycle)}）"
+
+/**
+ * 「每月 15 日扣」里的「每月」两个字。月付照旧；其他周期改说「下次」——
+ * 下一次扣费确实在那一天，但节奏不是每月，硬说「每月」就是撒谎。
+ */
+private fun rhythmWord(cycle: String): String = if (cycle == "month") "每月" else "下次"
+
+/** 弹窗日期行里已选日期的展示（选完是 ISO 串，翻成人话；解析不了就原样显示） */
+private fun subFormDateLabel(raw: String): String {
+    if (raw.isBlank()) return "点这里选择日期"
+    val d = runCatching { java.time.LocalDate.parse(raw) }.getOrNull() ?: return raw
+    val w = listOf("日", "一", "二", "三", "四", "五", "六")[d.dayOfWeek.value % 7]
+    return "${d.monthValue} 月 ${d.dayOfMonth} 日 · 周$w"
+}
+
+/**
+ * 订阅表单弹窗（添加 / 编辑 / 补全金额共用），比通用 [com.lifebutler.app.ui.components.LbInputDialog]
+ * 多一行「扣费周期」chip。
+ *
+ * 为什么不复用通用弹窗：周期是一组**单选 chip**，不是文本输入，通用弹窗塞不下；
+ * 与其让用户在金额字段里手打「月/季/年/周」，不如照同一个视觉语言在这里给一行四个。
+ * 金额标签也不再用「每月金额」—— 周期可选之后那个说法只对月付成立，改叫「每期金额」。
+ *
+ * [onConfirm] 返回 null 表示通过并关闭；返回字符串则展示为错误并保持打开（与通用弹窗同约定）。
+ */
+@Composable
+private fun SubFormDialog(
+    title: String,
+    showName: Boolean,
+    showDate: Boolean,
+    initialName: String = "",
+    initialAmount: String = "",
+    initialDate: String = "",
+    initialCycle: String = "month",
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, amount: String, date: String, cycle: String) -> String?,
+) {
+    var name by remember { mutableStateOf(initialName) }
+    var amount by remember { mutableStateOf(initialAmount) }
+    var date by remember { mutableStateOf(initialDate) }
+    var cycle by remember { mutableStateOf(initialCycle) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var showPicker by remember { mutableStateOf(false) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
+            Column(Modifier.padding(20.dp)) {
+                Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
+                if (showName) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it; error = null },
+                        label = { Text("名称", fontSize = 12.sp) },
+                        placeholder = { Text("如：视频会员", fontSize = 12.sp, color = LbInk3) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LbAccent,
+                            unfocusedBorderColor = LbLine,
+                            focusedLabelColor = LbAccent,
+                            unfocusedLabelColor = LbInk3,
+                            cursorColor = LbAccent,
+                        ),
+                        textStyle = TextStyle(fontSize = 13.5.sp, color = LbInk),
+                    )
+                }
+                // 周期 chip 行。默认「月」= 旧数据的兜底值；点选即换，金额标签跟着改口。
+                Column(Modifier.padding(top = 12.dp)) {
+                    Text("扣费周期", fontSize = 12.sp, color = LbInk3)
+                    Row(
+                        Modifier.padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        CYCLE_OPTIONS.forEach { (value, label) ->
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(if (cycle == value) LbAccentSoft else LbSurface2)
+                                    .clickable {
+                                        cycle = value
+                                        error = null
+                                    }
+                                    .padding(horizontal = 13.dp, vertical = 6.dp),
+                            ) {
+                                Text(
+                                    label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (cycle == value) LbAccent else LbInk2,
+                                )
+                            }
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it; error = null },
+                    // 标签随周期变化：不再写死「每月金额」，月付之外的说法都对不上「每月」
+                    label = { Text("每期金额（元）· 按" + cycleUnit(cycle), fontSize = 12.sp) },
+                    placeholder = { Text("如：25", fontSize = 12.sp, color = LbInk3) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LbAccent,
+                        unfocusedBorderColor = LbLine,
+                        focusedLabelColor = LbAccent,
+                        unfocusedLabelColor = LbInk3,
+                        cursorColor = LbAccent,
+                    ),
+                    textStyle = TextStyle(fontSize = 13.5.sp, color = LbInk),
+                )
+                if (showDate) {
+                    Column(Modifier.padding(top = 10.dp)) {
+                        Text("下次扣费日期", fontSize = 12.sp, color = LbInk3)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(1.dp, if (showPicker) LbAccent else LbLine, RoundedCornerShape(12.dp))
+                                .clickable {
+                                    error = null
+                                    showPicker = true
+                                }
+                                .padding(horizontal = 12.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                subFormDateLabel(date),
+                                fontSize = 13.5.sp,
+                                color = if (date.isEmpty()) LbInk3 else LbInk,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                LbIcons.calendarEvent,
+                                contentDescription = null,
+                                tint = LbInk3,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                }
+                error?.let {
+                    Text(it, fontSize = 12.sp, color = LbRust, modifier = Modifier.padding(top = 8.dp))
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    LbGhostButton("取消", onDismiss, Modifier.weight(1f))
+                    LbPrimaryButton(
+                        "保存",
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            val err = onConfirm(name.trim(), amount.trim(), date.trim(), cycle)
+                            if (err != null) error = err
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    if (showPicker) {
+        LbDatePickerDialog(
+            initial = date,
+            clearable = false,
+            onPick = {
+                date = it
+                showPicker = false
+                error = null
+            },
+            onClear = {},
+            onDismiss = { showPicker = false },
+        )
     }
 }

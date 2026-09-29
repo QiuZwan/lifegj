@@ -41,6 +41,13 @@ data class ButlerSub(
     val closingAt: Long,
     val trialUntil: String = "",
     val remindAhead: Int = 0,
+    /**
+     * 扣费周期:week / month / quarter / year。
+     * 为什么单独立字段:年付会员把 [amount] 原样计进「每月合计」会虚高 12 倍,周付则被低估;
+     * 所有把金额当月费用的口径必须先过 ButlerStore.monthlyEquivalent 折算。
+     * 旧数据没有这个字段 → 读入时一律按 "month",口径与从前一致。
+     */
+    val cycle: String = "month",
 )
 
 /** [remindAhead] 含义同 [ButlerSub]：0 = 跟随全局，>0 = 这条单独提前这么多天 */
@@ -170,11 +177,16 @@ data class SearchHit(
  * 所以导出必须把「哪些类别有文件没能进去」一起交出来，由界面如实告诉用户。
  *
  * [skipped] 的 key 是可以直接显示给用户看的类别名（头像 / 家人照片 / 相册 / 对话图片 / 档案）。
+ *
+ * [oversize] 与它同类:导出文本超过了单文件读取上限（BackupIO.MAX_BYTES），
+ * 这份文件「存得进、读不回」—— 恢复时会在读取那一步被拒收。必须在导出的当下就如实说，
+ * 不能等换机那天才暴露。
  */
 data class BackupExport(
     val text: String,
     val fileCount: Int,
     val skipped: Map<String, Int>,
+    val oversize: Boolean = false,
 ) {
     val hasSkipped: Boolean get() = skipped.isNotEmpty()
     val skippedTotal: Int get() = skipped.values.sum()
@@ -182,6 +194,11 @@ data class BackupExport(
     fun skippedText(): String? =
         if (!hasSkipped) null
         else skipped.entries.joinToString("、") { "${it.key} ${it.value} 个" }
+
+    /** 一句可以直接放在提示里的话；导出体量没超读取上限时返回 null */
+    fun oversizeText(): String? =
+        if (!oversize) null
+        else "备份内容超过了 ${BackupIO.MAX_BYTES / 1_000_000}MB 的单文件读取上限，这份文件恢复时可能被拒收"
 }
 
 /**
@@ -356,9 +373,9 @@ class ButlerStore private constructor(context: Context) {
 
     /* ── 派生统计(全部可从上面的列表复算,不存冗余数字) ── */
 
-    /** 处于「关闭中」的订阅月费合计 = 此后每月不再支出的钱 */
+    /** 处于「关闭中」的订阅月费合计 = 此后每月不再支出的钱（周期折算成月度口径） */
     val monthlySaved: Double
-        get() = subs.filter { it.closing }.sumOf { it.amount }
+        get() = subs.filter { it.closing }.sumOf { monthlyEquivalent(it.amount, it.cycle) }
 
     /** 历史上标记过关闭的订阅笔数 */
     val closedCount: Int
@@ -374,7 +391,10 @@ class ButlerStore private constructor(context: Context) {
                     val d = dateOfMillis(e.closedAt)
                     !d.isAfter(now) && !d.isBefore(monthStart)
                 }
-                .sumOf { it.amount }
+                .sumOf { e ->
+                    // 关闭历史只存了金额、没存周期,周期按当前同名订阅的算;同名订阅已被删就按月
+                    monthlyEquivalent(e.amount, subs.firstOrNull { it.name == e.name }?.cycle ?: "month")
+                }
         }
 
     /* ── 日期工具 ── */
@@ -382,10 +402,14 @@ class ButlerStore private constructor(context: Context) {
     fun parseDate(raw: String): LocalDate? {
         var t = raw.trim()
         if (t.isEmpty()) return null
+        // 完整 ISO 时间戳(yyyy-MM-ddTHH:mm:ss,subscanner 现在会产出)只留日期部分
+        if (t.contains('T')) t = t.substringBefore('T')
         t = t.replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
         val parts = t.split("-").filter { it.isNotEmpty() }
         return try {
             when (parts.size) {
+                // 3 段 = 完整 yyyy-MM-dd:直接解析、**不做**年份滚动 —— 只有「MM-dd」这种
+                // 没写年份的才需要猜「今年还是明年」
                 3 -> LocalDate.of(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
                 2 -> {
                     var d = LocalDate.of(LocalDate.now().year, parts[0].toInt(), parts[1].toInt())
@@ -489,11 +513,11 @@ class ButlerStore private constructor(context: Context) {
     }
 
     /**
-     * 改一笔订阅。[trialUntil] / [remindAhead] 传 null 表示「这次不改这一项」——
+     * 改一笔订阅。[trialUntil] / [remindAhead] / [cycle] 传 null 表示「这次不改这一项」——
      * 用可空而不是默认值，是因为调用方大多只改名称/金额/日期，
      * 若给默认值会让每次改金额都**顺手把试用日和提前天数抹成默认**。
      */
-    fun updateSub(id: String, name: String, amount: Double, date: String, trialUntil: String? = null, remindAhead: Int? = null) {
+    fun updateSub(id: String, name: String, amount: Double, date: String, trialUntil: String? = null, remindAhead: Int? = null, cycle: String? = null) {
         val i = subs.indexOfFirst { it.id == id }
         if (i >= 0) {
             subs[i] = subs[i].copy(
@@ -502,6 +526,7 @@ class ButlerStore private constructor(context: Context) {
                 nextDate = date,
                 trialUntil = trialUntil ?: subs[i].trialUntil,
                 remindAhead = remindAhead ?: subs[i].remindAhead,
+                cycle = normCycle(cycle ?: subs[i].cycle),
             )
             save()
         }
@@ -598,8 +623,18 @@ class ButlerStore private constructor(context: Context) {
      */
     fun saveShrunk(uri: android.net.Uri, file: File, maxDim: Int = 512): Boolean = try {
         val bmp = decodeShrunk(uri, maxDim) ?: return false
-        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-        true
+        // 先写 .tmp 再改名:原来直接对着正式文件写,写到一半崩溃 / 磁盘满,留下的就是一张
+        // 打不开的半截图还顶着正式文件名 —— 头像/照片当场损坏。tmp 方案最坏也只是清个残件。
+        val tmp = File(file.absolutePath + ".tmp")
+        var ok = false
+        try {
+            tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            ok = tmp.renameTo(file)
+        } finally {
+            // 改名失败(或写的过程中断)就清掉残件,别在盘上留孤儿 tmp
+            if (!ok) try { tmp.delete() } catch (e: Exception) {}
+        }
+        ok
     } catch (e: Exception) {
         false
     }
@@ -906,6 +941,34 @@ class ButlerStore private constructor(context: Context) {
         save()
     }
 
+    /**
+     * 删除订阅,并把这个商户记进「不再提示」名单。
+     *
+     * 为什么合成一步:删除表达的是「我不订这个了」,但只删记录的话,下一次扫描 / 通知命中
+     * 还会把它加回来 —— 用户明明刚删掉,守护清单里又冒出来,看起来就像删不掉。
+     *
+     * 撤销也要一步撤到底:restore 里除了把订阅放回原位,还要用删除时记下的商户名调
+     * [undismissName] 把「不再提示」一并撤掉 —— 只放回订阅的话,这条记录仍被 dismissed
+     * 拦在扫描/通知之外,下次扣费不会再进守护页,用户点撤销看到的却像生效了,其实是半步。
+     * (撤销窗口内名单还压着,恰好也挡住扫描器在窗口期把它悄悄加回来。)
+     * undismissName 自带「不在名单里就不动」的守卫:窗口期内用户手动撤销过拉黑,restore 不会误存。
+     *
+     * @return 是否真的删掉了(id 不存在时返回 false,不产生副作用)
+     */
+    fun removeSubAndDismiss(id: String): Boolean {
+        val i = subs.indexOfFirst { it.id == id }
+        if (i < 0) return false
+        val item = subs[i]
+        val name = item.name
+        subs.removeAt(i)
+        rememberUndo("已删除「$name」") {
+            subs.add(i.coerceAtMost(subs.size), item)
+            undismissName(name)
+        }
+        dismissName(name)
+        return true
+    }
+
     /* ── AI 提出来、等用户点头的「改 / 删」 ── */
 
     /**
@@ -968,18 +1031,18 @@ class ButlerStore private constructor(context: Context) {
      * nextDate 只在扫描真的从短信里解析到扣费日时才传;解析不到留空,
      * 界面显示「扣费日待补全」,绝不凭空编一个日期。
      */
-    fun addScannedSub(name: String, amount: Double, source: String, nextDate: String = "", force: Boolean = false) {
+    fun addScannedSub(name: String, amount: Double, source: String, nextDate: String = "", force: Boolean = false, cycle: String = "month") {
         val n = name.trim()
         if (n.isEmpty()) return
         if (subs.any { it.name == n }) return
         if (!force && dismissed.contains(n)) return
         if (force) dismissed.remove(n)
-        subs.add(ButlerSub(id(), n, amount, nextDate.trim(), false, source, 0L))
+        subs.add(ButlerSub(id(), n, amount, nextDate.trim(), false, source, 0L, "", 0, normCycle(cycle)))
         save()
     }
 
-    fun addSub(name: String, amount: Double, date: String, source: String = "手动", trialUntil: String = "", remindAhead: Int = 0) {
-        subs.add(ButlerSub(id(), name.trim(), amount, date, false, source, 0L, trialUntil.trim(), remindAhead)); save()
+    fun addSub(name: String, amount: Double, date: String, source: String = "手动", trialUntil: String = "", remindAhead: Int = 0, cycle: String = "month") {
+        subs.add(ButlerSub(id(), name.trim(), amount, date, false, source, 0L, trialUntil.trim(), remindAhead, normCycle(cycle))); save()
     }
 
     /** 单条订阅的「提前几天提醒」。0 = 跟随全局设置 */
@@ -1070,8 +1133,42 @@ class ButlerStore private constructor(context: Context) {
 
     fun addCharge(subName: String, amount: Double, date: String = LocalDate.now().toString(), source: String = "手动") {
         if (subName.isBlank() || amount <= 0) return
-        charges.add(ButlerCharge(id(), subName.trim(), amount, date, System.currentTimeMillis(), source))
+        val n = subName.trim()
+        charges.add(ButlerCharge(id(), n, amount, date, System.currentTimeMillis(), source))
+        // 自动推进「下次扣费日」:真实扣费日已经到了 / 越过了记着的 nextDate,说明这一期已扣完;
+        // 不滚的话这条订阅会一直挂在「待扣」里天天催。按它自己的周期滚到严格晚于扣费日为止。
+        val chargeDay = parseDate(date)
+        if (chargeDay != null) rollNextDatePast(n, chargeDay)
         save()
+    }
+
+    /** 按周期把 [d] 推进一步 */
+    private fun advanceCycle(d: LocalDate, cycle: String): LocalDate = when (cycle) {
+        "week" -> d.plusWeeks(1)
+        "quarter" -> d.plusMonths(3)
+        "year" -> d.plusYears(1)
+        else -> d.plusMonths(1)
+    }
+
+    /**
+     * 扣费落账后,把该商户在用订阅的 nextDate 沿周期向前滚,直到严格晚于扣费日。
+     * 只在「扣费日 >= 现记 nextDate」时才动它;保护上限内滚不过去就不改 —— 宁可还挂在待扣,
+     * 也不写一个没根据的日期(与「不伪造」的约定一致)。
+     */
+    private fun rollNextDatePast(subName: String, chargeDay: LocalDate) {
+        val i = subs.indexOfFirst { it.name == subName && !it.closing }
+        if (i < 0) return
+        val cur = parseDate(subs[i].nextDate) ?: return
+        if (chargeDay.isBefore(cur)) return
+        val cyc = normCycle(subs[i].cycle)
+        var nd = cur
+        var guard = 0
+        while (!nd.isAfter(chargeDay) && guard < 1200) {
+            nd = advanceCycle(nd, cyc)
+            guard++
+        }
+        if (!nd.isAfter(chargeDay)) return
+        subs[i] = subs[i].copy(nextDate = nd.toString())
     }
 
     fun removeCharge(id: String) {
@@ -1082,13 +1179,31 @@ class ButlerStore private constructor(context: Context) {
         save()
     }
 
-    /** 某笔订阅的真实扣费记录,按时间倒序 */
+    /**
+     * 某笔订阅的真实扣费记录,按扣费日倒序([ButlerCharge.at] 只做同日的先后 tie-break)。
+     * 为什么按 date 不按 at:at 是「这条记录入库的时刻」,补录的旧流水会排到最前面,
+     * 详情页时间线看起来就像顺序错乱;date 才是这笔钱真正发生的那一天。
+     */
     fun chargesOf(subName: String): List<ButlerCharge> =
-        charges.filter { it.subName == subName }.sortedByDescending { it.at }
+        charges.filter { it.subName == subName }
+            .sortedWith(
+                compareByDescending<ButlerCharge> { parseDate(it.date)?.toString().orEmpty() }
+                    .thenByDescending { it.at },
+            )
 
-    /** 关闭后仍在扣费:关闭时间之后还有该商户的真实扣费记录 */
-    fun hasChargeAfterClosing(sub: ButlerSub): Boolean =
-        sub.closing && sub.closingAt > 0 && charges.any { it.subName == sub.name && it.at > sub.closingAt }
+    /**
+     * 关闭后仍在扣费:扣费日在关闭日**之后**,还有该商户的真实扣费记录。
+     * 口径注意:两边都按「天」比 —— 原来拿事件时间戳 at 与 closingAt 比毫秒,
+     * 结果同一天里「先标记关闭、流水后入库」也会被误判成关闭后仍在扣费。
+     * date 解析不了时退回 at(老数据 date 可能缺),比直接漏报诚实。
+     */
+    fun hasChargeAfterClosing(sub: ButlerSub): Boolean {
+        if (!sub.closing || sub.closingAt <= 0L) return false
+        val closedDay = dateOfMillis(sub.closingAt)
+        return charges.any { c ->
+            c.subName == sub.name && (parseDate(c.date) ?: dateOfMillis(c.at)).isAfter(closedDay)
+        }
+    }
 
     fun addObligation(title: String, date: String, note: String, tag: String = "证件", remindAhead: Int = 0) {
         obligations.add(ButlerObligation(id(), title.trim(), note.trim(), date, tag, false, remindAhead)); save()
@@ -1441,6 +1556,17 @@ class ButlerStore private constructor(context: Context) {
     }
 
     /**
+     * 「待确认线索」的外部写入入口(短信签约等路径用)。
+     *
+     * 字段口径与通知路径的 [addPendingClaim] 一致:下次扣费日此时还不知道,留空待认领后补;
+     * 金额未知(null)先记 0 —— 0 元线索认领时不会写扣费流水、只会进守护清单,不会伪造账目;
+     * [source] 是来源标识(如包名 / "sms"),存进线索的 pkg 字段。
+     * @return 是否真的新增了(同名 3 天内的重复线索会被并掉、点过「不是我的」的商户不再问)
+     */
+    fun addClaim(name: String, amount: Double?, at: Long, snippet: String, source: String): Boolean =
+        addPendingClaim(name, amount ?: 0.0, at, "", source, snippet)
+
+    /**
      * 认领一条线索 —— **这时才**写真实扣费流水、才加进守护清单。
      *
      * 用户点「认得」= 他确认这笔确实是自己花的。这一步之前，扣费记录与守护清单都是干净的：
@@ -1450,10 +1576,20 @@ class ButlerStore private constructor(context: Context) {
         val i = pendingClaims.indexOfFirst { it.id == id }
         if (i < 0) return
         val c = pendingClaims.removeAt(i)
-        if (c.amount > 0) addCharge(c.name, c.amount, LocalDate.now().toString(), "通知")
+        // 扣费日取线索**发生**那天,不是「点认领」这天:深夜推来的通知第二天才被认,
+        // 原来的写法会把昨天的钱记进今天的账,月报跟着错位。
+        val day = dateOfMillis(c.at)
+        if (c.amount > 0) {
+            // 同一商户同一天只记一笔:同一条扣费通知常常推送两次(落下时一次、通知栏重扫一次),
+            // 不查重的话月合计会凭空翻倍。
+            val dup = charges.any { it.subName == c.name && it.date == day.toString() }
+            if (!dup) addCharge(c.name, c.amount, day.toString(), "通知")
+        }
         if (subs.none { it.name == c.name } && !isDismissed(c.name)) {
             addScannedSub(c.name, c.amount, "通知", c.nextDate)
         }
+        // 认领落账同样要参与 nextDate 的自动推进(上面 addCharge 时订阅多半还不存在)
+        rollNextDatePast(c.name, day)
         save()
     }
 
@@ -1640,11 +1776,16 @@ class ButlerStore private constructor(context: Context) {
     fun dueBeforeNextMonthEnd(): Pair<Double, Int> {
         val now = LocalDate.now()
         val end = now.plusMonths(1).withDayOfMonth(now.plusMonths(1).lengthOfMonth())
+        val today = now.toString()
         val hit = subs
             .filter { !it.closing }
             .mapNotNull { s -> parseDate(s.nextDate)?.let { s to it } }
             .filter { (_, d) -> !d.isBefore(now) && !d.isAfter(end) }
-        return hit.sumOf { it.first.amount } to hit.size
+            // 今天已经记下同商户流水的不再算:这笔钱已经进了「本月已扣」,
+            // 再算进「接下来要扣」就是同一天双算,两个数一起虚高
+            .filter { (s, _) -> charges.none { it.subName == s.name && it.date == today } }
+        // 金额走月度折算:年付 / 季付 / 周付不能按单期原额计进「接下来要扣」
+        return hit.sumOf { monthlyEquivalent(it.first.amount, it.first.cycle) } to hit.size
     }
 
     /**
@@ -1754,7 +1895,7 @@ class ButlerStore private constructor(context: Context) {
         if (t.contains("订阅") || t.contains("扣费")) {
             val active = subs.filter { !it.closing }
             if (active.isEmpty()) return "现在还没有订阅记录，在「订阅管理」页右上角可以添加。"
-            val total = active.sumOf { it.amount }
+            val total = active.sumOf { monthlyEquivalent(it.amount, it.cycle) }
             val noDate = active.count { it.nextDate.isBlank() }
             return "现在有 ${active.size} 笔订阅，每月合计 ¥${fmtMoney(total)}" +
                 (if (noDate > 0) "（其中 $noDate 笔还不知道扣费日，可以在订阅管理页补全）" else "") +
@@ -1849,6 +1990,10 @@ class ButlerStore private constructor(context: Context) {
 
     /** 清空全部数据(从空开始,仅保留一句欢迎语) */
     fun clearAll() {
+        // 入口先清残留闭包:撤销栈里「放回原位」记的是旧数据的引用,不清的话清空后点撤销,
+        // 删掉的东西会凭空复活;对话页挂着的待确认修改卡同理,它要改的对象已经不存在了
+        discardUndo()
+        cancelFix()
         // 顺带清掉本机私人文件,避免「已清空」后照片还留在磁盘上
         // (前缀白名单统一走 isPrivateFile —— 原来这里漏了 avatar_,头像是清不掉的)
         pruneLocalFiles(emptySet())
@@ -1905,8 +2050,11 @@ class ButlerStore private constructor(context: Context) {
      * 用户会一路以为"全备好了",直到换机恢复才发现档案是空的。
      */
     fun exportAll(): BackupExport {
+        // 基座从内存重建:原来直接取 prefs 里上一次落盘的 state_v1,那可能是旧数据
+        // (某次落盘失败、或刚改动还没存),导出的「备份」就会和本机实际内容对不上。
+        // 序列化与 save() 走同一个 buildStateJson,永远导出当前内存里真实的样子。
         val base = try {
-            JSONObject(prefs.getString("state_v1", "{}") ?: "{}")
+            buildStateJson()
         } catch (e: Exception) {
             JSONObject()
         }
@@ -1944,7 +2092,15 @@ class ButlerStore private constructor(context: Context) {
             if (blobs.length() > 0) base.put("fileBlobs", blobs)
         } catch (e: Exception) {
         }
-        return BackupExport(base.toString(), count, skipped)
+        val text = base.toString()
+        // 导出体量超过单文件读取上限要如实预警:这份文件「存得进、读不回」,
+        // 恢复时会在读取那一步被拒收 —— 与 skipped 一样,静默就是不完整
+        return BackupExport(
+            text,
+            count,
+            skipped,
+            oversize = text.toByteArray(Charsets.UTF_8).size > BackupIO.MAX_BYTES,
+        )
     }
 
     /** 只要文本的调用点(剪贴板那条、诊断日志)走这里 */
@@ -1977,29 +2133,51 @@ class ButlerStore private constructor(context: Context) {
     }
 
     /**
+     * 最近一次 [isValidBackup] 拒绝这份备份的原因(可直接显示给用户);null = 没有拒绝。
+     * 为什么单独给:恢复入口的布尔值只能说「不行」,说不出「哪里不行」,
+     * 而「空备份被拒」和「根本不是备份」该对用户说的话完全不同。
+     */
+    var lastBackupRejectReason: String? = null
+        private set
+
+    /**
      * 校验备份内容是否像一个合法备份(含体积上限保护)。
      *
      * 两条路,一条都不能少:
      * ① **新备份**带格式指纹([BACKUP_APP_ID]) → 直接认;
-     * ② **老备份**(v2.13 及更早没有指纹) → 要求 `tasks` 与 `subs` **同时**存在。
+     * ② **老备份**(v2.13 及更早没有指纹) → 要求 `tasks` / `subs` 至少一个是非空的 JSONArray
+     *    (拒收「没有任何记录」的空备份:恢复是整体覆盖,导一份空备份进来等于一键清空)。
      *
      * 原来这里是 `has("tasks") || has("subs") || has("name")` —— 那个 `name` 松到
      * **任何一个带 name 字段的 JSON 都能通过**;而恢复会把 `state_v1` 整份替换掉,
      * 于是从"最近文件"里随手选错一个无关 json 就能清空全部记录。
+     *
+     * 拒绝时把原因写进 [lastBackupRejectReason],界面才能说出「为什么不行」。
      */
     fun isValidBackup(raw: String): Boolean {
-        if (raw.length > 12_000_000) return false
+        lastBackupRejectReason = null
+        if (raw.length > 12_000_000) {
+            lastBackupRejectReason = "这份备份超过 12MB，不像生活管家的备份"
+            return false
+        }
         return try {
             val o = JSONObject(raw)
             if (o.optString(BACKUP_APP_KEY, "") == BACKUP_APP_ID) return true
-            o.has("tasks") && o.has("subs")
+            val ok = listOf("tasks", "subs").any { k -> (o.optJSONArray(k)?.length() ?: 0) > 0 }
+            if (!ok) lastBackupRejectReason = "这份备份里没有任何记录"
+            ok
         } catch (e: Exception) {
+            lastBackupRejectReason = "这份备份的内容读不出来"
             false
         }
     }
 
     /** 恢复:写入备份并重新载入;内嵌文件一并还原,盘上不再被引用的旧私人文件清掉 */
     fun importState(raw: String): Boolean {
+        // 入口先清残留闭包(与 clearAll 同一道理):恢复是整体替换,撤销栈里的「放回原位」、
+        // 对话页挂着的待确认修改卡,都属于被替换掉的旧世界 —— 留着只会操作到已经不存在的对象
+        discardUndo()
+        cancelFix()
         return try {
             val o = JSONObject(raw)
             val blobs = o.optJSONObject("fileBlobs")
@@ -2016,7 +2194,10 @@ class ButlerStore private constructor(context: Context) {
                     }
                 }
             }
-            prefs.edit().putString("state_v1", o.toString()).apply()
+            // commit 而不是 apply:恢复是「用户以为本机已经换成备份内容」的大事,
+            // apply 异步落盘失败时不抛错,这里就会假报成功;commit 给得出真实结果
+            val committed = prefs.edit().putString("state_v1", o.toString()).commit()
+            if (!committed) return false
             clearLists()
             load()
             applyRestoredFiles(blobs)
@@ -2177,66 +2358,108 @@ class ButlerStore private constructor(context: Context) {
             " memos=${memos.size} expenses=${expenses.size} archive=${archive.size} dark=${darkMode.value}"
     }
 
+    /**
+     * 最近一次落盘是否失败:save() 成功清 false、失败置 true。
+     * 为什么必须可见:以前落盘抛了只在 debug 包留一行日志,界面上一切正常,
+     * 用户其实正处在「内存里改了、盘上没写」的状态 —— 进程一被杀,这段改动就蒸发。
+     * UI 层读 ButlerStore.persistFailed(companion 转发这里的状态)决定要不要提示。
+     */
+    @Volatile
+    var persistFailed: Boolean = false
+        private set
+
     private fun save() {
         // 放在最前面、且**在 try 之外**：就算这次落盘抛了，也不能让搜索页继续用旧结果。
         dataRev++
         try {
-            val o = JSONObject()
-            o.put("name", profileName.value)
-            o.put("start", startDate)
-            o.put("scanAt", lastScanAt)
-            o.put("blood", bloodType.value)
-            o.put("meds", meds.value)
-            o.put("contact", emergencyContact.value)
-            o.put("avatar", avatarPath.value)
-            o.put("remind", reminderEnabled.value)
-            o.put("remindHour", reminderHour.value)
-            o.put("remindSubDays", reminderSubDays.value)
-            o.put("remindDueDays", reminderDueDays.value)
-            o.put("budget", monthlyBudget.value)
-            o.put("onboarded", onboarded.value)
-            o.put("dark", darkMode.value)
-            o.put("lock", appLockEnabled.value)
-            o.put("wgt", widgetDetail.value)
-            o.put("bfx", butlerFx.toDouble())
-            o.put("bfy", butlerFy.toDouble())
-            val dis = JSONArray()
-            dismissed.forEach { dis.put(it) }
-            o.put("dismissed", dis)
-            o.put("tasks", arr(tasks) { JSONObject().put("id", it.id).put("text", it.text).put("meta", it.meta).put("done", it.done) })
-            o.put("subs", arr(subs) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("date", it.nextDate).put("closing", it.closing).put("source", it.source).put("closingAt", it.closingAt).put("trial", it.trialUntil).put("ahead", it.remindAhead) })
-            o.put("obligations", arr(obligations) { JSONObject().put("id", it.id).put("title", it.title).put("note", it.note).put("date", it.date).put("tag", it.tag).put("done", it.done).put("ahead", it.remindAhead) })
-            o.put("members", arr(members) { JSONObject().put("id", it.id).put("name", it.name).put("label", it.label).put("date", it.date).put("photo", it.photo).put("ahead", it.remindAhead) })
-            o.put("album", arr(album) { JSONObject().put("id", it.id).put("path", it.path).put("note", it.note).put("at", it.at) })
-            o.put("keyDates", arr(keyDates) { JSONObject().put("id", it.id).put("title", it.title).put("date", it.date).put("note", it.note).put("ahead", it.remindAhead) })
-            o.put("archive", arr(archive) {
-                JSONObject()
-                    .put("id", it.id).put("title", it.title).put("count", it.files.size).put("note", it.note)
-                    .put("files", JSONArray(it.files))
-            })
-            o.put("chat", arr(chat) { JSONObject().put("id", it.id).put("user", it.fromUser).put("text", it.text).put("photoPath", it.photoPath) })
-            o.put("expenses", arr(expenses) { JSONObject().put("id", it.id).put("amount", it.amount).put("category", it.category).put("note", it.note).put("date", it.date).put("at", it.at).put("income", it.income) })
-            o.put("charges", arr(charges) { JSONObject().put("id", it.id).put("name", it.subName).put("amount", it.amount).put("date", it.date).put("at", it.at).put("source", it.source) })
-            o.put("closedSubs", arr(closedHistory) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("closedAt", it.closedAt) })
-            o.put("memos", arr(memos) {
-                JSONObject()
-                    .put("id", it.id).put("title", it.title).put("content", it.content)
-                    .put("category", it.category).put("pinned", it.pinned)
-                    .put("createdAt", it.createdAt).put("updatedAt", it.updatedAt).put("remindAt", it.remindAt)
-            })
-            o.put("memoCats", JSONArray(memoCategories.value))
-            o.put("expenseCats", JSONArray(expenseCategories.value))
-            o.put("watchPkgs", JSONArray(watchedExtraPackages.value))
-            // 待认领的扣费线索：也是用户数据（虽然还没被认领），必须一起存 / 一起备份
-            o.put("claims", arr(pendingClaims) {
-                JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount)
-                    .put("at", it.at).put("nextDate", it.nextDate).put("pkg", it.pkg).put("snippet", it.snippet)
-            })
-            prefs.edit().putString("state_v1", o.toString()).apply()
+            prefs.edit().putString("state_v1", buildStateJson().toString()).apply()
+            persistFailed = false
         } catch (e: Exception) {
+            // 置失败标记,别让「没存上」这件事只有 logcat 知道
+            persistFailed = true
             // 不要静默吞:首装的第一次 save() 曾经因为属性初始化顺序问题在这里悄悄失败,
             // 表现是「prefs 里一直是空的、界面上却正常」,查了很久。debug 包留一行。
             if (debuggable) android.util.Log.d("LbState", "[save] 落盘失败: ${e::class.java.simpleName} ${e.message}")
+        }
+    }
+
+    /** 把当前内存里的全部状态序列化成 state_v1 的 JSON。save() 与 exportAll() 共用,保证「导出 = 落盘」 */
+    private fun buildStateJson(): JSONObject {
+        val o = JSONObject()
+        o.put("name", profileName.value)
+        o.put("start", startDate)
+        o.put("scanAt", lastScanAt)
+        o.put("blood", bloodType.value)
+        o.put("meds", meds.value)
+        o.put("contact", emergencyContact.value)
+        o.put("avatar", avatarPath.value)
+        o.put("remind", reminderEnabled.value)
+        o.put("remindHour", reminderHour.value)
+        o.put("remindSubDays", reminderSubDays.value)
+        o.put("remindDueDays", reminderDueDays.value)
+        o.put("budget", monthlyBudget.value)
+        o.put("onboarded", onboarded.value)
+        o.put("dark", darkMode.value)
+        o.put("lock", appLockEnabled.value)
+        o.put("wgt", widgetDetail.value)
+        o.put("bfx", butlerFx.toDouble())
+        o.put("bfy", butlerFy.toDouble())
+        val dis = JSONArray()
+        dismissed.forEach { dis.put(it) }
+        o.put("dismissed", dis)
+        o.put("tasks", arr(tasks) { JSONObject().put("id", it.id).put("text", it.text).put("meta", it.meta).put("done", it.done) })
+        o.put("subs", arr(subs) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("date", it.nextDate).put("closing", it.closing).put("source", it.source).put("closingAt", it.closingAt).put("trial", it.trialUntil).put("ahead", it.remindAhead).put("cycle", it.cycle) })
+        o.put("obligations", arr(obligations) { JSONObject().put("id", it.id).put("title", it.title).put("note", it.note).put("date", it.date).put("tag", it.tag).put("done", it.done).put("ahead", it.remindAhead) })
+        o.put("members", arr(members) { JSONObject().put("id", it.id).put("name", it.name).put("label", it.label).put("date", it.date).put("photo", it.photo).put("ahead", it.remindAhead) })
+        o.put("album", arr(album) { JSONObject().put("id", it.id).put("path", it.path).put("note", it.note).put("at", it.at) })
+        o.put("keyDates", arr(keyDates) { JSONObject().put("id", it.id).put("title", it.title).put("date", it.date).put("note", it.note).put("ahead", it.remindAhead) })
+        o.put("archive", arr(archive) {
+            JSONObject()
+                .put("id", it.id).put("title", it.title).put("count", it.files.size).put("note", it.note)
+                .put("files", JSONArray(it.files))
+        })
+        o.put("chat", arr(chat) { JSONObject().put("id", it.id).put("user", it.fromUser).put("text", it.text).put("photoPath", it.photoPath) })
+        o.put("expenses", arr(expenses) { JSONObject().put("id", it.id).put("amount", it.amount).put("category", it.category).put("note", it.note).put("date", it.date).put("at", it.at).put("income", it.income) })
+        o.put("charges", arr(charges) { JSONObject().put("id", it.id).put("name", it.subName).put("amount", it.amount).put("date", it.date).put("at", it.at).put("source", it.source) })
+        o.put("closedSubs", arr(closedHistory) { JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount).put("closedAt", it.closedAt) })
+        o.put("memos", arr(memos) {
+            JSONObject()
+                .put("id", it.id).put("title", it.title).put("content", it.content)
+                .put("category", it.category).put("pinned", it.pinned)
+                .put("createdAt", it.createdAt).put("updatedAt", it.updatedAt).put("remindAt", it.remindAt)
+        })
+        o.put("memoCats", JSONArray(memoCategories.value))
+        o.put("expenseCats", JSONArray(expenseCategories.value))
+        o.put("watchPkgs", JSONArray(watchedExtraPackages.value))
+        // 待认领的扣费线索：也是用户数据（虽然还没被认领），必须一起存 / 一起备份
+        o.put("claims", arr(pendingClaims) {
+            JSONObject().put("id", it.id).put("name", it.name).put("amount", it.amount)
+                .put("at", it.at).put("nextDate", it.nextDate).put("pkg", it.pkg).put("snippet", it.snippet)
+        })
+        return o
+    }
+
+    /**
+     * 逐条容错地解析一个对象数组:坏一条丢一条,不连坐。
+     * 为什么逐条而不是整表套一层 try:原来一条记录缺个必填字段,整个集合(乃至整份状态)
+     * 都读不出来 —— 用户的全部数据因为一条残缺记录变成空白。丢一条的代价远小于丢一表。
+     */
+    private inline fun eachRecord(a: JSONArray, f: (JSONObject) -> Unit) {
+        for (i in 0 until a.length()) {
+            try {
+                f(a.getJSONObject(i))
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    /** 同 [eachRecord],用于字符串数组(分类名单等):坏一项丢一项 */
+    private inline fun eachString(a: JSONArray, f: (String) -> Unit) {
+        for (i in 0 until a.length()) {
+            try {
+                f(a.getString(i))
+            } catch (e: Exception) {
+            }
         }
     }
 
@@ -2254,6 +2477,10 @@ class ButlerStore private constructor(context: Context) {
             save()
             return
         }
+        // 解析前先把原文另存一份:原来解析失败会 clearLists + save,用「空白」把盘上的原始数据
+        // 直接覆盖掉 —— 连备份都导不出来(导出取的就是这份 state),用户想救都没得救。
+        // 现在最坏也只是这一次内存解析失败,原文留在 state_v1.corrupt 里,总有后悔的机会。
+        prefs.edit().putString("state_v1.corrupt", raw).apply()
         try {
             val o = JSONObject(raw)
             profileName.value = o.optString("name", "小满")
@@ -2274,49 +2501,48 @@ class ButlerStore private constructor(context: Context) {
             widgetDetail.value = o.optInt("wgt", -1)
             butlerFx = o.optDouble("bfx", -1.0).toFloat()
             butlerFy = o.optDouble("bfy", -1.0).toFloat()
-            o.optJSONArray("dismissed")?.let { a ->
-                for (i in 0 until a.length()) dismissed.add(a.getString(i))
-            }
+            o.optJSONArray("dismissed")?.let { a -> eachString(a) { dismissed.add(it) } }
 
             o.optJSONArray("tasks")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     tasks.add(ButlerTask(j.getString("id"), j.getString("text"), j.optString("meta"), j.optBoolean("done")))
                 }
             }
             o.optJSONArray("subs")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
-                    subs.add(ButlerSub(j.getString("id"), j.getString("name"), j.optDouble("amount", 0.0), j.optString("date"), j.optBoolean("closing"), j.optString("source", "手动"), j.optLong("closingAt", 0L), j.optString("trial", ""), j.optInt("ahead", 0)))
+                eachRecord(a) { j ->
+                    subs.add(
+                        ButlerSub(
+                            j.getString("id"), j.getString("name"), j.optDouble("amount", 0.0),
+                            j.optString("date"), j.optBoolean("closing"), j.optString("source", "手动"),
+                            j.optLong("closingAt", 0L), j.optString("trial", ""), j.optInt("ahead", 0),
+                            // 旧数据没有 cycle 字段 → 一律按月,口径与从前一致
+                            normCycle(j.optString("cycle", "month")),
+                        ),
+                    )
                 }
             }
             o.optJSONArray("obligations")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     obligations.add(ButlerObligation(j.getString("id"), j.getString("title"), j.optString("note"), j.getString("date"), j.optString("tag", "证件"), j.optBoolean("done"), j.optInt("ahead", 0)))
                 }
             }
             o.optJSONArray("members")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     members.add(ButlerMember(j.getString("id"), j.getString("name"), j.optString("label"), j.optString("date"), j.optString("photo"), j.optInt("ahead", 0)))
                 }
             }
             o.optJSONArray("album")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     album.add(ButlerPhoto(j.getString("id"), j.optString("path"), j.optString("note"), j.optLong("at", 0L)))
                 }
             }
             o.optJSONArray("keyDates")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     keyDates.add(ButlerKeyDate(j.getString("id"), j.getString("title"), j.optString("date"), j.optString("note"), j.optInt("ahead", 0)))
                 }
             }
             o.optJSONArray("archive")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     val fs = mutableListOf<String>()
                     j.optJSONArray("files")?.let { fa ->
                         for (k in 0 until fa.length()) fs.add(fa.getString(k))
@@ -2325,33 +2551,29 @@ class ButlerStore private constructor(context: Context) {
                 }
             }
             o.optJSONArray("chat")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     chat.add(ButlerChat(j.getString("id"), j.optBoolean("user"), j.getString("text"), j.optString("photoPath", "")))
                 }
             }
             o.optJSONArray("expenses")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     expenses.add(ButlerExpense(j.getString("id"), j.optDouble("amount", 0.0), j.optString("category", "其他"), j.optString("note"), j.optString("date"), j.optLong("at", 0L), j.optBoolean("income", false)))
                 }
             }
             o.optJSONArray("charges")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     charges.add(ButlerCharge(j.getString("id"), j.optString("name"), j.optDouble("amount", 0.0), j.optString("date"), j.optLong("at", 0L), j.optString("source", "手动")))
                 }
             }
             o.optJSONArray("closedSubs")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     closedHistory.add(ButlerClosedSub(j.getString("id"), j.optString("name"), j.optDouble("amount", 0.0), j.optLong("closedAt", 0L)))
                 }
             }
 
             o.optJSONArray("memoCats")?.let { a ->
                 val l = mutableListOf<String>()
-                for (i in 0 until a.length()) l.add(a.getString(i))
+                eachString(a) { l.add(it) }
                 if (l.isNotEmpty()) {
                     memoCategories.value = if (l.contains(MEMO_UNCATEGORIZED)) l else l + MEMO_UNCATEGORIZED
                 }
@@ -2359,17 +2581,16 @@ class ButlerStore private constructor(context: Context) {
             // 记账分类没有「未分类」这一层,「其他」就是兜底;读不到或空表就吃默认那套
             o.optJSONArray("expenseCats")?.let { a ->
                 val l = mutableListOf<String>()
-                for (i in 0 until a.length()) l.add(a.getString(i))
+                eachString(a) { l.add(it) }
                 if (l.isNotEmpty()) expenseCategories.value = l
             }
             o.optJSONArray("watchPkgs")?.let { a ->
                 val l = mutableListOf<String>()
-                for (i in 0 until a.length()) l.add(a.getString(i))
+                eachString(a) { l.add(it) }
                 watchedExtraPackages.value = l
             }
             o.optJSONArray("claims")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     pendingClaims.add(
                         ButlerClaim(
                             j.getString("id"), j.getString("name"), j.optDouble("amount", 0.0),
@@ -2379,8 +2600,7 @@ class ButlerStore private constructor(context: Context) {
                 }
             }
             o.optJSONArray("memos")?.let { a ->
-                for (i in 0 until a.length()) {
-                    val j = a.getJSONObject(i)
+                eachRecord(a) { j ->
                     memos.add(
                         ButlerMemo(
                             j.getString("id"),
@@ -2421,10 +2641,12 @@ class ButlerStore private constructor(context: Context) {
             }
             if (migrated) save()
         } catch (e: Exception) {
+            // 整份 JSON 读不出来(烂到连标量都拿不到):内存按空白处理,但**绝不 save()** ——
+            // 一落盘,盘上那份原始数据(已在 state_v1.corrupt 留了底)就被空白覆盖,
+            // 用户仅剩的找回通道就断了。这条欢迎语也不落盘,只在本次会话里提示一次。
             clearLists()
             lastScanAt = 0L
             chat.add(ButlerChat(id(), false, "本地数据读取失败，已从空白开始。之前的内容可以在「我的 → 备份与恢复」里用备份找回。", ""))
-            save()
         }
     }
 
@@ -2466,5 +2688,33 @@ class ButlerStore private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: ButlerStore(context.applicationContext).also { instance = it }
             }
+
+        /**
+         * 最近一次落盘是否失败(读内部单例的状态;单例还没建好按 false —— 还没写过盘,谈不上失败)。
+         * UI 层在保存动作之后读它,true 就提示「数据可能没存上」,别让用户在假象里继续记。
+         */
+        val persistFailed: Boolean
+            get() = instance?.persistFailed ?: false
+
+        /**
+         * 把「一个周期内的金额」折算成月度口径:week → ×52/12,month → 原样,quarter → ÷3,year → ÷12。
+         * 所有把订阅 [ButlerSub.amount] 当月费用相加的地方都必须先走它 ——
+         * 年付会员按原额计进「每月合计」会虚高 12 倍,周付则被低估。
+         * 不认识的周期一律按月(与旧数据缺 cycle 字段时的口径一致)。
+         */
+        fun monthlyEquivalent(amount: Double, cycle: String): Double = when (cycle) {
+            "week" -> amount * 52.0 / 12.0
+            "quarter" -> amount / 3.0
+            "year" -> amount / 12.0
+            else -> amount
+        }
+
+        /** 周期字段归一化:只认 week/month/quarter/year,其余(空串、旧数据、写错的)一律按月 */
+        fun normCycle(raw: String?): String = when (raw?.trim()?.lowercase()) {
+            "week" -> "week"
+            "quarter" -> "quarter"
+            "year" -> "year"
+            else -> "month"
+        }
     }
 }

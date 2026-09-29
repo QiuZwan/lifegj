@@ -152,6 +152,16 @@ private fun lbDateShort(date: String): String {
  */
 private const val LB_LEDGER_GROUPS_START = 8
 
+/**
+ * 记一笔的两条金额线：
+ * - [LB_EXPENSE_CONFIRM_FROM]：大额确认线。过了它，保存前轻声问一句 —— 是确认不是拦截，
+ *   大额错账最常见的成因就是手滑多敲一个 0，确认刚好给人再看一眼的机会；
+ * - [LB_EXPENSE_MAX]：单笔上限。个人账本里超过它的金额几乎只有「多打了 0」一种解释，
+ *   再确认也改不了输入，直接拒掉。
+ */
+private const val LB_EXPENSE_CONFIRM_FROM = 1_000.0
+private const val LB_EXPENSE_MAX = 1_000_000.0
+
 @Composable
 fun ExpenseScreen(
     onBack: () -> Unit,
@@ -663,6 +673,26 @@ fun ExpenseAddDialog(
     val cats = remember(categories, cat) {
         if (categories.contains(cat)) categories else categories + cat
     }
+    // 保存前的两道轻确认（问一句就放行，不是拦）：大额防手滑，未来日期防选错日子。
+    var confirmBig by remember { mutableStateOf(false) }
+    var confirmFuture by remember { mutableStateOf<LocalDate?>(null) }
+    var pendingAmount by remember { mutableStateOf(0.0) }
+
+    // 真正写库前看一眼日期：未来日期不拦 —— 预记「还没扣的房租」是合法用法，
+    // 但十有八九是选错了日子，所以确认一次再放行。
+    fun saveOrAskFuture(a: Double) {
+        val d = try {
+            LocalDate.parse(date)
+        } catch (e: Exception) {
+            null
+        }
+        if (d != null && d.isAfter(LocalDate.now())) {
+            pendingAmount = a
+            confirmFuture = d
+        } else {
+            onSave(a, if (income) "收入" else cat, note, income, date)
+        }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(24.dp), color = LbSurface) {
@@ -819,10 +849,17 @@ fun ExpenseAddDialog(
                         "保存",
                         {
                             val a = amountText.trim().toDoubleOrNull()
-                            if (a == null || a <= 0) {
-                                error = "金额填数字，比如 25"
-                            } else {
-                                onSave(a, if (income) "收入" else cat, note, income, date)
+                            when {
+                                a == null || a <= 0 -> error = "金额填数字，比如 25"
+                                // 上限直接拒：确认弹窗救不了「多打了 0」这种输入
+                                a > LB_EXPENSE_MAX ->
+                                    error = "单笔最多记到 ¥${fmtPlain(LB_EXPENSE_MAX)}，检查一下是不是多打了 0"
+                                // 大额不拦，问一句：确认之后才真正保存
+                                a >= LB_EXPENSE_CONFIRM_FROM -> {
+                                    pendingAmount = a
+                                    confirmBig = true
+                                }
+                                else -> saveOrAskFuture(a)
                             }
                         },
                         Modifier.weight(1f),
@@ -830,6 +867,34 @@ fun ExpenseAddDialog(
                 }
             }
         }
+    }
+    // 大额确认：给一次「再看一眼金额」的机会，不是拦截
+    if (confirmBig) {
+        LbConfirmDialog(
+            title = "金额 ¥${fmtPlain(pendingAmount)}，确认没错？",
+            text = "超过 ¥1000 的账保存前先确认一遍，防止手滑多敲一个 0。",
+            confirmText = "确认保存",
+            danger = false,
+            onDismiss = { confirmBig = false },
+            onConfirm = {
+                confirmBig = false
+                saveOrAskFuture(pendingAmount)
+            },
+        )
+    }
+    // 未来日期确认：可能是有意预记，所以只问一句
+    confirmFuture?.let { d ->
+        LbConfirmDialog(
+            title = "这笔记在了 ${d.monthValue} 月 ${d.dayOfMonth} 日（未来），确定吗？",
+            text = "如果只是选错了日子，回上一步改一下；确实要预记（比如还没扣的房租），确认即可。",
+            confirmText = "确认保存",
+            danger = false,
+            onDismiss = { confirmFuture = null },
+            onConfirm = {
+                confirmFuture = null
+                onSave(pendingAmount, if (income) "收入" else cat, note, income, date)
+            },
+        )
     }
     if (showDate) {
         LbDatePickerDialog(

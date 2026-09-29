@@ -29,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,12 +44,15 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.lifebutler.app.R
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.data.Notifier
@@ -128,6 +132,8 @@ fun TodayScreen(
     var weatherOn by remember { mutableStateOf(Weather.enabled(ctx)) }
     var weatherInfo by remember { mutableStateOf(Weather.cached(ctx)) }
     var weatherBusy by remember { mutableStateOf(false) }
+    // 自动刷新失败要留痕:不然没缓存又拉不到,chip 会永远停在「天气获取中…」
+    var weatherFailed by remember { mutableStateOf(false) }
     var showQuickExpense by remember { mutableStateOf(false) }
     val weatherScope = rememberCoroutineScope()
 
@@ -135,6 +141,8 @@ fun TodayScreen(
         if (weatherBusy) return
         if (!Weather.hasLocation(ctx)) {
             if (manual) Toast.makeText(ctx, "需要「大致位置」权限才能获取天气", Toast.LENGTH_SHORT).show()
+            // 自动刷新走到这(权限被收回)也算失败:不标记的话 chip 同样会永远停在「天气获取中…」
+            weatherFailed = true
             return
         }
         weatherBusy = true
@@ -142,10 +150,12 @@ fun TodayScreen(
             val info = withContext(Dispatchers.IO) { Weather.refresh(ctx) }
             weatherBusy = false
             if (info != null) {
+                weatherFailed = false
                 weatherInfo = info
                 if (manual) Toast.makeText(ctx, "已更新：${Weather.describe(info.code)} ${info.temp}°（今日 ${info.low}°~${info.high}°）", Toast.LENGTH_SHORT).show()
-            } else if (manual) {
-                Toast.makeText(ctx, "天气获取失败，检查网络后再试", Toast.LENGTH_SHORT).show()
+            } else {
+                weatherFailed = true
+                if (manual) Toast.makeText(ctx, "天气获取失败，检查网络后再试", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -173,6 +183,19 @@ fun TodayScreen(
         }
     }
 
+    // 「今天」的哨兵:页面整夜停在首页不会有任何重组,跨了午夜日期也翻不过去。
+    // ON_RESUME(最常见的「睡一觉再打开」)把哨兵 +1 强制重组,让日期、
+    // 「今天要留意」、今日花销全部翻到新的一天。
+    var dayTick by remember { mutableStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) dayTick++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val today = LocalDate.now()
     val weekdays = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
     val dateLine = "%d 月 %d 日 · %s".format(today.monthValue, today.dayOfMonth, weekdays[today.dayOfWeek.value - 1])
@@ -182,7 +205,9 @@ fun TodayScreen(
     // 「今天要留意」全部来自 Notifier.watchList —— 与桌面小组件、每日简报**同一份数据源**。
     // 原来首页只算「最近一笔订阅 + 最近一件义务」两条，于是桌面写「今天有 5 件要留意」、
     // 点开首页只有 2 条，剩下那 3 条里可能正好有他真正想看的（妈妈的复诊、纪念日、试用到期）。
-    val watches = Notifier.watchList(ctx)
+    // 按「哪一天」缓存:同一天里的普通重组不再每次重扫 watchList;
+    // 跨了午夜(哨兵变化或重组时日期已翻)key 变了,自然会重算出新一天的数据
+    val watches = remember(today.toEpochDay(), dayTick) { Notifier.watchList(ctx) }
     val watchCount = watches.size
     val pendingObligations = store.obligations.count { !it.done }
 
@@ -194,11 +219,18 @@ fun TodayScreen(
         chipIcon = when (Weather.iconKey(wInfo.code)) {
             "sun" -> LbIcons.sun
             "cloud" -> LbIcons.cloud
+            "unknown" -> LbIcons.cloud // 认不出的天气码给中性云,不装作会下雨
             else -> LbIcons.cloudRain
         }
     } else if (weatherOn) {
-        chipText = "天气获取中…"
-        chipIcon = LbIcons.cloud
+        // 失败过就明说「天气未更新」,别永远停在「天气获取中…」;chip 本身可点,点了就是重试
+        if (weatherFailed) {
+            chipText = "天气未更新"
+            chipIcon = LbIcons.cloud
+        } else {
+            chipText = "天气获取中…"
+            chipIcon = LbIcons.cloud
+        }
     } else {
         chipText = "已记录 ${store.dayCount()} 天"
         chipIcon = LbIcons.mapPin
@@ -213,7 +245,8 @@ fun TodayScreen(
     val monthExpense = store.spendOf(store.expensesInMonth(today.year, today.monthValue))
     // 预算：null = 用户没设过。没设就什么都不提（口径同 budgetStatus）
     val budgetOver = store.budgetStatus()
-    val monthSub = store.subs.filter { !it.closing }.sumOf { it.amount }
+    // 订阅合计要走月度折算:年付原样相加会虚高 12 倍、周付被低估;旧数据缺 cycle 按 "month",口径不变
+    val monthSub = store.subs.filter { !it.closing }.sumOf { ButlerStore.monthlyEquivalent(it.amount, it.cycle) }
 
     Column(
         Modifier
@@ -234,6 +267,18 @@ fun TodayScreen(
                     style = MaterialTheme.typography.headlineLarge,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+                // 刷新失败的原因用一句小字交代:只陈述不催促,点右上角天气 chip 即重试
+                if (weatherOn && weatherFailed) {
+                    val reason = Weather.lastError(ctx)
+                    if (reason.isNotEmpty()) {
+                        Text(
+                            "天气未更新：$reason",
+                            fontSize = 10.5.sp,
+                            color = LbInk3,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
             }
             // 搜一搜：跨模块检索的入口放在最常打开的那一页的右上角，
             // 因为「找东西」这件事总是从「我现在在首页」开始

@@ -1,8 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 只暴露 App 自己的私有 files / cache 目录,其他位置一律不可见。
-     cache 那一条是给「上传日志」用的:诊断日志写在 cacheDir/diag 下,
-     由系统分享面板临时只读授权出去;它随时可被系统回收,也不属于「用户数据」。 -->
+<!--
+  只暴露 App 自己的私有目录里「确实要分享出去」的那几个位置,其他一律不可见。
+
+  收口依据:全工程只有四处 FileProvider.getUriForFile 调用点,逐一核对 ——
+    ① data/diagnostics.kt      shareIntent():诊断日志       → cache/diag/*.txt
+    ② data/diagnostics.kt      uriOf():反馈附件(图 + 日志)  → cache/feedback/*.jpg、cache/diag/*.txt
+    ③ data/updatedownload.kt   installIntent():更新安装包    → cache/update/*.apk
+    ④ ui/screens/screenslife.kt openLocalFile():档案文件查看 → filesDir 根目录(ButlerStore.fileOf)
+  cache 那三条据此收窄到各自子目录;FileProvider 只在分享那一刻解析路径,
+  收窄不会影响任何已存在的文件,只是把授权范围变小。
+
+  files 这条**故意保持根目录,收不了**:档案库「用其他应用打开」直接分享 filesDir
+  根下的文件(档案 / 头像 / 家人照片历史上都平铺在那儿)。为收窄路径去搬用户已有文件,
+  弄坏档案查看的风险远大于多暴露一个 App 私有目录 —— 宁可保守,维持原状。
+-->
 <paths>
     <files-path name="lb_files" path="." />
-    <cache-path name="lb_cache" path="." />
+    <!-- 诊断日志(cacheDir/diag):系统分享面板临时只读授权;随时可被系统回收,不属于「用户数据」 -->
+    <cache-path name="lb_cache_diag" path="diag/" />
+    <!-- 意见反馈的图片附件(cacheDir/feedback):同样只走系统分享,进反馈页时会被清一轮 -->
+    <cache-path name="lb_cache_feedback" path="feedback/" />
+    <!-- 应用内更新下载的安装包(cacheDir/update):交给系统安装界面时只读授权 -->
+    <cache-path name="lb_cache_update" path="update/" />
 </paths>

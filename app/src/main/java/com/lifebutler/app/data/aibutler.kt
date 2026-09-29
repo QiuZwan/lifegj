@@ -255,6 +255,45 @@ object AiConfig {
         sp(ctx).edit().putBoolean(K_USE_BUILTIN, on).apply()
     }
 
+    /* ── 隐私脱敏开关 ──
+     * 各管一类「自由文本」要不要随快照发给模型:true = 脱敏(对应内容不发出去),
+     * false(默认)= 照发。和上面的接口配置一样只存本机同一份 prefs,不进任何第三方。
+     * 为什么默认关:脱敏是拿功能换隐私(模型看不到对应数据就答不了那类问题),
+     * 该由用户在设置里自己决定,不该替他默认牺牲功能。
+     */
+    private const val K_REDACT_MEMOS = "redact_memos"
+    private const val K_REDACT_SPENDS = "redact_spends"
+    private const val K_REDACT_FAMILY = "redact_family"
+    private const val K_REDACT_FILES = "redact_files"
+
+    /** 备忘正文摘录脱敏:开着就不把备忘正文摘录发出去(标题/分类/提醒这些结构化字段照发) */
+    fun redactMemos(ctx: Context): Boolean = sp(ctx).getBoolean(K_REDACT_MEMOS, false)
+
+    /** 消费备注脱敏:开着就不把近 30 天明细里的备注字段发出去(日期/分类/金额照发) */
+    fun redactSpends(ctx: Context): Boolean = sp(ctx).getBoolean(K_REDACT_SPENDS, false)
+
+    /** 家人信息脱敏:开着就不把「姓名·标签」这一整段发出去 */
+    fun redactFamily(ctx: Context): Boolean = sp(ctx).getBoolean(K_REDACT_FAMILY, false)
+
+    /** 档案脱敏:开着就不把「档案组名 + 文件名」这一整段发出去 */
+    fun redactFiles(ctx: Context): Boolean = sp(ctx).getBoolean(K_REDACT_FILES, false)
+
+    fun setRedactMemos(ctx: Context, on: Boolean) {
+        sp(ctx).edit().putBoolean(K_REDACT_MEMOS, on).apply()
+    }
+
+    fun setRedactSpends(ctx: Context, on: Boolean) {
+        sp(ctx).edit().putBoolean(K_REDACT_SPENDS, on).apply()
+    }
+
+    fun setRedactFamily(ctx: Context, on: Boolean) {
+        sp(ctx).edit().putBoolean(K_REDACT_FAMILY, on).apply()
+    }
+
+    fun setRedactFiles(ctx: Context, on: Boolean) {
+        sp(ctx).edit().putBoolean(K_REDACT_FILES, on).apply()
+    }
+
     /* ── 实际生效的那一套 ── */
 
     fun source(ctx: Context): Source = when {
@@ -360,13 +399,17 @@ object AiButler {
         val key = AiConfig.effKey(ctx)
         val model = AiConfig.effModel(ctx)
         if (base.isBlank() || key.isBlank() || model.isBlank()) {
-            return Reply(offlineText(store, userText), failed = true)
+            return Reply(offlineText(ctx, store, userText), failed = true)
         }
         return try {
-            val sys = systemPrompt(store)
+            // 脱敏开关只要有一个开着,历史就整段不发:历史里可能还躺着脱敏前那几轮的原文
+            // (比如 AI 曾把家人名单念进 reply,那句就一直存在历史里),开关一开必须立刻停发,
+            // 宁可让模型丢掉上下文,也不能一边「脱敏」一边把旧原文原样重发一遍。
+            val hist = if (anyRedactOn(ctx)) emptyList() else history
+            val sys = systemPrompt(ctx, store)
             logDebug(ctx, "来源", "${AiConfig.source(ctx).name} / $model / $base")
             logDebug(ctx, "提示词", sys)
-            val body = buildBody(model, sys, history, userText)
+            val body = buildBody(model, sys, hist, userText)
             val raw = postJson("$base/chat/completions", key, body)
             logDebug(ctx, "原文", raw)
             val content = JSONObject(raw)
@@ -388,7 +431,7 @@ object AiButler {
             // 是刻意等用户点头；再追一次反而可能补出一条会把同一件事重复做的动作。
             if (done.isEmpty() && looksLikeClaim(rawReply) && store.pendingFix.value.isBlank()) {
                 logDebug(ctx, "追补", "说了做却没给动作，追问一次：$rawReply")
-                val fixed = repairActions(ctx, base, key, model, sys, history, userText, content)
+                val fixed = repairActions(ctx, base, key, model, sys, hist, userText, content)
                 if (fixed != null) {
                     val (d2, n2) = runActions(ctx, store, fixed)
                     if (d2.isNotEmpty()) {
@@ -409,7 +452,9 @@ object AiButler {
             }
             Reply(reply, done, nav)
         } catch (e: Exception) {
-            Reply(offlineText(store, userText, e.message), failed = true)
+            // e.message 兜一个「连接失败」:它为 null 时不能落进 reason==null 那个分支,
+            // 那个分支的文案是「你把内置额度关掉了」,拿去解释一场网络异常就是答非所问。
+            Reply(offlineText(ctx, store, userText, e.message ?: "连接失败"), failed = true)
         }
     }
 
@@ -548,12 +593,28 @@ object AiButler {
 
     /* ── 离线兜底:没配置 / 连不上时,规则引擎照样能记事记账 ── */
 
-    private fun offlineText(store: ButlerStore, userText: String, reason: String? = null): String {
+    /** 四个脱敏开关有没有任何一个开着(开着就连历史一起停发,见 ask 里的说明) */
+    private fun anyRedactOn(ctx: Context): Boolean =
+        AiConfig.redactMemos(ctx) || AiConfig.redactSpends(ctx) ||
+            AiConfig.redactFamily(ctx) || AiConfig.redactFiles(ctx)
+
+    private fun offlineText(ctx: Context, store: ButlerStore, userText: String, reason: String? = null): String {
         val local = store.reply(userText)
-        val head = if (reason == null) {
-            "现在是离线规则模式（是你在「我的 → AI 智能管家」里把内置额度也关掉了）。打开内置免费额度，或者填一个自己的接口，就能用自然语言加东西。"
-        } else {
-            "这次没连上模型（${reason.take(60)}）。"
+        // 429(限流) / 402(欠费)是「额度」信号,和「没连上网络」不是一回事:
+        // 前者等一等、或者换自己的 Key 就能好;后者怎么重试都没用。文案必须分开,
+        // 不然用户会把额度问题当成断网,白折腾一通手机设置。
+        // 还得看当前用的是谁家的额度:内置共享额度说「共享」,自己的 Key 就说「你的接口」,不能张冠李戴。
+        val head = when {
+            reason == null ->
+                "现在是离线规则模式（是你在「我的 → AI 智能管家」里把内置额度也关掉了）。打开内置免费额度，或者填一个自己的接口，就能用自然语言加东西。"
+            reason.startsWith("HTTP 429") || reason.startsWith("HTTP 402") -> when (AiConfig.source(ctx)) {
+                AiConfig.Source.OWN ->
+                    "你的接口这会儿额度受限（${reason.take(40)}）：可能是限流或余额用尽，明天再试，或到「我的 → AI 智能管家」换一个接口。"
+                else ->
+                    "内置共享额度已用尽/这会儿很紧张（${reason.take(40)}）。明天再试，或到「我的 → AI 智能管家」换成自己的接口，马上就能继续。"
+            }
+            else ->
+                "这次没连上网络或模型没响应（${reason.take(60)}）。"
         }
         return if (local.contains("这句我还没听懂")) {
             "$head\n\n这句离线规则也没认出来，换个说法，比如「记一下：明天交房租」或「记账：午饭 25」。"
@@ -606,8 +667,15 @@ object AiButler {
             if (name.isEmpty() || amt <= 0.0 || amt.isNaN()) null
             else {
                 val d = a.optString("date").trim().ifBlank { LocalDate.now().toString() }
-                store.addCharge(name, amt, d, "智能管家")
-                "扣费流水「$name」¥${store.fmtMoney(amt)}"
+                // 记扣费 = 往本机写一条真实流水,和改 / 删一样是在动用户的账:
+                // 模型认错订阅、听错金额时,直接落库就是凭空多一笔支出,而用户未必会去翻流水核对。
+                // 所以不再直接写,复用改 / 删那套「先给确认卡,用户点了才落库」的机制(见 proposeFix)。
+                val desc = "记一笔扣费流水「$name」¥${store.fmtMoney(amt)}（$d）"
+                store.proposeFix(desc) {
+                    store.addCharge(name, amt, d, "智能管家")
+                    "扣费流水「$name」¥${store.fmtMoney(amt)} 已记入"
+                }
+                "$desc。等你确认，未改动"
             }
         }
 
@@ -682,19 +750,39 @@ object AiButler {
         }
 
         "complete_task" -> {
-            // 模型常把待办说短:待办是「明天下午三点去物业交费」,它会写「交物业费」。
-            // 原来的 contains 双向判断对不上这种,于是它嘴上说「已标记完成」而本机没动。
-            // 改成取最长公共片段,重叠 2 个字以上就算同一条,并在候选中挑重叠最多的那个。
+            // 防误勾:勾掉一条待办,那件事可能就真的没人做了,认错对象的代价比「没找到」高得多。
+            // 以前重叠 2 个字就敢勾——「交水费」和「交电费」也能凑出 2 个字的公共片段,这样就勾错了。
+            // 现在只有拿得稳才动手:待办名和模型给的全文一致(精确),或最长公共片段 ≥ 4 个字
+            // 且明显甩开第二名;差一点又不唯一的(重叠 2~3、或几条并列)一律回「哪个?」让用户挑,一条不动。
+            // 注意追问的措辞不能带「帮你/记下了」这类词(见 CLAIM_WORDS),否则会被当成漏了动作去追补。
             val text = a.optString("text").trim()
-            val pending = store.tasks.filter { !it.done }
-            val hit = if (text.isEmpty()) null
-            else pending.maxByOrNull { overlap(it.text, text) }?.takeIf { overlap(it.text, text) >= 2 }
-            when {
-                text.isEmpty() -> null
-                hit == null -> "没找到「$text」这条待办，未改动"
-                else -> {
-                    store.toggleTask(hit.id)
-                    "已完成待办「${hit.text}」"
+            if (text.isEmpty()) null
+            else {
+                val pending = store.tasks.filter { !it.done }
+                val scored = pending.map { it to overlap(it.text, text) }.sortedByDescending { it.second }
+                when {
+                    scored.isEmpty() -> "没找到「$text」这条待办，未改动"
+                    else -> {
+                        val (top, topScore) = scored[0]
+                        val secondScore = scored.getOrNull(1)?.second ?: 0
+                        val unique = secondScore < topScore
+                        when {
+                            unique && (top.text == text || topScore >= 4) -> {
+                                store.toggleTask(top.id)
+                                "已完成待办「${top.text}」"
+                            }
+                            topScore >= 2 -> {
+                                val cands = scored.take(3).filter { it.second >= 2 }
+                                    .joinToString("；") { "「${it.first.text}」" }
+                                if (unique) {
+                                    "你说的「$text」最像「${top.text}」，但没对准。是这条吗？说清楚一点我再勾，未改动"
+                                } else {
+                                    "这几条都像你说的「$text」：$cands。是哪一条？说清楚一点我再勾，未改动"
+                                }
+                            }
+                            else -> "没找到「$text」这条待办，未改动"
+                        }
+                    }
                 }
             }
         }
@@ -974,13 +1062,13 @@ object AiButler {
 
     /* ── 提示词 ── */
 
-    private fun systemPrompt(store: ButlerStore): String = """
+    private fun systemPrompt(ctx: Context, store: ButlerStore): String = """
 你是「生活管家」手机应用里的智能管家。你能读写用户存在本机的数据。
 
 【今天】${LocalDate.now()}
 
 【本机数据快照】
-${snapshot(store)}
+${snapshot(ctx, store)}
 
 【怎么做事】
 1. 用户说一件事，你就把它真正记进对应的地方（待办 / 记账 / 订阅 / 到期事项 / 家人 / 关键日期 / 档案组 / 备忘录）。
@@ -995,6 +1083,8 @@ ${snapshot(store)}
 - 改 / 删已有记录可以，但**必须走确认**：给出 update_record / delete_record 动作，本机会把它变成一句
   「要把 X 从 A 改成 B，对吗？」让用户点确认后才落库。所以 reply 里**不要**说「已经改好了」——
   应该说「要把……改成……，确认一下」，把判断交给用户。名字对不上时本机不会改，会如实回一句「未改动」。
+- 记扣费流水（add_charge）**必须走确认**：你给出动作后，本机会把它变成一张「要我这么做吗？」的确认卡，
+  用户点了才真的写进流水。所以 reply 里**不要**说「已经记好了」——要说「要把这笔扣费记上，确认一下」。
 - 你不能替用户打电话、发短信、联系客服，也不能真的取消第三方订阅。
 - 你不能改系统设置（通知权限、位置权限、通知使用权）。
 - 你查不到外面的信息（天气、汇率、新闻、别人的电话）。只能依据本机快照回答。
@@ -1027,10 +1117,19 @@ duties(到期时间线) / scan(一键扫描) / states(系统状态) / today(今�
   不能因为「0 个文件」就答成「没有任何档案」。
 """.trim()
 
-    /** 本机数据快照:只放模型回答问题时真正需要的东西,并做长度上限 */
-    private fun snapshot(store: ButlerStore): String {
+    /**
+     * 本机数据快照:只放模型回答问题时真正需要的东西,并做长度上限。
+     * 四个脱敏开关在这里逐段落实:开关打开的那一段**真的不拼进快照**,
+     * 而不是写一句「用户不想让你看」占位 —— 占位符照样在告诉模型这里藏着数据,等于此地无银;
+     * 只有整个字段/整段不出去,才谈得上不发。
+     */
+    private fun snapshot(ctx: Context, store: ButlerStore): String {
         val sb = StringBuilder()
         val today = LocalDate.now()
+        val redactMemos = AiConfig.redactMemos(ctx)
+        val redactSpends = AiConfig.redactSpends(ctx)
+        val redactFamily = AiConfig.redactFamily(ctx)
+        val redactFiles = AiConfig.redactFiles(ctx)
 
         val pending = store.tasks.filter { !it.done }
         sb.append("待办（未完成 ").append(pending.size).append(" 条）")
@@ -1058,11 +1157,14 @@ duties(到期时间线) / scan(一键扫描) / states(系统状态) / today(今�
             open.take(15).joinToString("；") { "${it.title}(${it.date.ifBlank { "无日期" }}·${it.tag})" },
         ).append('\n')
 
-        sb.append("家人")
-        if (store.members.isEmpty()) sb.append("：无\n")
-        else sb.append("：").append(
-            store.members.take(15).joinToString("；") { "${it.name}·${it.label}·${it.date.ifBlank { "无日期" }}" },
-        ).append('\n')
+        // 家人段的内容就是「姓名·标签·日期」,姓名一去段就空了,脱敏开着就整段不发
+        if (!redactFamily) {
+            sb.append("家人")
+            if (store.members.isEmpty()) sb.append("：无\n")
+            else sb.append("：").append(
+                store.members.take(15).joinToString("；") { "${it.name}·${it.label}·${it.date.ifBlank { "无日期" }}" },
+            ).append('\n')
+        }
 
         sb.append("关键日期")
         if (store.keyDates.isEmpty()) sb.append("：无\n")
@@ -1070,17 +1172,21 @@ duties(到期时间线) / scan(一键扫描) / states(系统状态) / today(今�
             store.keyDates.take(15).joinToString("；") { "${it.title}·${it.date}" },
         ).append('\n')
 
-        sb.append("档案组（共 ").append(store.archive.size).append(" 组）")
-        if (store.archive.isEmpty()) sb.append("：无\n")
-        else sb.append("：").append(
-            store.archive.take(15).joinToString("；") { a ->
-                val names = a.files.take(5).joinToString("、") { it.substringAfterLast('/') }
-                val more = if (a.files.size > 5) " 等 ${a.files.size} 个" else ""
-                // 别只写「0 个文件」:模型会顺势答成「一个档案都没有」,把组本身给漏掉
-                val inner = if (a.files.isEmpty()) "里面还没放文件" else "${a.files.size} 个文件：$names$more"
-                "${a.title}（$inner）" + (if (a.note.isBlank()) "" else "(备注：${a.note.take(24)})")
-            },
-        ).append('\n')
+        // 档案段的内容就是组名和文件名,脱敏开着就整段不发:
+        // 模型之后被问到档案会照实说快照里没有,这正是用户关掉这条数据源要的结果
+        if (!redactFiles) {
+            sb.append("档案组（共 ").append(store.archive.size).append(" 组）")
+            if (store.archive.isEmpty()) sb.append("：无\n")
+            else sb.append("：").append(
+                store.archive.take(15).joinToString("；") { a ->
+                    val names = a.files.take(5).joinToString("、") { it.substringAfterLast('/') }
+                    val more = if (a.files.size > 5) " 等 ${a.files.size} 个" else ""
+                    // 别只写「0 个文件」:模型会顺势答成「一个档案都没有」,把组本身给漏掉
+                    val inner = if (a.files.isEmpty()) "里面还没放文件" else "${a.files.size} 个文件：$names$more"
+                    "${a.title}（$inner）" + (if (a.note.isBlank()) "" else "(备注：${a.note.take(24)})")
+                },
+            ).append('\n')
+        }
 
         val memos = store.memos
         sb.append("备忘录（共 ").append(memos.size).append(" 条")
@@ -1094,7 +1200,9 @@ duties(到期时间线) / scan(一键扫描) / states(系统状态) / today(今�
         if (memos.isEmpty()) sb.append("：无\n")
         else sb.append("：").append(
             memos.sortedByDescending { it.updatedAt }.take(15).joinToString("；") { m ->
-                val body = m.content.replace('\n', ' ').trim().take(30)
+                // 正文摘录是备忘里唯一的自由文本,脱敏开着就整块不发;
+                // 标题/分类/提醒是结构化字段,照发,免得「我有几条备忘」这类问题也答不了
+                val body = if (redactMemos) "" else m.content.replace('\n', ' ').trim().take(30)
                 "${m.title}${if (body.isBlank()) "" else "($body)"}·分类:${m.category.ifBlank { "未分类" }}" +
                     (if (m.remindAt > 0) "·提醒 ${stamp(m.remindAt)}" else "") +
                     (if (m.pinned) "·置顶" else "")
@@ -1130,9 +1238,12 @@ duties(到期时间线) / scan(一键扫描) / states(系统状态) / today(今�
         sb.append("近 30 天记账：").append(recent.size).append(" 笔，合计 ¥")
             .append(store.fmtMoney(recent.sumOf { it.amount }))
         if (recent.isNotEmpty()) {
+            // 备注是消费明细里唯一的自由文本(常常写着在哪买的、买了什么),
+            // 脱敏开着就整个字段不发,只留日期/分类/金额 —— 「这个月花了多少」照样答得出
             sb.append("（明细：").append(
                 recent.sortedByDescending { it.date }.take(25).joinToString("；") {
-                    "${it.date} ${it.category}¥${store.fmtMoney(it.amount)}${if (it.note.isBlank()) "" else "(${it.note})"}"
+                    "${it.date} ${it.category}¥${store.fmtMoney(it.amount)}" +
+                        (if (!redactSpends && it.note.isNotBlank()) "(${it.note})" else "")
                 },
             ).append("）")
         }

@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.lifebutler.app.data.ButlerCharge
 import com.lifebutler.app.data.ButlerStore
 import com.lifebutler.app.ui.components.ChipTone
 import com.lifebutler.app.ui.components.IconBadge
@@ -79,12 +80,19 @@ fun MonthReportScreen(onBack: () -> Unit) {
     val monthCharges = store.charges.filter { c ->
         val d = store.parseDate(c.date)
         d != null && d.year == month.year && d.monthValue == month.monthValue
-    }.sortedByDescending { it.at }
+    }.sortedWith(
+        // 与 chargesOf 同一口径:按扣费日倒序,at 只做同日先后的 tie-break。
+        // 原来按 at 排,而 at 是「入库时刻」——补录的旧流水会全压到最上面,时间线看着错乱
+        compareByDescending<ButlerCharge> { store.parseDate(it.date)?.toString().orEmpty() }
+            .thenByDescending { it.at },
+    )
 
     val closedThisMonth = store.closedInMonth(month.year, month.monthValue)
 
     val activeSubs = store.subs.filter { !it.closing }
-    val monthSubTotal = activeSubs.sumOf { it.amount }
+    // 合计必须先折算成月度口径:年付原样相加会虚高 12 倍,周付被低估;
+    // 旧数据缺 cycle 读进来就是 "month",行为与从前一致
+    val monthSubTotal = activeSubs.sumOf { ButlerStore.monthlyEquivalent(it.amount, it.cycle) }
 
     val delta = when {
         prevTotal <= 0 && monthTotal <= 0 -> ""
@@ -264,7 +272,7 @@ fun MonthReportScreen(onBack: () -> Unit) {
         LbCard(contentPadding = 10.dp) {
             if (monthCharges.isEmpty()) {
                 Text(
-                    "本月还没有扣费记录。开启「通知读取」后，扣费通知会在这里自动留档。",
+                    "本月还没有扣费记录。短信扫描、扣费通知和手动补记的扣费都会在这里自动留档。",
                     fontSize = 12.sp,
                     color = LbInk3,
                     lineHeight = 18.sp,
@@ -333,6 +341,13 @@ fun MonthReportScreen(onBack: () -> Unit) {
             }
         }
 
+        // 「本月少支出」同样按月度口径折算:关闭记录里只有金额,周期回订阅档案里找
+        // (关掉的订阅仍留在 subs 里,closing=true,按名字对上);档案里找不到的历史遗留按 "month",与旧口径一致
+        val monthSaved = closedThisMonth.sumOf { c ->
+            val cyc = store.subs.firstOrNull { it.name == c.name && it.closing }?.cycle ?: "month"
+            ButlerStore.monthlyEquivalent(c.amount, cyc)
+        }
+
         Row(
             Modifier
                 .fillMaxWidth()
@@ -368,7 +383,7 @@ fun MonthReportScreen(onBack: () -> Unit) {
                 Column(Modifier.padding(13.dp)) {
                     Text("本月少支出", fontSize = 11.5.sp, color = LbInk3)
                     Text(
-                        "¥${store.fmtMoney(closedThisMonth.sumOf { it.amount })}",
+                        "¥${store.fmtMoney(monthSaved)}",
                         fontSize = 20.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = LbInk,

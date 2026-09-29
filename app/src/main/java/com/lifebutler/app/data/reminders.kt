@@ -8,26 +8,49 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import com.lifebutler.app.MainActivity
 import com.lifebutler.app.R
 import java.time.LocalDate
 import java.util.Calendar
 
+/**
+ * 排一个「能精确就精确」的闹钟，简报与备忘两条链路共用。
+ *
+ * 为什么不无脑 `setExactAndAllowWhileIdle`：targetSdk 33 起排精确闹钟需要用户在系统设置里
+ * 显式授「闹钟和提醒」（`SCHEDULE_EXACT_ALARM` 默认是拒的），没授权时硬排会直接抛
+ * SecurityException。所以先问 [AlarmManager.canScheduleExactAlarms]：授权了就精确到点
+ * （备忘提醒「差不多到点」和「到点」在用户眼里是两回事，晚几分钟就是不靠谱）；
+ * 没授权就回退非精确 —— 系统会在合适窗口送达，晚几分钟总好过一条都不响。
+ */
+private fun scheduleExactish(am: AlarmManager, triggerAt: Long, operation: PendingIntent) {
+    if (Build.VERSION.SDK_INT >= 31 && am.canScheduleExactAlarms()) {
+        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, operation)
+    } else {
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, operation)
+    }
+}
+
 /** 每日简报与提醒:本地闹钟 + 系统通知;内容全部由本机数据生成。 */
 object ReminderScheduler {
     private const val ALARM_ACTION = "com.lifebutler.app.DAILY_REMINDER"
 
-    fun ensureScheduled(context: Context) {
+    /**
+     * [fromBoot] 只在「开机 / 覆盖安装」这条路上为 true：那时错过的备忘提醒才有资格补发。
+     * 平时打开 App 的重排（onCreate 也走这里）不补 —— 否则到点后 6 小时内每开一次 App
+     * 就被翻一次旧账，通知撤掉又冒出来。
+     */
+    fun ensureScheduled(context: Context, fromBoot: Boolean = false) {
         try {
             // 备忘提醒与「每日简报」互相独立:关掉简报不影响你自己设的备忘提醒
-            MemoReminders.rescheduleAll(context)
+            MemoReminders.rescheduleAll(context, notifyMissed = fromBoot)
             val store = ButlerStore.get(context)
             if (!store.reminderEnabled.value) {
                 cancel(context)
                 return
             }
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextTrigger(store.reminderHour.value), pending(context))
+            scheduleExactish(am, nextTrigger(store.reminderHour.value), pending(context))
         } catch (e: Exception) {
         }
     }
@@ -64,7 +87,8 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: ""
         if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
-            ReminderScheduler.ensureScheduled(context)
+            // 只有这条路上补发错过的提醒:关机、覆盖安装期间到点的备忘,闹钟永远不会再响了
+            ReminderScheduler.ensureScheduled(context, fromBoot = true)
             return
         }
         try {
@@ -325,7 +349,9 @@ object Notifier {
                 .setPublicVersion(publicVersion(context, MEMO_CHANNEL_ID))
                 .setAutoCancel(true)
                 .build()
-            nm.notify(2000 + (id.hashCode() and 0xFFFF), n)
+            // 取完整 31 位正数哈希,不用低 16 位:截短之后不同的备忘容易撞在同一个 id 上,
+            // 后响的那条会把先响的**还没看**的通知直接顶掉 —— 提醒哑掉一次就是漏掉一件事
+            nm.notify(2000 + (id.hashCode() and 0x7fffffff), n)
         } catch (e: Exception) {
         }
     }
@@ -358,7 +384,9 @@ object Notifier {
 /**
  * 单条备忘的提醒:每条备忘各自一个闹钟(requestCode 由 id 派生),
  * 到点由 [MemoReceiver] 发通知;改期即覆盖同一个闹钟,删除/清除提醒即取消。
- * 只排「将来」的时间——过去的提醒不会重排,所以重启后不会补响一堆旧提醒。
+ * 只排「将来」的时间——过去的提醒不会重排,所以重启后不会补响一堆旧提醒;
+ * 例外是「开机 / 覆盖安装」时对过去 6 小时内到点的补一条迟到通知(见 [rescheduleAll]),
+ * 那种是设备不在场导致闹钟永远错过了,不该让它无声无息。
  */
 object MemoReminders {
     const val ACTION = "com.lifebutler.app.MEMO_REMINDER"
@@ -366,11 +394,15 @@ object MemoReminders {
     const val EXTRA_TITLE = "memo_title"
 
     private fun reqCode(id: String): Int = id.hashCode() and 0x7fffffff
+
+    /** 「刚错过」的补发窗口:到点时间落在过去 6 小时内的备忘才算 —— 太长会把昨天的旧提醒在开机时一股脑涌出来 */
+    private const val MISSED_WINDOW_MS = 6L * 60 * 60 * 1000
+
     fun schedule(context: Context, id: String, title: String, at: Long) {
         if (id.isEmpty() || at <= System.currentTimeMillis()) return
         try {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending(context, id, title))
+            scheduleExactish(am, at, pending(context, id, title))
         } catch (e: Exception) {
         }
     }
@@ -384,13 +416,28 @@ object MemoReminders {
         }
     }
 
-    /** 重新排定全部未到点的备忘提醒(开机 / 启动 / 恢复备份后调用) */
-    fun rescheduleAll(context: Context) {
+    /**
+     * 重新排定全部备忘提醒(开机 / 启动 / 恢复备份后调用)。
+     *
+     * [notifyMissed] 为 true(仅开机 / 覆盖安装那条路)时,对「已过期但在过去 6 小时内」的备忘
+     * 补一条迟到通知 —— 设备关机、应用被覆盖安装的期间到点的提醒,闹钟已经永远错过了,
+     * 不能让它无声无息地丢掉。只在这条路径补:通知 id 固定,重复补只会覆盖自己,
+     * 但平时每开一次 App 就翻一次旧账,通知撤了又冒出来,比不补还烦。
+     */
+    fun rescheduleAll(context: Context, notifyMissed: Boolean = false) {
         try {
             val store = ButlerStore.get(context)
             val now = System.currentTimeMillis()
             store.memos.forEach { m ->
-                if (m.remindAt > now) schedule(context, m.id, m.title, m.remindAt)
+                if (m.remindAt > now) {
+                    schedule(context, m.id, m.title, m.remindAt)
+                } else if (notifyMissed && m.remindAt > now - MISSED_WINDOW_MS) {
+                    Notifier.postMemoReminder(
+                        context, m.id,
+                        "错过的提醒 · " + m.title.ifBlank { "备忘" },
+                        m.content,
+                    )
+                }
             }
         } catch (e: Exception) {
         }

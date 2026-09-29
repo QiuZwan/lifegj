@@ -32,6 +32,28 @@ object SubScanner {
          * 界面据此显示「金额未知」而不是 ¥0.00；认领时也不会凭空写一笔扣费流水。
          */
         val signup: Boolean = false,
+        /**
+         * 原文命中了「签约 / 开通」词 —— **不管有没有金额**。
+         *
+         * 和 [signup]（"纯签约"：没读出金额）的差别：带金额的签约（「签约成功，已扣首月 25 元」）
+         * 确实发生了一笔钱，但语义仍是"刚签约"而不是"一直在扣费" —— 界面据此把它改走
+         * 「待确认」，而不是自动建订阅 + 写流水。
+         */
+        val signupHit: Boolean = false,
+    )
+
+    /**
+     * 一条来源的扫描结果：除了线索本身，还要带回「翻了多少、有没有读砸」。
+     *
+     * 为什么必须有它：原来读取失败被静默吞掉，界面只能把「没读到」当成「真没有」——
+     * 用户明明有订阅，却因为权限被系统收回而看到"没有发现线索"，只会判定功能坏了。
+     */
+    data class SourceResult(
+        val candidates: List<Candidate>,
+        /** 翻到的原始条数（短信=遍历的短信数；通知池=留档条数），给结果页亮"翻了什么"用 */
+        val readCount: Int,
+        /** 读取本身出了错（权限被收回、系统限制等）—— 和「读到了但没线索」是两回事 */
+        val failed: Boolean = false,
     )
 
     /** 常见订阅/支付类应用(包名 -> 展示名) */
@@ -121,6 +143,15 @@ object SubScanner {
 
     fun fmtIso(ms: Long): String = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Date(ms))
 
+    /**
+     * 扫描结果行用的日期：当年显示 MM-dd，跨了年的带上年份。
+     * 「12-30」在 1 月看会被读成"上个月"，其实已经是一年前的事了 —— 老线索尤其需要年份。
+     */
+    fun fmtScanDate(ms: Long): String {
+        val y = SimpleDateFormat("yyyy", Locale.CHINA)
+        return if (y.format(Date(ms)) == y.format(Date())) fmtDate(ms) else fmtIso(ms)
+    }
+
     /* ── 关键词 ── */
 
     private val STRONG = Regex("(自动续费|自动扣款|连续包月|代扣|免密支付|签约成功|扣款成功)")
@@ -188,9 +219,29 @@ object SubScanner {
      * 只从原文里「读」扣费日:必须是 M月D日 / YYYY-MM-DD 这种明确写法,
      * 且前后 12 个字内出现扣费相关关键词,才认为它是下次扣费日。
      * 读不到就返回空串 —— 宁可留空,也不猜。
+     *
+     * 原文写了年份就**带上年份**返回 "yyyy-MM-dd"：年份是「哪一年扣」的硬信息，
+     * 丢掉它 butlerstore 只能按「今年还是明年」猜，跨年短信（12 月收到、说明年 1 月扣）
+     * 就会被猜错。
      */
     fun parseDueDate(body: String): String {
+        // 先把带年份的匹配挑出来：它们内部的「10月1日」不是独立日期，
+        // 「2026年10月1日」不能被当成没年份的「10-1」—— 那正是丢年份的地方。
+        val ymdMatches = YMD.findAll(body).toList()
+        fun ymdResult(): String? {
+            for (m in ymdMatches) {
+                val s = (m.range.first - 12).coerceAtLeast(0)
+                val e = (m.range.last + 12).coerceAtMost(body.length)
+                if (!DUE_KEY.containsMatchIn(body.substring(s, e))) continue
+                val y = m.groupValues[1].toIntOrNull() ?: continue
+                val mo = m.groupValues[2].toIntOrNull() ?: continue
+                val d = m.groupValues[3].toIntOrNull() ?: continue
+                if (mo in 1..12 && d in 1..31) return "%04d-%02d-%02d".format(y, mo, d)
+            }
+            return null
+        }
         for (m in MD.findAll(body)) {
+            if (ymdMatches.any { it.range.contains(m.range.first) }) continue
             val s = (m.range.first - 12).coerceAtLeast(0)
             val e = (m.range.last + 12).coerceAtMost(body.length)
             if (DUE_KEY.containsMatchIn(body.substring(s, e))) {
@@ -199,17 +250,28 @@ object SubScanner {
                 if (mo in 1..12 && d in 1..31) return "$mo-$d"
             }
         }
-        for (m in YMD.findAll(body)) {
-            val s = (m.range.first - 12).coerceAtLeast(0)
-            val e = (m.range.last + 12).coerceAtMost(body.length)
-            if (DUE_KEY.containsMatchIn(body.substring(s, e))) {
-                val mo = m.groupValues[2].toIntOrNull() ?: continue
-                val d = m.groupValues[3].toIntOrNull() ?: continue
-                if (mo in 1..12 && d in 1..31) return "$mo-$d"
-            }
-        }
-        return ""
+        return ymdResult() ?: ""
     }
+
+    /* ── 金额 ── */
+
+    /**
+     * 「N 元」/「¥N」。**必须认千分位**：年费单常见「扣款 2,180.00 元」——
+     * 原来的正则不认逗号：元结尾的会跳过逗号只读出 180，¥ 开头的只读出 2，金额全错。
+     */
+    private val AMT_YUAN = Regex("(\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s*元")
+    private val AMT_SYMBOL = Regex("[¥￥]\\s*(\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)")
+
+    /** 金额解析：千分位先去逗号再转数；读不到返回 null。短信与通知**故意同一套**。 */
+    private fun amountOfText(body: String): Double? =
+        (AMT_YUAN.find(body) ?: AMT_SYMBOL.find(body))
+            ?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+
+    /**
+     * 金额出界（<=0 或 >3000）**不再整条丢弃**：大额也可能是真的（年费 / 学费类），
+     * 丢了用户只会以为功能坏了。降级成 null（金额待补），行照样保留。
+     */
+    private fun saneAmount(amt: Double?): Double? = amt?.takeIf { it > 0 && it <= 3000 }
 
     /* ── 短信分析 ── */
 
@@ -254,11 +316,12 @@ object SubScanner {
         val strong = STRONG.containsMatchIn(body)
         val weak = WEAK.containsMatchIn(body)
         if (!strong && !signup && !weak) return null
-        val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
-        // 金额是硬门槛，唯一的例外是「签约 / 开通」：签约当下不扣钱，原文里本来就没有金额。
-        // 给它编一个 0 才是撒谎 —— 所以留空，界面如实写「金额未知」。
-        if (!signup && amt == null) return null
-        if (amt != null && (amt <= 0 || amt > 3000)) return null
+        val amtRaw = amountOfText(body)
+        // 金额越界不再整条丢弃，只把金额降级成"待补"（见 [saneAmount]）。
+        val amt = saneAmount(amtRaw)
+        // 硬门槛只剩"压根没读到金额"：非签约类没金额说明这条没读懂，宁可不要（签约除外，
+        // 签约当下不扣钱，原文里本来就没有 —— 给它编一个 0 才是撒谎，留空，界面写「金额未知」）。
+        if (!signup && amtRaw == null) return null
         val name = extractMerchant(body) ?: return null
         if (name.length < 2 || name.length > 18) return null
         // 弱信号（扣费 / 续费成功）单独出现不采信：必须同时有明确的商户标记 —— 与通知侧一致。
@@ -271,6 +334,7 @@ object SubScanner {
             "短信",
             parseDueDate(body),
             signup && amt == null,
+            signup,
         )
     }
 
@@ -280,9 +344,14 @@ object SubScanner {
      * 范围给到**近 365 天、最多 2000 条**：这是全 App 唯一能「回头看」的来源
      * （通知只在监听服务连上之后才有，装 App 之前的历史一条都收不到）。
      * 原来只回看 180 天，用户「上个月开的自动续费怎么没扫到」会被误会成功能坏了。
+     *
+     * 返回 [SourceResult]：读取失败不再静默装作"没有" —— 权限被系统收回时，
+     * 「没读到」和「真没有线索」必须分开说，否则用户拿"没有发现线索"当真。
      */
-    fun scanSms(context: Context): List<Candidate> {
+    fun scanSms(context: Context): SourceResult {
         val out = HashMap<String, Candidate>()
+        var read = 0
+        var failed = false
         try {
             val cursor = context.contentResolver.query(
                 Telephony.Sms.Inbox.CONTENT_URI,
@@ -303,10 +372,12 @@ object SubScanner {
                     if (old == null || cand.dateMs > old.dateMs) out[cand.name] = cand
                 }
             }
+            read = n
         } catch (e: Exception) {
-            // 权限不足或读取失败:静默返回已有结果
+            // 权限不足或读取失败：把失败如实带回去，交给界面区分「没读到」与「真没有」
+            failed = true
         }
-        return out.values.sortedByDescending { it.dateMs }
+        return SourceResult(out.values.sortedByDescending { it.dateMs }, read, failed)
     }
 
     /* ── 通知线索池(由 NotifListenerService 写入,本机保存) ── */
@@ -349,17 +420,17 @@ object SubScanner {
         // 弱信号（支出 / 付款 / 续费 …）单独出现不采信：必须同时有明确的商户标记，
         // 否则"向某某付款 500 元"这类无关通知会被当成一笔订阅。
         if (!strong && !signup && !MERCHANT_MARK.containsMatchIn(body)) return null
-        val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
-            ?: Regex("[¥￥]\\s*(\\d+(?:\\.\\d{1,2})?)").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
-        // 金额是硬门槛，只有一种情况可以没有：**签约 / 开通**。
-        // 签约当下不扣钱，原文里本来就没有金额 —— 这时候编一个 0 才是撒谎。
+        val amtRaw = amountOfText(body)
+        // 金额越界不再整条丢弃，只把金额降级成"待补"（见 [saneAmount]）。
+        val amt = saneAmount(amtRaw)
+        // 金额是硬门槛，只有两种情况可以没有：**签约 / 开通**（签约当下不扣钱，原文里本来
+        // 就没有金额 —— 这时候编一个 0 才是撒谎），以及**读到了但越界被降级**（行保留，金额待补）。
         // 其余（扣款类）读不出金额说明这条通知我们没读懂，宁可不要（保持原来的行为）。
-        if (!signup && amt == null) return null
-        if (amt != null && (amt <= 0 || amt > 3000)) return null
+        if (!signup && amtRaw == null) return null
         val name = extractMerchant(body) ?: return null
         if (name.length < 2 || name.length > 18) return null
         // signup 只在**这一条确实没读出金额**时才算数：带金额的签约（首月已扣 25 元）是一笔真扣款
-        return Candidate(name, amt, ts, body.take(70), "通知", parseDueDate(body), signup && amt == null)
+        return Candidate(name, amt, ts, body.take(70), "通知", parseDueDate(body), signup && amt == null, signup)
     }
 
     /**
@@ -385,6 +456,7 @@ object SubScanner {
             o.put("pkg", pkg)
             o.put("nextDate", cand.nextDate)
             o.put("signup", cand.signup)
+            o.put("signupHit", cand.signupHit)
             arr.put(o)
             val cut = org.json.JSONArray()
             val from = if (arr.length() > 200) arr.length() - 200 else 0
@@ -417,11 +489,18 @@ object SubScanner {
         }
     }
 
-    fun notificationFindings(context: Context): List<Candidate> {
+    /**
+     * 读回通知线索池。返回 [SourceResult]：池子读不出来（存档损坏等）不再静默装作"没有"，
+     * 界面才好把「没读到」和「真没有线索」分开说。
+     */
+    fun notificationFindings(context: Context): SourceResult {
         val out = mutableListOf<Candidate>()
+        var read = 0
+        var failed = false
         try {
             val prefs = context.getSharedPreferences(NOTIF_PREFS, Context.MODE_PRIVATE)
             val arr = org.json.JSONArray(prefs.getString(NOTIF_KEY, "[]"))
+            read = arr.length()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val amt = o.optDouble("amount", -1.0)
@@ -434,12 +513,14 @@ object SubScanner {
                         "通知",
                         o.optString("nextDate", ""),
                         o.optBoolean("signup", false),
+                        o.optBoolean("signupHit", false),
                     ),
                 )
             }
         } catch (e: Exception) {
+            failed = true
         }
-        return out.sortedByDescending { it.dateMs }
+        return SourceResult(out.sortedByDescending { it.dateMs }, read, failed)
     }
 
     fun clearNotificationFindings(context: Context) {
@@ -475,6 +556,8 @@ object SubScanner {
                     nextDate = due,
                     amount = amt,
                     signup = newer.signup && amt == null,
+                    // 只要任何一路读到过「签约 / 开通」词就保留 —— 带金额的签约短信要靠它改走「待确认」
+                    signupHit = newer.signupHit || old.signupHit,
                 )
             }
         }
@@ -501,21 +584,19 @@ object SubScanner {
             val strong = STRONG_N.containsMatchIn(body)
             val signup = SIGNUP_N.containsMatchIn(body)
             val weak = WEAK_N.containsMatchIn(body)
-            val amt = Regex("(\\d+(?:\\.\\d{1,2})?)\\s*元").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
-                ?: Regex("[¥￥]\\s*(\\d+(?:\\.\\d{1,2})?)").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
+            val amt = amountOfText(body)
             val why = when {
                 EXCLUDE.containsMatchIn(body) -> "命中排除词（退款/转账/验证码/登录…）"
                 !strong && !signup && !weak -> "没有扣费 / 签约关键词"
                 !strong && !signup && !MERCHANT_MARK.containsMatchIn(body) ->
                     "只有弱信号（付款/支出/续费），又没有「商户·收款方·【】」标记"
                 !signup && amt == null -> "既不是签约、又读不出金额"
-                amt != null && (amt <= 0 || amt > 3000) -> "金额越界（<=0 或 >3000）"
                 extractMerchant(body) == null -> "认不出商户名（也不在已知品牌里）"
                 else -> "其他（商户名长度不合格）"
             }
             return "未命中：$why"
         }
-        return "命中 商户=${c.name} 金额=${c.amount?.let { "¥$it" } ?: "留空"} " +
+        return "命中 商户=${c.name} 金额=${c.amount?.let { "¥$it" } ?: "留空（待补）"} " +
             "签约=${c.signup} 下次扣费=${c.nextDate.ifEmpty { "原文没写" }}"
     }
 }

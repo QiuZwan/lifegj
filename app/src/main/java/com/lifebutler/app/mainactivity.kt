@@ -86,9 +86,12 @@ import com.lifebutler.app.ui.theme.LbInk3
 import com.lifebutler.app.ui.theme.LbLine
 import com.lifebutler.app.ui.theme.LbOnAccent
 import com.lifebutler.app.ui.theme.LbOnDark
+import com.lifebutler.app.ui.theme.LbRust
 import com.lifebutler.app.ui.theme.LbSurface
 import com.lifebutler.app.ui.theme.LifeButlerTheme
 import com.lifebutler.app.widget.LbWidgetProvider
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
@@ -313,6 +316,17 @@ fun LbApp(
     var pendingAsk by remember { mutableStateOf(askRequest.value) }
     var showGuide by remember { mutableStateOf(false) }
 
+    // 数据落盘失败的常驻横幅。ButlerStore.persistFailed 是普通 @Volatile(不是 Compose 状态),
+    // 它变化不会触发重组,所以用一秒一次的轮询把它搬进界面状态 —— 落盘失败是罕见事件,
+    // 这个开销可以忽略。save() 成功会把标记清回 false,横幅随之自动消失,不需要用户手动关。
+    var persistFailed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            persistFailed = ButlerStore.persistFailed
+            delay(1000)
+        }
+    }
+
     // 首启三步引导：只在「没走过引导」且「本机真的一条记录都没有」时才弹。
     // 后一个条件是为了别挡老用户 —— 升级上来的人已经会用了，突然被教程拦一下只会烦。
     LaunchedEffect(st.onboarded.value) {
@@ -436,7 +450,15 @@ fun LbApp(
                             onOpenPrivacy = { overlay = "about_privacy" },
                             onOpenFeedback = { overlay = "about_feedback" },
                         )
-                        "about_help" -> HelpScreen(onBack = { overlay = "about" })
+                        "about_help" -> HelpScreen(
+                            onBack = { overlay = "about" },
+                            // 重看引导:先把标志复位再弹;引导关掉时 onOpen/onDismiss 会 setOnboarded() 写回并落盘。
+                            // 万一中途进程被杀、true 没来得及落盘,老用户顶多下次启动不再自动弹 —— 不会更糟。
+                            onReplayGuide = {
+                                st.onboarded.value = false
+                                showGuide = true
+                            },
+                        )
                         "about_terms" -> TermsScreen(onBack = { overlay = "about" })
                         "about_privacy" -> PrivacyScreen(onBack = { overlay = "about" })
                         "about_feedback" -> FeedbackScreen(onBack = { overlay = "about" })
@@ -505,36 +527,110 @@ fun LbApp(
         )
 
         /*
+         * 落盘失败的常驻横幅:本机存储出了问题(比如磁盘满了)时,内存里改了、盘上没写,
+         * 进程一被杀这段改动就蒸发。把它顶在屏幕最上面,不点掉、不自动消失 ——
+         * 只有下次 save() 成功(persistFailed 被清回 false)它才退场,「还在提示」本身就是状态。
+         */
+        AnimatedVisibility(
+            visible = persistFailed,
+            enter = slideInVertically { h -> -h } + fadeIn(),
+            exit = slideOutVertically { h -> -h } + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(LbRust)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    LbIcons.alertTriangle,
+                    contentDescription = null,
+                    tint = LbOnDark,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(9.dp))
+                Text(
+                    "本机数据最近没能写入存储，记录可能没保存。请尽快到『我的 → 备份与恢复』导出一份备份，清理存储后重试。",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = LbOnDark,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        /*
          * 删除撤销条：任何模块删了东西都在这**一处**弹，5 秒后自己收回。
          *
          * 为什么不放在各页自己管：删除入口散在待办 / 守护 / 订阅 / 扣费 / 证件 / 成员 / 相册 /
          * 档案 / 备忘 / 记账十来个界面里，每处都写一遍计时和收回，迟早有的一直挂着、有的忘了
          * 通知数据层丢弃还原动作（那就会「窗口早就过了但撤销还能生效」，比没有撤销更让人困惑）。
+         *
+         * 为什么挂进 Popup：撤销条原来是叠在 App 自己的布局上的，档案详情这类**弹窗**会压在它
+         * 上面 —— 删了档案想撤，条被盖住点不着。Popup 是 activity 窗口之上的独立子窗口，
+         * App 内的弹窗盖不住它，撤销入口永远可点。
          */
         var undoVisible by remember { mutableStateOf(false) }
+        // Popup 的挂载开关比 visible「多活」一小会儿:直接用 visible 控制挂载,
+        // 条的出现/收回会变成硬切,入场/退场动画没机会播。
+        var undoMounted by remember { mutableStateOf(false) }
+        // 撤销按钮上的剩余秒数(「撤销（3s）」):窗口还剩多久让用户看得到,不用猜
+        var undoSecondsLeft by remember { mutableStateOf(0) }
         LaunchedEffect(st.undoToken.value) {
             if (st.undoToken.value <= 0) return@LaunchedEffect
+            val firstShow = !undoMounted
+            undoMounted = true
+            if (firstShow) {
+                // 先挂 Popup、下一帧再把条升起来:AnimatedVisibility 要先见到 false 才会播入场动画
+                undoVisible = false
+                delay(16)
+            }
             undoVisible = true
-            delay(UNDO_WINDOW_MS)
+            var waited = 0L
+            while (waited < UNDO_WINDOW_MS) {
+                undoSecondsLeft = ((UNDO_WINDOW_MS - waited) / 1000L).toInt().coerceAtLeast(1)
+                delay(1000)
+                waited += 1000
+            }
             undoVisible = false
+            delay(400)   // 等退场动画收尾再卸掉 Popup
+            undoMounted = false
             st.discardUndo()
         }
-        AnimatedVisibility(
-            visible = undoVisible,
-            enter = slideInVertically { h -> h } + fadeIn(),
-            exit = slideOutVertically { h -> h } + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = if (overlay == null) 78.dp else 20.dp),
-        ) {
-            UndoBar(
-                label = st.undoLabel.value,
-                onUndo = {
-                    st.undoLastDelete()
-                    undoVisible = false
-                },
-            )
+        if (undoMounted) {
+            Popup(
+                alignment = Alignment.BottomCenter,
+                // 不抢焦点:focusable 的 Popup 会截走返回键和触摸,撤销条只是个旁观者,
+                // 弹窗页该干什么还干什么;撤销按钮自己是可点的
+                properties = PopupProperties(focusable = false),
+            ) {
+                AnimatedVisibility(
+                    visible = undoVisible,
+                    enter = slideInVertically { h -> h } + fadeIn(),
+                    exit = slideOutVertically { h -> h } + fadeOut(),
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = if (overlay == null) 78.dp else 20.dp),
+                ) {
+                    UndoBar(
+                        label = st.undoLabel.value,
+                        secondsLeft = undoSecondsLeft,
+                        onUndo = {
+                            st.undoLastDelete()
+                            undoVisible = false
+                            // 这里不 discardUndo:上面的计时分支到点自会做
+                            // (点了撤销之后再 discard 是无害的空操作);若窗口内又删了别的东西,
+                            // 新 token 会重启计时,这张条继续用
+                        },
+                    )
+                }
+            }
         }
 
         if (showGuide) {
@@ -674,7 +770,7 @@ private fun OnboardingGuide(onOpen: (String) -> Unit, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun UndoBar(label: String, onUndo: () -> Unit) {
+private fun UndoBar(label: String, secondsLeft: Int, onUndo: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -701,7 +797,13 @@ private fun UndoBar(label: String, onUndo: () -> Unit) {
                 .lbPressable(onClick = onUndo)
                 .padding(horizontal = 13.dp, vertical = 6.dp),
         ) {
-            Text("撤销", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LbOnAccent)
+            Text(
+            // 剩余秒数跟着窗口一起跳,提示「这扇门什么时候关」;秒数为 0(理论上一闪而过)就退回纯「撤销」
+            if (secondsLeft > 0) "撤销（${secondsLeft}s）" else "撤销",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = LbOnAccent,
+        )
         }
     }
 }

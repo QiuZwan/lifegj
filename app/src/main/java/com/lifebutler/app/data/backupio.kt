@@ -3,6 +3,7 @@ package com.lifebutler.app.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -72,16 +73,52 @@ object BackupIO {
 
     /**
      * 把备份文本写进用户选中的文件。
+     *
+     * 为什么不直接 "wt" 截断了就写:那是「先毁旧文件、再写新的」—— 写到一半崩溃 / 磁盘满 /
+     * 进程被杀,旧备份已经没了、新备份只有半截,两头落空。备份是用户唯一的退路,
+     * 覆盖它的动作必须保证「新内容没把握之前,不动旧文件」。所以这里的顺序是:
+     * ① 新内容先在内存里验一遍完整性(非空、且能整体解析成 JSON),验不过**根本不碰**旧文件;
+     * ② 把旧文件内容读进内存驻一份,真写到一半失败时把旧内容原样写回去(尽力而为)。
+     *
      * @return null 表示成功；否则是一句可以直接显示给用户的失败原因。
      */
     fun write(ctx: Context, uri: Uri, text: String): String? {
+        // ① 新内容先验完整:连内存里都不完整的内容,绝不能让它毁掉旧备份
+        val newBytes = try {
+            if (text.isBlank()) return "这份备份是空的，没有写入"
+            JSONObject(text)
+            text.toByteArray(Charsets.UTF_8)
+        } catch (e: Exception) {
+            return "备份内容不完整（" + e.javaClass.simpleName + "），没有写入"
+        }
+        // ② 旧内容驻内存:万一截断后写失败,还能原样写回去
+        val oldBytes = when (val r = read(ctx, uri)) {
+            is ReadResult.Ok -> r.text.toByteArray(Charsets.UTF_8)
+            is ReadResult.Fail -> null
+        }
         return try {
             val out = ctx.contentResolver.openOutputStream(uri, "wt")
                 ?: return "系统没有给出可写的位置"
-            out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
-            null
+            try {
+                out.write(newBytes)
+                out.flush()
+                null
+            } catch (e: Exception) {
+                // 走到这里旧文件已被 "wt" 截断:把驻在内存的旧备份尽力写回去
+                restoreOld(ctx, uri, oldBytes)
+                "写入失败：" + e.javaClass.simpleName
+            }
         } catch (e: Exception) {
             "写入失败：" + e.javaClass.simpleName
+        }
+    }
+
+    /** 截断写失败后,把驻在内存的旧备份尽力写回去(写不回去也无能为力,不再向外抛) */
+    private fun restoreOld(ctx: Context, uri: Uri, oldBytes: ByteArray?) {
+        if (oldBytes == null) return
+        try {
+            ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(oldBytes) }
+        } catch (e: Exception) {
         }
     }
 
