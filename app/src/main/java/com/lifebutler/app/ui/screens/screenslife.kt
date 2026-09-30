@@ -1012,7 +1012,7 @@ fun FamilyScreen(
     memberRemoveTarget?.let { m ->
         LbConfirmDialog(
             title = "从家人列表移除「${m.name}」？",
-            text = "这条记录会从家人列表里删掉，5 秒内可以在屏幕下方点「撤销」找回来。",
+            text = "这条记录会从家人列表里删掉，8 秒内可以在屏幕下方点「撤销」找回来。",
             confirmText = "移除",
             onDismiss = { memberRemoveTarget = null },
             onConfirm = {
@@ -1104,7 +1104,7 @@ fun FamilyScreen(
     albumDeleteTarget?.let { p ->
         LbConfirmDialog(
             title = "从相册删除这张照片？",
-            text = "5 秒内可以在屏幕下方点「撤销」找回来；撤销期过了,本机这份文件才会真正删除。",
+            text = "8 秒内可以在屏幕下方点「撤销」找回来；撤销期过了,本机这份文件才会真正删除。",
             onDismiss = { albumDeleteTarget = null },
             onConfirm = {
                 store.removeAlbumPhoto(p.id)
@@ -3915,7 +3915,7 @@ fun VaultScreen(
             text = if (shared) {
                 "相册里还有同一张照片，所以本机文件会保留 —— 只是从这个档案组里移开。"
             } else {
-                "会同时删掉本机保存的「${niceFileName(aid, name)}」。5 秒内可以在下方点「撤销」找回来。"
+                "会同时删掉本机保存的「${niceFileName(aid, name)}」。8 秒内可以在下方点「撤销」找回来。"
             },
             confirmText = "移除",
             onDismiss = { deleteFile = null },

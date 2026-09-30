@@ -136,7 +136,9 @@ fun ButlerFloat(
     var baseArea by remember { mutableStateOf(IntSize.Zero) }
     // 位置用归一化分数当唯一真源:区域尺寸一变(键盘弹起、转屏),像素位置自动跟着重算。
     var fx by remember { mutableFloatStateOf(if (store.butlerFx in 0f..1f) store.butlerFx else 1f) }
-    var fy by remember { mutableFloatStateOf(if (store.butlerFy in 0f..1f) store.butlerFy else 0.6f) }
+    // 默认 0.6 正好悬在内容密集带,实测压住过详情页的说明文字、守护页横幅的「处理」按钮、
+    // 扫描结果的「加入」按钮 —— 默认下移到 0.78 的低密度带(拖动过的用户存了自己的位置,不受影响)。
+    var fy by remember { mutableFloatStateOf(if (store.butlerFy in 0f..1f) store.butlerFy else 0.78f) }
     var dragging by remember { mutableStateOf(false) }
 
     var panelOpen by remember { mutableStateOf(false) }

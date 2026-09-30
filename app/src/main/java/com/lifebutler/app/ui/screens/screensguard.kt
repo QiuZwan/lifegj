@@ -578,8 +578,11 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
                                     Text("¥" + store.fmtMoney(s.amount), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = LbInk)
                                 }
                                 val noDate = d == null
+                                // 时间紧的 chip(今天扣/明天扣/N天后扣)已经把这层信息说了,
+                                // 行尾再来一个「就是今天」是同一句话说两遍 —— chip 在时就留空。
+                                val chipCoversDate = d != null && d in 0..3
                                 Text(
-                                    store.dateLabel(s.nextDate),
+                                    if (chipCoversDate) "" else store.dateLabel(s.nextDate),
                                     fontSize = 11.5.sp,
                                     color = if (noDate) LbAmber else LbInk3,
                                     modifier = Modifier
@@ -759,9 +762,9 @@ fun GuardScreen(onOpenDetail: (String) -> Unit, onOpenDuties: () -> Unit, onOpen
         LbConfirmDialog(
             title = "删除「$name」？",
             text = if (autoSource)
-                "删除并记下不再自动添加该商户；5 秒内可在屏幕下方撤销，之后不可恢复。"
+                "删除并记下不再自动添加该商户；8 秒内可在屏幕下方撤销，之后不可恢复。"
             else
-                "删除后 5 秒内可在屏幕下方撤销，之后不可恢复。",
+                "删除后 8 秒内可在屏幕下方撤销，之后不可恢复。",
             onDismiss = { deleteSubId = null },
             onConfirm = {
                 when {
@@ -1307,9 +1310,9 @@ fun SubscriptionDetailScreen(
             LbConfirmDialog(
                 title = "删除「${sub.name}」？",
                 text = if (autoSource)
-                    "删除并记下不再自动添加该商户；5 秒内可在屏幕下方撤销，之后不可恢复。"
+                    "删除并记下不再自动添加该商户；8 秒内可在屏幕下方撤销，之后不可恢复。"
                 else
-                    "删除后 5 秒内可在屏幕下方撤销，之后不可恢复。",
+                    "删除后 8 秒内可在屏幕下方撤销，之后不可恢复。",
                 onDismiss = { showDelSub = false },
                 onConfirm = {
                     // 与「守护页清单长按删除」同一套规则：只有自动来源才记进「不再加回」，
@@ -1690,6 +1693,9 @@ private fun sourceHint(source: String): String? = when {
  * 认不出是哪个 App 就如实退回「来自通知」—— 绝不拿包名去糊弄用户。
  */
 private fun claimSourceOf(ctx: Context, c: ButlerClaim): String {
+    // 短信签约路径的线索 pkg 里存的是来源词("扫描")而不是包名,先认它,
+    // 别让它落进下面的兜底被糊弄成「来自通知」。
+    if (c.pkg == "扫描" || c.pkg == "短信") return "来自扣费短信"
     val app = SubScanner.appNameOf(c.pkg)
     return if (app.isNotEmpty()) "来自 $app 的通知" else "来自通知"
 }

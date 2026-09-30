@@ -843,6 +843,18 @@ fun ScanScreen(onBack: () -> Unit) {
                     LbGhostButton("重新扫描", onClick = { startScan() }, modifier = Modifier.weight(1f))
                     LbPrimaryButton("完成", onClick = onBack, modifier = Modifier.weight(1f))
                 }
+                // 结果页回不去说明态(「重新扫描」直接进扫描),想补开短信/通知/无障碍授权
+                // 只能退出重进 —— 给一个直达入口。
+                Text(
+                    "查看扫描来源与授权 →",
+                    fontSize = 12.5.sp,
+                    color = LbAccent,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { step = 0 }
+                        .padding(top = 10.dp),
+                )
                 Text(
                     "全部在本机完成，不上传。",
                     fontSize = 11.sp,
@@ -850,7 +862,7 @@ fun ScanScreen(onBack: () -> Unit) {
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 10.dp),
+                        .padding(top = 4.dp),
                 )
             }
         }

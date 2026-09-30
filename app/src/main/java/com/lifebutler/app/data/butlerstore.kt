@@ -1560,11 +1560,13 @@ class ButlerStore private constructor(context: Context) {
      *
      * 字段口径与通知路径的 [addPendingClaim] 一致:下次扣费日此时还不知道,留空待认领后补;
      * 金额未知(null)先记 0 —— 0 元线索认领时不会写扣费流水、只会进守护清单,不会伪造账目;
-     * [source] 是来源标识(如包名 / "sms"),存进线索的 pkg 字段。
+     * [source] 是来源标识,存进线索的 pkg 字段。⚠️ "短信" 会归一成 "扫描" —— 界面来源口径
+     * 里「扫描」就是扣费短信,认领落账(见 confirmClaim)也直接用 pkg 当订阅/流水的来源,
+     * 归一后才不会出现"短信来源的订阅标成通知"的错位。
      * @return 是否真的新增了(同名 3 天内的重复线索会被并掉、点过「不是我的」的商户不再问)
      */
     fun addClaim(name: String, amount: Double?, at: Long, snippet: String, source: String): Boolean =
-        addPendingClaim(name, amount ?: 0.0, at, "", source, snippet)
+        addPendingClaim(name, amount ?: 0.0, at, "", if (source == "短信") "扫描" else source, snippet)
 
     /**
      * 认领一条线索 —— **这时才**写真实扣费流水、才加进守护清单。
@@ -1582,11 +1584,12 @@ class ButlerStore private constructor(context: Context) {
         if (c.amount > 0) {
             // 同一商户同一天只记一笔:同一条扣费通知常常推送两次(落下时一次、通知栏重扫一次),
             // 不查重的话月合计会凭空翻倍。
+            // 来源用线索自己的(c.pkg):短信签约进来的认领标"扫描",别再错写成"通知"。
             val dup = charges.any { it.subName == c.name && it.date == day.toString() }
-            if (!dup) addCharge(c.name, c.amount, day.toString(), "通知")
+            if (!dup) addCharge(c.name, c.amount, day.toString(), c.pkg)
         }
         if (subs.none { it.name == c.name } && !isDismissed(c.name)) {
-            addScannedSub(c.name, c.amount, "通知", c.nextDate)
+            addScannedSub(c.name, c.amount, c.pkg, c.nextDate)
         }
         // 认领落账同样要参与 nextDate 的自动推进(上面 addCharge 时订阅多半还不存在)
         rollNextDatePast(c.name, day)

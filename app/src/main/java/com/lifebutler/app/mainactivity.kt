@@ -650,7 +650,7 @@ fun LbApp(
 }
 
 /** 撤销窗口：5 秒。够看清删了什么，又不至于一直杵在屏幕上 */
-private const val UNDO_WINDOW_MS = 5_000L
+private const val UNDO_WINDOW_MS = 8_000L
 
 /**
  * 那些「不是底部 tab、而是浮层」的页面名。
