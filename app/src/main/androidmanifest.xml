@@ -6,6 +6,14 @@
     <!-- 每日简报通知(Android 13+ 需运行时授权)与开机后恢复闹钟 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+        精确闹钟:备忘提醒与每日简报想「准点」响就需要它。
+        targetSdk 33 起这个权限默认是拒的,要用户在「设置 → 应用 → 生活管家 → 闹钟和提醒」里
+        显式给;所以调度前都会先问 alarmManager.canScheduleExactAlarms(),
+        没授权就回退非精确闹钟 —— 晚几分钟送达,不是不响。
+        不用 USE_EXACT_ALARM:那条是给时钟 / 日历类应用准备的,用途对不上,审核口径也不同。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 桌面天气(可选):仅用于下载所在城市天气,不上传任何数据;关闭后完全不联网 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
