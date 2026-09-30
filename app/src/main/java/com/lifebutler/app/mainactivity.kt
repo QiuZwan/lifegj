@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -179,7 +180,12 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         // 快捷方式走 action（静态 XML 带不了 extras），小组件 / 通知走 open_tab extra —— 两条都认
         routeFromIntent(intent)?.let { tabRequest.value = it }
-        if (isDebuggable(this)) intent.getStringExtra("ask")?.let { askRequest.value = it }
+        if (isDebuggable(this)) intent.getStringExtra("ask")?.let {
+            askRequest.value = it
+            // 前台收到「说一句话」深链:得切到智能管家页,ChatScreen 才会挂载并消费 pendingAsk。
+            // 冷启动那条路在 onCreate 里用 initialTab 解决了,这里漏了,导致 App 在前台时静默失效。
+            tabRequest.value = "智能管家"
+        }
         dumpIfAsked(ButlerStore.get(applicationContext))
         probeNotifIfAsked()
         probeA11yIfAsked()
@@ -381,7 +387,14 @@ fun LbApp(
             Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding(),
+                .navigationBarsPadding()
+                // 键盘弹出时把整个界面抬起来。
+                // ⚠️ targetSdk 35 起边到边是强制的,清单里那句 `adjustResize` **不再生效** ——
+                // 键盘直接压在界面上,谁也不动:实测智能管家页的输入框(屏幕底部 y≈2050)被键盘
+                // (顶边 y≈1570)整个盖住,打字看不见自己写什么,也够不着发送键。
+                // 边到边下只能自己按 IME insets 让位,所以这里必须补 `imePadding()`
+                // (悬浮小管家带面板时自己另有一份,它在这一层 Box 之外,不受影响)。
+                .imePadding(),
         ) {
             Box(Modifier.weight(1f)) {
                 AnimatedContent(

@@ -118,6 +118,9 @@ fun ButlerSpin(
     modifier: Modifier = Modifier,
     interactive: Boolean = true,
     spinning: Boolean = true,
+    /** 是否把序列帧拉伸填满容器。悬浮小管家那台命中框比机器人略大(Fit 会留透明边、边上的空白也能点中)，
+        fill=true 让「看得见的部分」=="能点的部分"，消除"点了空白却开了面板"的错觉。聊天页那台保持 Fit。 */
+    fill: Boolean = false,
 ) {
     val ctx = LocalContext.current
 
@@ -241,19 +244,20 @@ fun ButlerSpin(
         contentAlignment = Alignment.Center,
     ) {
         val shown = frame
+        val scale = if (fill) ContentScale.FillBounds else ContentScale.Fit
         if (shown == null) {
             // 第一帧还没解出来(或资源缺失):先用静态图垫着,不让这块空着
             Image(
                 painter = painterResource(R.drawable.lb_butler3d),
                 contentDescription = "智能管家",
-                contentScale = ContentScale.Fit,
+                contentScale = scale,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
             Image(
                 bitmap = shown,
                 contentDescription = "智能管家，可拖动旋转",
-                contentScale = ContentScale.Fit,
+                contentScale = scale,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {

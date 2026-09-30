@@ -423,6 +423,47 @@ class ButlerStore private constructor(context: Context) {
         }
     }
 
+    /**
+     * 订阅扣费日规范化：把任何形态的扣费日（缺年的 "M-d" 或完整的 "yyyy-MM-dd"）按周期滚成
+     * 「严格晚于今天」的完整 "yyyy-MM-dd"。
+     *
+     * 两类输入都会走到这里,都得修:
+     *  - 扫描短信解析出 "9-20"（缺年）→ 今天 9-30 已过时,月付应滚到下月 20 号("20 天后")，
+     *    而 [parseDate] 对缺年日期一律「今年已过则 +1 年」会错算成明年 9-20（"355 天后"）。
+     *  - AI 写订阅时可能直接给完整日期但年份取了今年,例如 9-20 已过本月却写成 "2026-09-20"，
+     *    落库后列表显示「已过期 10 天」—— 对周期订阅同样不对,下一笔一定在未来某期。
+     * 所以统一口径:解析出基准日,若已是未来日期原样保留;若是今天或过去,沿周期逐步推进
+     * （月付→下月同号、周付→下周、季付→+3 月、年付→明年）直到严格晚于今天。
+     */
+    fun normalizeSubNextDate(raw: String, cycle: String): String {
+        val t = raw.trim()
+        if (t.isBlank()) return ""
+        val base = try {
+            if (Regex("""^\d{4}-\d{1,2}-\d{1,2}$""").matches(t)) {
+                val p = t.split("-")
+                LocalDate.of(p[0].toInt(), p[1].toInt(), p[2].toInt())
+            } else {
+                val p = t.split("-").filter { it.isNotEmpty() }
+                if (p.size != 2) return t
+                LocalDate.of(LocalDate.now().year, p[0].toInt(), p[1].toInt())
+            }
+        } catch (e: Exception) {
+            return t
+        }
+        val today = LocalDate.now()
+        // 已经是未来日期:直接用它,不滚动(用户/AI 明确指的未来某期就尊重)。
+        if (base.isAfter(today)) return base.toString()
+        // 今天或已过:订阅是周期性的,下一笔扣费一定在未来某期,沿周期滚到「严格晚于今天」。
+        val cyc = normCycle(cycle)
+        var nd = base
+        var guard = 0
+        while (!nd.isAfter(today) && guard < 1200) {
+            nd = advanceCycle(nd, cyc)
+            guard++
+        }
+        return nd.toString()
+    }
+
     private fun dateOfMillis(ms: Long): LocalDate =
         if (ms <= 0L) LocalDate.now()
         else Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -523,7 +564,7 @@ class ButlerStore private constructor(context: Context) {
             subs[i] = subs[i].copy(
                 name = name.trim(),
                 amount = amount,
-                nextDate = date,
+                nextDate = normalizeSubNextDate(date, cycle ?: subs[i].cycle),
                 trialUntil = trialUntil ?: subs[i].trialUntil,
                 remindAhead = remindAhead ?: subs[i].remindAhead,
                 cycle = normCycle(cycle ?: subs[i].cycle),
@@ -1037,12 +1078,12 @@ class ButlerStore private constructor(context: Context) {
         if (subs.any { it.name == n }) return
         if (!force && dismissed.contains(n)) return
         if (force) dismissed.remove(n)
-        subs.add(ButlerSub(id(), n, amount, nextDate.trim(), false, source, 0L, "", 0, normCycle(cycle)))
+        subs.add(ButlerSub(id(), n, amount, normalizeSubNextDate(nextDate, cycle), false, source, 0L, "", 0, normCycle(cycle)))
         save()
     }
 
     fun addSub(name: String, amount: Double, date: String, source: String = "手动", trialUntil: String = "", remindAhead: Int = 0, cycle: String = "month") {
-        subs.add(ButlerSub(id(), name.trim(), amount, date, false, source, 0L, trialUntil.trim(), remindAhead, normCycle(cycle))); save()
+        subs.add(ButlerSub(id(), name.trim(), amount, normalizeSubNextDate(date, cycle), false, source, 0L, trialUntil.trim(), remindAhead, normCycle(cycle))); save()
     }
 
     /** 单条订阅的「提前几天提醒」。0 = 跟随全局设置 */
@@ -1175,7 +1216,7 @@ class ButlerStore private constructor(context: Context) {
         val i = charges.indexOfFirst { it.id == id }
         if (i < 0) return
         val item = charges.removeAt(i)
-        rememberUndo("已删除「${item.subName}」的扣费记录 ${item.amount} 元") { charges.add(i.coerceAtMost(charges.size), item) }
+        rememberUndo("已删除「${item.subName}」的扣费记录 ¥${fmtMoney(item.amount)}") { charges.add(i.coerceAtMost(charges.size), item) }
         save()
     }
 
@@ -1677,7 +1718,7 @@ class ButlerStore private constructor(context: Context) {
         val i = expenses.indexOfFirst { it.id == id }
         if (i < 0) return
         val item = expenses.removeAt(i)
-        rememberUndo("已删除一笔 ${item.amount} 元${if (item.income) "收入" else "支出"}") { expenses.add(i.coerceAtMost(expenses.size), item) }
+        rememberUndo("已删除一笔 ¥${fmtMoney(item.amount)}${if (item.income) "收入" else "支出"}") { expenses.add(i.coerceAtMost(expenses.size), item) }
         save()
     }
 
@@ -2516,7 +2557,7 @@ class ButlerStore private constructor(context: Context) {
                     subs.add(
                         ButlerSub(
                             j.getString("id"), j.getString("name"), j.optDouble("amount", 0.0),
-                            j.optString("date"), j.optBoolean("closing"), j.optString("source", "手动"),
+                            normalizeSubNextDate(j.optString("date"), j.optString("cycle", "month")), j.optBoolean("closing"), j.optString("source", "手动"),
                             j.optLong("closingAt", 0L), j.optString("trial", ""), j.optInt("ahead", 0),
                             // 旧数据没有 cycle 字段 → 一律按月,口径与从前一致
                             normCycle(j.optString("cycle", "month")),

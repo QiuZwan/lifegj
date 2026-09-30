@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,6 +51,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
+import android.os.SystemClock
 import com.lifebutler.app.data.AiButler
 import com.lifebutler.app.data.AiConfig
 import com.lifebutler.app.data.ButlerStore
@@ -68,9 +71,10 @@ import kotlin.math.roundToInt
 
 /* ── 悬浮小管家:底栏以外任何一页都能拖着走、点一下就地说话 ── */
 
-/** 机器人本体的尺寸。序列帧是 380×640 的竖构图,这个宽高比差不多,机器人不会被压扁。 */
-private val BUTLER_W = 62.dp
-private val BUTLER_H = 100.dp
+/** 机器人本体的尺寸。序列帧是 380×640 的竖构图,这个宽高比差不多,机器人不会被压扁。
+ *  比聊天页那台小一圈:悬浮层是常驻、随时可能压在正文/按钮上,尺寸小一档就更不容易挡住可点内容。 */
+private val BUTLER_W = 54.dp
+private val BUTLER_H = 88.dp
 
 /** 就地弹出的那块小面板。 */
 private val PANEL_W = 268.dp
@@ -140,6 +144,9 @@ fun ButlerFloat(
     // 扫描结果的「加入」按钮 —— 默认下移到 0.78 的低密度带(拖动过的用户存了自己的位置,不受影响)。
     var fy by remember { mutableFloatStateOf(if (store.butlerFy in 0f..1f) store.butlerFy else 0.78f) }
     var dragging by remember { mutableStateOf(false) }
+    /** 最近一次拖拽松手的时间戳。拖完那一瞬内的"抬手点"不再当作"点一下开/合面板"，
+       避免「拖动贴纸时先弹面板」的手势冲突(一次手势既被判成拖又被判成点)。 */
+    var lastDragMs by remember { mutableLongStateOf(0L) }
 
     var panelOpen by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
@@ -149,6 +156,12 @@ fun ButlerFloat(
     var wrote by remember { mutableStateOf<List<String>>(emptyList()) }
     var navOffer by remember { mutableStateOf<String?>(null) }
     var panelH by remember { mutableIntStateOf(0) }
+
+    // 面板开着时,BACK 先关面板,而不是直接退 App。这个 BackHandler 在 LbApp 那个(只管浮层页)之后注册,
+    // 优先级更高——面板开时退 App 是原来最让人生气的一个点(键盘收起按 BACK 直接飞出应用)。
+    BackHandler(enabled = panelOpen) {
+        panelOpen = false
+    }
 
     // ⚠️ AI 有没有接上,这里不能 remember 缓存:这个悬浮层是常驻组合,remember 只在第一次组合算一次,
     // 之后用户去设置里关掉 AI,这里还攥着旧值,面板会继续把话发给已经关掉的模型。
@@ -252,11 +265,13 @@ fun ButlerFloat(
                         onDragStart = { dragging = true },
                         onDragEnd = {
                             dragging = false
+                            lastDragMs = SystemClock.uptimeMillis()
                             store.debugFloat("end   area=${area.width}x${area.height} maxX=$maxX maxY=$maxY -> $fx $fy")
                             store.setButlerPos(fx, fy)
                         },
                         onDragCancel = {
                             dragging = false
+                            lastDragMs = SystemClock.uptimeMillis()
                             // 手势被异常打断(不是用户抬手),**不落库**,并且回到上一次落过库的位置。
                             //
                             // 实测遇到过一次说不清来源的写入:用户拖完落在 bfx=0.30,后来盘上变成了
@@ -285,6 +300,11 @@ fun ButlerFloat(
                 }
                 .pointerInput(Unit) {
                     detectTapGestures {
+                        // 刚拖完那一瞬的"抬手"不当成点按:否则一次手势既被判成拖又被当成点,面板会乱开合。
+                        if (SystemClock.uptimeMillis() - lastDragMs < 250L) {
+                            store.debugFloat("抬手点被忽略(刚拖完)")
+                            return@detectTapGestures
+                        }
                         // 点一下:面板开合(**同时**让机器人原地停转 / 继续转,见下面的 spinning)。
                         store.debugFloat(
                             "点中机器人 panelOpen $panelOpen -> ${!panelOpen} " +
@@ -298,7 +318,8 @@ fun ButlerFloat(
             // interactive = false:拖动已经被外层用来搬位置了,这里只负责「转 / 停」。
             // v2.10.1:**默认就是静止不转**。点一下(打开面板)它才转起来,再点一下(收起)停回静止 ——
             // 少帅要的是"平时别自己转"(v2.10 及以前它一进 App 就一直在转,每一页都看得见)。
-            ButlerSpin(Modifier.fillMaxSize(), interactive = false, spinning = panelOpen)
+            // fill=true:把序列帧拉伸填满命中框,让"看得见的部分"=="能点的部分"(Fit 留的透明边也能误触)。
+            ButlerSpin(Modifier.fillMaxSize(), interactive = false, spinning = panelOpen, fill = true)
         }
 
         /* ② 就地弹出的对话面板(画在机器人之后,保证它压在上面) */
